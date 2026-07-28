@@ -1,15 +1,15 @@
 """Pluggable LLM + notification providers.
 
 The pipeline never *requires* a model. Every LLM call has a deterministic
-fallback, so the editor produces a finished video with zero API keys — you just
+fallback, so the editor produces a finished video with zero API keys, you just
 get fewer creative decisions (heuristic punch-ins instead of scripted ones) and
 one fewer verification gate.
 
 Configure with environment variables (or a .env file next to the repo root):
 
-    DEEPSEEK_API_KEY=sk-...        # cheapest; ~1 cent per video
-    OPENAI_API_KEY=sk-...          # or
-    ANTHROPIC_API_KEY=sk-ant-...   # or
+    DEEPSEEK_API_KEY=sk-xxx      # cheapest; ~1 cent per video
+    OPENAI_API_KEY=sk-xxx        # or
+    ANTHROPIC_API_KEY=sk-ant-xxx   # or
     LLM_MODEL=deepseek-chat        # optional override
 
     TELEGRAM_BOT_TOKEN=123:ABC     # optional: delivery to your phone
@@ -83,7 +83,7 @@ def extract_json(text: str, require: tuple[str, ...] = ()) -> dict | None:
     """Pull the first BALANCED JSON object out of a model reply.
 
     Models wrap JSON in prose and code fences, and a greedy ``\\{.*\\}`` regex
-    swallows trailing text and then fails to parse -- which silently degraded
+    swallows trailing text and then fails to parse. That silently degraded
     this pipeline's whole creative layer until it was fixed. Scan for balanced
     braces instead, string-aware, and accept the first candidate that parses
     and carries the keys we asked for.

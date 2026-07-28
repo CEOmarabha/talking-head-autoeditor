@@ -1,7 +1,7 @@
 """Brand + path configuration.
 
 Everything visual lives here so the engine stays generic. Edit `brand.yaml` in
-the repo root (or set the env vars) -- never edit the pipeline to change a
+the repo root (or set the env vars). Never edit the pipeline to change a
 colour.
 """
 from __future__ import annotations
@@ -21,8 +21,8 @@ VIZ_PROJECT = HOME_DATA / "remotion-viz"
 def _parse_yamlish(path: Path) -> dict:
     """Tiny flat YAML reader (key: value, one level of nesting).
 
-    Deliberately dependency-free -- the whole point of this project is that it
-    installs with ffmpeg + pip and nothing exotic.
+    Deliberately dependency-free. The project installs with ffmpeg and pip,
+    and nothing more exotic than that.
     """
     out: dict = {}
     if not path.exists():
@@ -62,7 +62,7 @@ class Brand:
     )
     caption_scale: float = 0.045    # fraction of frame height
     caption_words: int = 4          # words per caption chunk
-    banned_chars: tuple = ()        # e.g. ("—",) to forbid em dashes
+    banned_chars: tuple = ()        # characters QA should reject on screen
 
     @property
     def accent_rgb(self) -> tuple:
@@ -77,12 +77,12 @@ class Brand:
 
 @dataclass
 class Rules:
-    """Editorial policy -- the decisions that make an edit feel authored."""
+    """Editorial policy: the decisions that make an edit feel authored."""
     # cutting
     min_pause_long: float = 0.90    # silence >= this is removable (lessons)
-    min_pause_short: float = 0.55   # ...and for vertical/short-form
+    min_pause_short: float = 0.55   # same, for vertical/short-form
     pad_head: float = 0.30          # keep this much air BEFORE a word
-    pad_tail: float = 0.35          # ...and AFTER it. Never cut inside a word.
+    pad_tail: float = 0.35          # and after it. Cuts never land inside a word.
     retake_min_words: int = 3       # repeated run that counts as a retake
     retake_max_gap: float = 14.0    # seconds between the two attempts
     # verification gates (see docs/VERIFICATION.md)
@@ -118,7 +118,7 @@ class Config:
 
 def font_file(brand: Brand) -> tuple[str, bool]:
     """(path, is_brand_font). Captions are rendered as PNGs, so we need a real
-    font FILE -- minimal ffmpeg builds have no libass/drawtext."""
+    font FILE, because minimal ffmpeg builds have no libass or drawtext."""
     for d in (Path.home() / "Library/Fonts", Path("/Library/Fonts"),
               Path("/usr/share/fonts"), Path.home() / ".fonts"):
         if not d.exists():

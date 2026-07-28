@@ -32,35 +32,35 @@ The guiding rule: **route each phase to the tool that's genuinely best at it, an
 
 ---
 
-## Phase 1 — Preflight and source repair
+## Phase 1, preflight and source repair
 
 ### 1.5 · Deletterboxing
 
 Phone editing apps often export a landscape recording inside a portrait canvas, with black bars baked into the pixels. Every downstream crop then operates on the wrong geometry. `cropdetect` finds the real content box and crops to it before anything else runs.
 
-### 1.6 · Constant frame rate — always on
+### 1.6 · Constant frame rate, always on
 
 Phone recordings are nominally 30fps but actually variable: frames get dropped under thermal load, leaving gaps in presentation timestamps. Downstream tools assume a constant grid, so cuts land offset from the audio and lips drift.
 
-This phase rebuilds the source on a strict grid (`fps=30`, 48kHz audio). It costs a full re-encode and it is not optional — it eliminated an entire class of sync bug that three previous fixes had only moved around.
+This phase rebuilds the source on a strict grid (`fps=30`, 48kHz audio). It costs a full re-encode and it is not optional, it eliminated an entire class of sync bug that three previous fixes had only moved around.
 
 The measured **AV offset** from `brand.yaml` is applied here too, as an `adelay` or `atrim` on the audio. See [VERIFICATION.md](VERIFICATION.md#gate-1--lip-sync-verification) for why this must be measured by ear rather than detected.
 
 ---
 
-## Phase 2 — Cutting
+## Phase 2, cutting
 
 Four detectors, all working from the **transcript** rather than the waveform. This is the central architectural decision of the project.
 
 ### Why not loudness
 
-The obvious approach — and what `auto-editor` and most tools do — is to cut where the audio is quiet. It fails on soft speakers: trailing consonants and sentence-final words fall below any threshold that also removes real silence. Raise the threshold and you keep dead air; lower it and you eat words.
+The obvious approach, and what `auto-editor` and most tools do, is to cut where the audio is quiet. It fails on soft speakers: trailing consonants and sentence-final words fall below any threshold that also removes real silence. Raise the threshold and you keep dead air; lower it and you eat words.
 
 There is no correct threshold. The signal is wrong.
 
 ### `word_guarded_cut`
 
-Transcribe first. Now the boundaries of every word are known, so silence can only be removed **between** word spans, with padding (`pad_tail` after a word, `pad_head` before the next). A cut landing inside a word is no longer a bug to be caught — it's unrepresentable.
+Transcribe first. Now the boundaries of every word are known, so silence can only be removed **between** word spans, with padding (`pad_tail` after a word, `pad_head` before the next). A cut landing inside a word is no longer a bug to be caught, it's unrepresentable.
 
 The loudness cutter remains as a fallback for footage where transcription finds almost nothing (fewer than 10 words), which usually means it isn't a talking head.
 
@@ -75,11 +75,11 @@ Find repeated runs of ≥3 words whose second occurrence starts within 14 second
 "a stranger cuts in front of you and nobody objects."   <- keep
 ```
 
-It also absorbs the *wind-up*: spoken self-corrections (`"let me say that again"`, `"scratch that"`, `"alright, let's make that clear"` — see `RESTART_MARKERS`) plus any short aborted fragment immediately before them. Those belong to the bad take.
+It also absorbs the *wind-up*: spoken self-corrections (`"let me say that again"`, `"scratch that"`, `"alright, let's make that clear"`, see `RESTART_MARKERS`) plus any short aborted fragment immediately before them. Those belong to the bad take.
 
 ### `detect_false_starts`
 
-When a retake changes the *ending*, only a short prefix repeats — too short for the run matcher:
+When a retake changes the *ending*, only a short prefix repeats, too short for the run matcher:
 
 ```
 "You never hesitate."     <- cut
@@ -90,7 +90,7 @@ Signature: two adjacent sentences sharing a ≥2-word opening, where the first i
 
 ### `detect_lead_noise`
 
-The cough on the opening frame. Ordinary cough detection looks for loud spans containing **no words** — but a speech model transcribes a cough as a low-confidence *word* (in the case that motivated this, a cough became `"Your"` at p=0.54), so it slips through and becomes frame one of your video.
+The cough on the opening frame. Ordinary cough detection looks for loud spans containing **no words**, but a speech model transcribes a cough as a low-confidence *word* (in the case that motivated this, a cough became `"Your"` at p=0.54), so it slips through and becomes frame one of your video.
 
 Signature: the first word has confidence below 0.70 **and** a ≥0.25s gap before the next word. A genuine opening word runs straight into its phrase; a cough sits alone.
 
@@ -98,33 +98,33 @@ Signature: the first word has confidence below 0.70 **and** a ≥0.25s gap befor
 
 A separate detector removes genuine garbles (≥2 consecutive words under 40% confidence) and coughs mid-video.
 
-It carries an important safeguard: **low confidence is not proof of a flub.** This detector once deleted *"Superiority, Autonomy,"* — perfectly delivered, but unusual vocabulary the model wasn't sure of. When a script is supplied, any "garble" whose words appear in the script is recognised as real content and left alone.
+It carries an important safeguard: **low confidence is not proof of a flub.** This detector once deleted *"Superiority, Autonomy,"*, perfectly delivered, but unusual vocabulary the model wasn't sure of. When a script is supplied, any "garble" whose words appear in the script is recognised as real content and left alone.
 
 ---
 
-## Phase 3 — Transcription and script correction
+## Phase 3, transcription and script correction
 
-Word-level timestamps come from `faster-whisper` (`small`, int8 — a good accuracy/speed trade on CPU). Timings from this phase drive every downstream decision.
+Word-level timestamps come from `faster-whisper` (`small`, int8, which trades a little accuracy for speed on CPU). Timings from this phase drive every downstream decision.
 
-With `--script`, captions get corrected against the script — but **only for genuine mishearings**. A word is corrected when the model was unsure of it *or* what it heard is phonetically close to the scripted word. A word the model heard confidently that simply differs is the speaker paraphrasing, and their wording wins:
+With `--script`, captions get corrected against the script, but **only for genuine mishearings**. A word is corrected when the model was unsure of it *or* what it heard is phonetically close to the scripted word. A word the model heard confidently that simply differs is the speaker paraphrasing, and their wording wins:
 
 ```
-captions: script alignment — 467 exact, 9 misheard corrected, 5 paraphrases kept as spoken
+captions: script alignment: 467 exact, 9 misheard corrected, 5 paraphrases kept as spoken
 ```
 
 ---
 
-## Phase 4 — The edit decision list
+## Phase 4, the edit decision list
 
 One LLM call produces the entire creative layer as JSON: punch-in windows with zoom scales, b-roll spans with search queries and optional diagram specs, and graphic cards with kind and text.
 
-The prompt carries **director principles** — editable prose in `premium.py` covering when a punch-in is earned, when an animated diagram beats stock footage, how sparse sound design should be — plus a worked example. Principles are prose, not code, so you can rewrite them in your own voice.
+The prompt carries **director principles**, editable prose in `premium.py` covering when a punch-in is earned, when an animated diagram beats stock footage, how sparse sound design should be, plus a worked example. Principles are prose, not code, so you can rewrite them in your own voice.
 
 A deterministic heuristic emits the same JSON shape when no model is configured or the call fails. Structure is identical; only taste differs.
 
-### Robust JSON extraction
+### Parsing the model's JSON
 
-Models wrap JSON in prose and code fences. A greedy `\{.*\}` regex swallows the trailing text and throws — which silently degraded this pipeline's entire creative layer to the heuristic, with no symptom except a video that looked plain.
+Models wrap JSON in prose and code fences. A greedy `\{.*\}` regex swallows the trailing text and throws, which silently degraded this pipeline's entire creative layer to the heuristic, with no symptom except a video that looked plain.
 
 `providers.extract_json` scans for the first **balanced, string-aware** object and validates it carries the expected keys. Calls also retry with backoff.
 
@@ -132,17 +132,17 @@ Models wrap JSON in prose and code fences. A greedy `\{.*\}` regex swallows the 
 
 Each b-roll beat resolves through a chain, taking the first that succeeds:
 
-**Animated diagram** (Remotion — for frameworks, lists, numbered ideas) → **Pexels** → **Pixabay** → **your local clip library** → **skip the beat**
+**Animated diagram** (Remotion, for frameworks, lists, numbered ideas) → **Pexels** → **Pixabay** → **your local clip library** → **skip the beat**
 
 Skipping is a legitimate outcome. A missing overlay leaves the speaker on screen; a wrong overlay looks careless.
 
 ---
 
-## Phases 5–6 — Composite and finish
+## Phases 5 and 6, composite and finish
 
 **Punch-ins** are rendered as in-place `zoompan` zooms rather than cut-and-rescale segments, because segmenting the timeline reintroduces frame-boundary drift.
 
-**Captions** are PNG frame sequences composited with `overlay`, not `drawtext` or `libass` — minimal ffmpeg builds ship without those filters, and this way the pipeline works on any build. Each word highlights in the accent colour as it's spoken; identical states are hard-linked so a 4-minute video costs a few hundred unique images instead of seven thousand.
+**Captions** are PNG frame sequences composited with `overlay`, not `drawtext` or `libass`, minimal ffmpeg builds ship without those filters, and this way the pipeline works on any build. Each word highlights in the accent colour as it's spoken; identical states are hard-linked so a 4-minute video costs a few hundred unique images instead of seven thousand.
 
 **Sound design** follows a sparsity law: cues mark only structural moments (a diagram assembling, a stat landing, a hard punch-in). Sound on every event reads as desperate.
 
@@ -150,7 +150,7 @@ Skipping is a legitimate outcome. A missing overlay leaves the speaker on screen
 
 ---
 
-## Phases 7–8 — Gates and release
+## Phases 7 and 8, gates and release
 
 Covered in full in [VERIFICATION.md](VERIFICATION.md). In short: the render is re-analysed as an artifact, three gates run, two can block delivery, and the output is hash-locked with a JSON receipt.
 

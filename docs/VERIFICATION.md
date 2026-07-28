@@ -1,16 +1,12 @@
 # Verification
 
-The editor's job isn't to make cuts. It's to make cuts **and prove it didn't break anything.**
-
-This document explains the three gates: what each measures, why it exists, how it fails, and how to tune it.
-
----
+The editor's job is not to make cuts. It is to make cuts and then prove it did not break anything.
 
 ## The problem gates solve
 
-An automatic editor makes thousands of decisions per video. Almost all of them are invisible when wrong. A dropped word doesn't crash anything — it produces a video of the right length, with correct captions, that plays fine and is missing a sentence you needed.
+An automatic editor makes thousands of decisions per video, and almost all of them are invisible when wrong. A dropped word does not crash anything. It produces a video of the right length, with correct captions, that plays fine and is missing a sentence you needed.
 
-Worse, the obvious checks pass. Consider the run that deleted 152 of 623 words:
+The obvious checks pass too. Here is the report from the run that deleted 152 of 623 words:
 
 ```
 speech_retention  kept_ratio 0.55  ok: true     <- threshold was >= 0.55
@@ -20,132 +16,84 @@ lip_sync          5/5 probes 0.0ms ok: true
 QA: PASS
 ```
 
-Every check passed. The video was destroyed. `speech_retention` measured *duration*, which is a proxy for content, and the proxy lied.
+Everything passed and the video was destroyed. `speech_retention` was measuring duration, which is a proxy for content, and the proxy lied.
 
-The fix isn't a better threshold. It's checking a different thing: **re-analyse the delivered file and compare it to what should be in it.**
+The fix was not a better threshold. It was checking a different thing: re-analyse the delivered file and compare it against what should be in it.
 
----
+## Gate 1, lip-sync verification
 
-## Gate 1 — Lip-sync verification
+Blocks delivery.
 
-**Blocks delivery.**
+Five probe points get spread across the master, then shifted so each one lands outside every punch-in, b-roll and graphic window in the EDL. During those windows the speaker's face is not on screen and the comparison would be meaningless.
 
-### What it does
+At each probe the video check crops the frame band below the caption area, where no overlays live, scales it to 160x45 greyscale, and computes mean absolute error against the same timestamp in the pre-overlay cut. The audio check extracts a window at 8kHz from both, normalizes, and cross-correlates across 200 lags in each direction to find the offset with the highest correlation.
 
-Picks five probe points spread across the master, then shifts each one so it lands *outside* every punch-in, b-roll and graphic window recorded in the EDL — because during those the speaker's face isn't on screen and a comparison would be meaningless.
+Five points rather than one because timeline drift accumulates. If the first and last probes are both aligned, nothing between them can be off without one of them showing it.
 
-At each probe:
+It passes when every probe reports frame MAE below 12 and audio offset inside `sync_tolerance_ms`, which defaults to 25.
 
-- **Video:** crops the frame band below the caption area (no overlays there), scales to 160×45 greyscale, and computes mean absolute error against the same timestamp in the pre-overlay cut.
-- **Audio:** extracts a window at 8kHz from both, normalises, and cross-correlates across ±200 lags to find the offset that maximises correlation.
+This gate found four separate root causes, each because it refused to pass:
 
-### Why five points and not one
-
-Timeline drift is monotonic — it accumulates. If the first and last probes are both aligned, nothing in between can be off without one of them showing it. Five spread points is cheap and conclusive.
-
-### Passes when
-
-Every probe reports frame MAE < 12 **and** audio offset within `sync_tolerance_ms` (default ±25ms).
-
-### What it caught
-
-Four distinct root causes, each found because this gate refused to pass:
-
-1. Per-segment concat accumulating AAC frame-rounding at every boundary (~20–40ms each) → rebuilt as single-pass filter graphs
-2. Trim/concat dropping frames → punch-ins re-implemented as in-place `zoompan`
-3. Variable-frame-rate source with dropped frames → always-on CFR normalisation before anything else
-4. A 21-second dead tail (a probe landed in it and returned `mae=99.0`)
+1. Per-segment concat accumulating AAC frame-rounding at every boundary, roughly 20 to 40ms each. Rebuilt as single-pass filter graphs.
+2. Trim and concat dropping frames. Punch-ins were re-implemented as in-place `zoompan`.
+3. A variable-frame-rate source with dropped frames. CFR normalization is now always on, before anything else runs.
+4. A 21-second dead tail, caught when a probe landed inside it and returned `mae=99.0`.
 
 ### What it cannot catch
 
-**Offset baked into the source recording.** The gate compares the master against the cut — both inherit the source's offset, so both agree, and it reports a clean 0.0ms on a file whose lips never matched.
+Offset baked into the source recording. The gate compares the master against the cut, both inherit the source's offset, both agree, and it reports a clean 0.0ms on a file whose lips never matched to begin with.
 
-This is not a flaw in the check; it's a category error to expect otherwise. Nothing internal can detect it. That's what [`calibrate.py`](../autoeditor/calibrate.py) is for: a human watches a ladder of candidate offsets once per recording setup, and the winner goes in `brand.yaml`. See the module docstring for why automated mouth-motion correlation was tried and abandoned.
+That is not a flaw in the check. Nothing internal can detect it, because there is no un-offset reference to compare against. [`calibrate.py`](../autoeditor/calibrate.py) handles it instead: a human watches a ladder of candidate offsets once per recording setup, and the winner goes in `brand.yaml`. The module docstring explains why automated mouth-motion correlation was tried first and abandoned.
 
----
+## Gate 2, word integrity
 
-## Gate 2 — Word integrity
+Blocks delivery.
 
-**Blocks delivery.**
+Transcribes the delivered master, not any intermediate file, and sequence-aligns it against the transcript taken right after cutting. Reports what fraction of words survived.
 
-### What it does
+This one is about mechanical damage after the cut stage: a bad filter graph, a truncated encode, an overlay that clobbered audio. It compares the pipeline against itself, so it does not care what the speaker said or whether they followed a script.
 
-Transcribes the **delivered master** — not any intermediate file — and sequence-aligns it against the transcript taken right after cutting. Reports the fraction of words that survived.
+It passes when `found_in_master / expected` clears `word_integrity_min`, which defaults to 0.97.
 
-### Why it's separate from gate 3
+On tuning: two transcriptions of identical audio disagree by 1 to 3 percent, since speech models are not deterministic across runs. So 0.97 sits just above the noise floor. Real damage is not subtle. The incident that motivated this gate scored 0.75. Dropping to 0.92 is reasonable if you see it flapping, but below 0.90 it stops meaning anything.
 
-This one is about **mechanical damage after the cut stage**: a bad filter graph, a truncated encode, an overlay that clobbered audio. It compares the pipeline against itself, so it is completely indifferent to what the speaker said or whether they followed a script.
+## Gate 3, script integrity
 
-### Passes when
+Blocks delivery. Needs `--script` and a configured model.
 
-`found_in_master / expected >= word_integrity_min` (default 0.97).
+### Why it is hard
 
-### Tuning
+A speaker reading from a teleprompter does not read it verbatim. They paraphrase, they elaborate, they skip. All of that is correct behaviour and none of it is damage. Meanwhile a cut that removes two words from a sentence is damage.
 
-Two transcriptions of identical audio disagree by roughly 1–3% — speech models are not deterministic across runs. So 0.97 sits just above the noise floor. Real damage is not subtle: the incident that motivated this gate scored **0.75**. Lowering to 0.92 is reasonable if you see flapping; going below 0.90 makes it decorative.
+A similarity threshold cannot separate those cases. Both look like "the delivery differs from the script."
 
----
+### How it works
 
-## Gate 3 — Script integrity
+Word-align the delivered speech to the script with `difflib.SequenceMatcher`. Score every script sentence by how much of it matched. Above 80 percent it counts as delivered and needs no review. Below 15 percent it was skipped on purpose and is allowed. Everything in between is ambiguous and goes to a model, with both texts in front of it, for a single verdict of FINE or DAMAGED plus a reason.
 
-**Blocks delivery.** Requires `--script` and a configured LLM.
+The prompt says outright that paraphrase, elaboration and skipping are all acceptable, and gives worked examples of each. The only failure is speech the editor destroyed.
 
-### The hard part
+### The splice ledger
 
-A speaker reading from a teleprompter does not read it verbatim. They paraphrase, elaborate, and skip. All of that is *correct behaviour*, and none of it is damage. Meanwhile a cut that removes two words from a sentence **is** damage.
+A model judging a transcript can be wrong in a way the audio is not. That happened here: the gate flagged "it sounds like having all the answers" delivered as "it sounds like head is all the answer," and blocked the render. The audio was fine. The speech model had misheard, with confidence of 0.34 on "head" and 0.48 on "answer."
 
-A similarity threshold cannot separate these. Both look like "the delivery differs from the script."
+So the pipeline keeps a ledger of every splice position, remapped through each subsequent cut into the final timeline. A sentence can only be ruled damaged when a cut actually landed inside it. If no splice falls in that span, the edit did not touch those words, whatever the transcript claims, and it gets logged as a transcription artifact for review instead of blocking.
 
-### What it does
+The catch that motivated this gate had a splice running straight through it, so it still blocks.
 
-1. Word-aligns the delivered speech to the script (`difflib.SequenceMatcher`).
-2. Scores every script sentence by how much of it was matched:
-   - **≥80% matched** → delivered, no review needed
-   - **<15% matched** → skipped on purpose, allowed
-   - **in between** → ambiguous, needs judgment
-3. Sends every ambiguous sentence to an LLM with both texts and asks for one verdict: **FINE** or **DAMAGED**, with a reason.
+### Without a model
 
-The prompt is explicit that paraphrase, elaboration, and skipping are all fine, and gives worked examples of each. The only failure is speech destroyed by the editor: garbled, truncated mid-thought, or a concrete fact (number, name, key term) replaced by nonsense.
+A mechanical heuristic takes over: a sentence is damaged when an interior run of three or more script words is missing while both flanks matched. That is the signature of a cut through the middle of a sentence, and it is the only pattern detectable without semantics. It is meaningfully weaker, since it cannot recognize a paraphrase, so it errs toward flagging.
 
-### Why an LLM instead of rules
+### How it was validated
 
-Because the distinction is semantic, and the model sees both texts at once:
-
-```
-FINE — script: "Superiority is not a comparison you win. It is a fact you carry."
-       heard : "superiority isn't something you win against people, you just carry it"
-       -> same idea, speaker's own wording
-
-DAMAGED — script: "it has been assigning status for around five hundred million years"
-          heard : "it's been a signing status for around Philly"
-          -> concrete figure lost, sentence ends in nonsense
-```
-
-No rule distinguishes those two rows. The judge does it reliably.
-
-### Fallback when no model is configured
-
-A mechanical heuristic: a sentence is damaged if an interior run of ≥3 script words is missing while **both flanks matched**. That's the signature of a cut through the middle of a sentence, and it's the only pattern detectable without semantics. It's meaningfully weaker — it can't recognise paraphrase — so it errs toward flagging.
-
-### Validation
-
-Run against the known-bad master, this gate flagged **14 damaged sentences** and correctly passed the 2 the speaker had skipped deliberately. Against the repaired render: **0 damaged, 27 delivered, 1 skipped.**
-
----
+Run against the known-bad master it flagged 14 damaged sentences and correctly passed the 2 the speaker had skipped deliberately. Against the repaired render: 0 damaged, 27 delivered, 1 skipped.
 
 ## The non-blocking checks
 
-These populate `QA_REPORT.json` and mark the run for review, but don't stop delivery:
+These populate `QA_REPORT.json` and mark a run for review without stopping delivery.
 
-| Check | Notes |
-|---|---|
-| `loudness` | Integrated LUFS within ±1.5 of target |
-| `no_black_frames` | **Brand-aware** — dark runs inside diagram/card windows are intentional, not dropped frames. Without this exemption it false-fails on every gold-on-black card. |
-| `brand_font` | Warns when your font isn't installed and a system fallback was used |
-| `speech_retention` | Kept a sane fraction of the source |
-| `captions_present`, `all_variants` | Sanity |
-
----
+Loudness has to sit within 1.5 LUFS of target. The black-frame check is brand-aware, so dark runs inside diagram and card windows are treated as intentional rather than dropped frames. Without that exemption it false-fails on every gold-on-black card. The font check warns when your font is not installed and a system fallback was used. Speech retention confirms a sane fraction of the source survived, and there are sanity checks on captions and output variants.
 
 ## Reading a report
 
@@ -171,4 +119,4 @@ These populate `QA_REPORT.json` and mark the run for review, but don't stop deli
 }
 ```
 
-The `sha256` is a hash-lock: it identifies exactly the bytes that passed. If the file changes afterwards, it no longer matches the report that cleared it.
+The `sha256` is a hash-lock. It identifies exactly the bytes that passed, so if the file changes afterwards it no longer matches the report that cleared it.

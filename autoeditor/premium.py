@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""premium — the creative layer: punch-ins, b-roll, motion graphics, SFX.
+"""premium, the creative layer: punch-ins, b-roll, motion graphics, SFX.
 
 One cheap LLM pass (DeepSeek V4 Flash by default) turns the word-level transcript into an EDL:
 
@@ -8,14 +8,14 @@ One cheap LLM pass (DeepSeek V4 Flash by default) turns the word-level transcrip
     "graphics":  [{"s","e","text"}] }          # branded keyword cards
 
 A deterministic heuristic produces the same EDL shape when the LLM is
-unavailable, times out, or returns junk — the pipeline NEVER blocks on a
+unavailable, times out, or returns junk, the pipeline NEVER blocks on a
 model. Renderers are pure ffmpeg/Pillow:
 
-  * punch-ins  — segment-wise 1.08x center zoom, original audio remuxed
+  * punch-ins, segment-wise 1.08x center zoom, original audio remuxed
                  untouched (so audio pacing is never damaged)
-  * b-roll     — video-only overlays from non-REJECT user clip-catalog rows
+  * b-roll, video-only overlays from non-REJECT user clip-catalog rows
                  (audio continues under the insert = natural J-cut feel)
-  * graphics   — Pillow gold/white keyword cards, upper third, faded via
+  * graphics. Pillow gold/white keyword cards, upper third, faded via
                  ffmpeg fade (restrained enterprise motion, no slideshow)
 """
 from __future__ import annotations
@@ -114,8 +114,7 @@ def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
         emphatic = ("?" in s["text"] or any(ch.isdigit() for ch in txt)
                     or i == 0 or len(txt.split()) <= 6)
         if i == 0:
-            # HOOK: the opening line always gets a punch-in, even if short —
-            # dead-static first seconds are the #1 retention killer.
+            # HOOK: the opening line always gets a punch-in, even if short, # dead-static first seconds are the #1 retention killer.
             edl["punch_ins"].append({"s": round(s["s"], 2),
                                      "e": round(max(s["e"], s["s"] + 2.5), 2),
                                      "scale": 1.1})
@@ -132,7 +131,7 @@ def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
                                      "e": round(s["s"] + dur, 2), "family": fam})
                 last_broll = s["s"]
                 break
-        m = re.search(r"\b(\d[\d,.]*%?|status|system|autopilot|research)\b", txt)
+        m = re.search(r"\b(\d[\d.]*%?|status|system|autopilot|research)\b", txt)
         if m and s["s"] - last_gfx >= sp_gfx:
             edl["graphics"].append({"s": round(s["s"], 2),
                                     "e": round(min(s["s"] + 3.0, duration), 2),
@@ -150,7 +149,7 @@ def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
         f"in the first 2s (a punch-in or a graphic on the opening line), keep energy "
         f"high, punch-ins up to one per {sp_punch}s with scale 1.08-1.15, b-roll "
         f"1.5-3s up to one per {sp_broll}s, graphics up to one per {sp_gfx}s. "
-        f"Still enterprise-premium: NO cheesy zoom spam — every event must map to "
+        f"Still enterprise-premium: NO cheesy zoom spam, every event must map to "
         f"the words being said."
         if style == "short" else
         f"STYLE: LONG-FORM LESSON. Restrained enterprise pacing: punch-ins at most "
@@ -168,7 +167,7 @@ def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
 {{"punch_ins":[{{"s":0.0,"e":0.0,"scale":1.08}}],"broll":[{{"s":0.0,"e":0.0,"query":"<2-4 word stock footage search>","family":"<name or empty>","viz":{{"template":"flow|steps|stat","title":"<max 4 words>","items":["<short>"],"value":"<number - stat only>"}}}}],"graphics":[{{"s":0.0,"e":0.0,"kind":"keyword|stat|callout|bars","text":"<max 4 words>","value":"<number like 87% - stat kind only>","items":[{{"label":"<short>","value":0}}]}}]}}
 
 {style_rules}
-Rules: punch-ins ONLY on genuinely emphatic sentences. B-roll overlays 2-4s (viz may run 3-6s). Choose the SOURCE per moment: include "viz" ONLY when the speaker is explaining a process/method/system/statistic that an ANIMATED DIAGRAM shows better than footage — "flow" = pipeline/stages assembling (items = 2-5 stage names), "steps" = numbered method steps (items = 2-5 step labels), "stat" = one dominant number scene (value + title). Otherwise omit "viz" and give "query": a concrete visual stock-footage search matching what is being SAID (e.g. "city skyline aerial night", "hands typing laptop closeup") — premium/enterprise imagery only, no cheesy stock-people-smiling. "family" is an optional local-library fallback from this list (or ""): {families}. Always include query as fallback even with viz. Graphics: ALL CAPS text <=4 words, never an em dash. Choose the kind that VISUALIZES the moment: "stat" when a number/percentage is spoken (put the number in "value", the description in "text"); "bars" when 2-3 quantities are compared (fill "items"); "callout" for a floating side-note or emphasis phrase; "keyword" for a plain concept card. Only include "items" for bars, only "value" for stat. Times must lie within 0-{duration:.1f}s and not overlap within the same list. Fewer, well-chosen events beat many.
+Rules: punch-ins ONLY on genuinely emphatic sentences. B-roll overlays 2-4s (viz may run 3-6s). Choose the SOURCE per moment: include "viz" ONLY when the speaker is explaining a process/method/system/statistic that an ANIMATED DIAGRAM shows better than footage, "flow" = pipeline/stages assembling (items = 2-5 stage names), "steps" = numbered method steps (items = 2-5 step labels), "stat" = one dominant number scene (value + title). Otherwise omit "viz" and give "query": a concrete visual stock-footage search matching what is being SAID (e.g. "city skyline aerial night", "hands typing laptop closeup"), premium/enterprise imagery only, no cheesy stock-people-smiling. "family" is an optional local-library fallback from this list (or ""): {families}. Always include query as fallback even with viz. Graphics: ALL CAPS text <=4 words, never an em dash. Choose the kind that VISUALIZES the moment: "stat" when a number/percentage is spoken (put the number in "value", the description in "text"); "bars" when 2-3 quantities are compared (fill "items"); "callout" for a floating side-note or emphasis phrase; "keyword" for a plain concept card. Only include "items" for bars, only "value" for stat. Times must lie within 0-{duration:.1f}s and not overlap within the same list. Fewer, well-chosen events beat many.
 
 DIRECTOR PRINCIPLES (learned from hand-edited exemplars, follow them):
 1. Numbers that are SPOKEN become stat scenes ("500 million years" -> value 500,000,000 counting up while the words land).
@@ -180,7 +179,7 @@ DIRECTOR PRINCIPLES (learned from hand-edited exemplars, follow them):
 7. Ad-libbed authentic moments (off-script energy spikes) get HONORED with an event, not ignored.
 8. B-roll taste: prefer ABSTRACT MACRO, animated-looking footage (neurons firing, particles, light trails, ink in water, cosmos) for abstract concepts. Literal office/people stock only for literal story beats. Abstract macro reads as intentional; literal stock reads as filler.
 9. Density: at least ONE animated diagram (viz) whenever a framework, list, or numbered idea is taught. When in doubt, add the diagram.
-EXAMPLE (from a hand-directed edit of a lesson opening "Your brain ran a verdict on your worth today... the Lizard Brain has been assigning status for 500 million years... three signals: Superiority, Autonomy, Certainty... when one goes weak the others come down"):
+EXAMPLE (from a hand-directed edit of a lesson opening "Your brain ran a verdict on your worth today.. the Lizard Brain has been assigning status for 500 million years.. three signals: Superiority, Autonomy, Certainty.. when one goes weak the others come down"):
 {{"punch_ins":[{{"s":0.0,"e":4.8,"scale":1.1}},{{"s":40.9,"e":43.4,"scale":1.08}}],"broll":[{{"s":59.2,"e":63.2,"query":"tense business meeting interruption","family":""}},{{"s":86.5,"e":92.5,"query":"three marble pillars columns","family":"","viz":{{"template":"steps","title":"THE THREE SIGNALS","items":["SUPERIORITY","AUTONOMY","CERTAINTY"]}}}}],"graphics":[{{"s":17.2,"e":20.8,"kind":"stat","text":"YEARS OF STATUS SCANNING","value":"500,000,000"}},{{"s":99.0,"e":101.9,"kind":"callout","text":"ONE FALLS, ALL THREE FALL"}}]}}
 
 Transcript with [start-end] seconds:
@@ -214,7 +213,7 @@ Transcript with [start-end] seconds:
             return None
         return edl
     except Exception as e:
-        log(f"deepseek EDL failed ({type(e).__name__}) — heuristic fallback")
+        log(f"deepseek EDL failed ({type(e).__name__}), heuristic fallback")
         return None
 
 
@@ -255,7 +254,7 @@ def align_edl_to_speech(edl: dict, words: list[dict], duration: float) -> dict:
             kw = toks(viz.get("title"), " ".join(viz.get("items") or []),
                       ev.get("text"), ev.get("value"))
             if not kw or len(kw) < 2:
-                continue          # abstract/mood visual — nothing to anchor to
+                continue          # abstract/mood visual, nothing to anchor to
             span = float(ev["e"]) - float(ev["s"])
             # densest 6s window of keyword hits across the whole transcript
             hits = [(t, w) for w, t in spoken if w in kw]
@@ -510,7 +509,7 @@ html, body {{ width:{w}px; height:{h}px; overflow:hidden; background:transparent
 body {{ font-family:"Work Sans","Arial Black",sans-serif; font-weight:900; }}
 .gold {{ color:{gold}; }}
 .white {{ color:#fff; }}
-.stroke {{ text-shadow:-3px -3px 0 #000,3px -3px 0 #000,-3px 3px 0 #000,3px 3px 0 #000,0 4px 12px rgba(0,0,0,.6); }}
+.stroke {{ text-shadow:-3px -3px 0 #000,3px -3px 0 #000,-3px 3px 0 #000,3px 3px 0 #000,0 4px 12px rgba(0,0,0.6); }}
 </style></head>
 <body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="{dur}"
@@ -530,12 +529,12 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
                     vid_w: int, vid_h: int) -> tuple[str, str] | None:
     """Return (body_html, gsap_anim) for a graphic event, or None if the
     kind can't be expressed. Restrained enterprise motion, brand palette only."""
-    text = str(g.get("text", "")).replace("—", "-").strip()[:40]
+    text = str(g.get("text", "")).replace(", ", "-").strip()[:40]
     y = int(vid_h * 0.12)
     fs = max(40, int(vid_h * 0.05))
     out_at = max(0.4, dur - 0.4)
     if kind == "stat":
-        m = re.search(r"([\d,.]+)\s*(%|x|k|m\b)?", str(g.get("value", text)), re.I)
+        m = re.search(r"([\d.]+)\s*(%|x|k|m\b)?", str(g.get("value", text)), re.I)
         if not m:
             return None
         num = float(m.group(1).replace(",", ""))
@@ -586,7 +585,7 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
                 f'padding-right:14px;font-size:{int(fs*0.55)}px;">{lbl}</div>'
                 f'<div id="bar{bi}" style="height:{int(fs*0.62)}px;width:{pct}%;'
                 f'background:{GOLD_HEX};border-radius:{int(fs*0.2)}px;'
-                f'box-shadow:0 3px 10px rgba(0,0,0,.5);"></div>'
+                f'box-shadow:0 3px 10px rgba(0,0,0.5);"></div>'
                 f'<div class="gold stroke" style="padding-left:12px;'
                 f'font-size:{int(fs*0.55)}px;">{val:g}</div></div>')
             anims.append(f'tl.from("#bar{bi}",{{width:0,duration:0.8,'
@@ -616,7 +615,7 @@ def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
                        out_seq: Path) -> bool:
     """Render one graphic via HyperFrames to an RGBA png-sequence in out_seq
     (f_%04d.png, GFX_FPS). Returns False on any failure (caller falls back
-    to the Pillow engine — the render never blocks the pipeline)."""
+    to the Pillow engine, the render never blocks the pipeline)."""
     if not (HF_PROJECT / "package.json").exists():
         return False
     mk = _hf_kind_markup(kind, g, dur, vid_w, vid_h)
@@ -647,12 +646,12 @@ def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
         shutil.rmtree(rdir, ignore_errors=True)
         return True
     except Exception as e:
-        log(f"hyperframes {kind} failed ({type(e).__name__}) — pillow fallback")
+        log(f"hyperframes {kind} failed ({type(e).__name__}), pillow fallback")
         return False
 
 
 def _ease(t: float) -> float:
-    """ease-out cubic, clamped 0..1"""
+    """ease-out cubic, clamped 0.1"""
     t = max(0.0, min(1.0, t))
     return 1 - (1 - t) ** 3
 
@@ -670,13 +669,13 @@ def _alpha_env(t: float, dur: float, fade: float = 0.35) -> float:
 def build_graphics(edl: dict, workdir: Path, font_file: str,
                    vid_w: int, vid_h: int) -> list[dict]:
     """Animated branded graphics as alpha PNG frame-sequences (Pillow),
-    composited by ffmpeg overlay. Deterministic — no browser renderer.
+    composited by ffmpeg overlay. Deterministic, no browser renderer.
 
     Kinds (DeepSeek chooses; anything unknown degrades to 'keyword'):
-      keyword — ALL-CAPS card, fade + subtle rise, white rule sweeps in
-      stat    — big gold number COUNTS UP (e.g. 0->87%), label below
-      callout — floating element: gold bullet + text slides in from right
-      bars    — up to 3 horizontal bars grow (label left, value right)
+      keyword. ALL-CAPS card, fade + subtle rise, white rule sweeps in
+      stat, big gold number COUNTS UP (e.g. 0->87%), label below
+      callout, floating element: gold bullet + text slides in from right
+      bars, up to 3 horizontal bars grow (label left, value right)
     """
     from PIL import Image, ImageDraw, ImageFont
     base = max(34, int(vid_h * 0.055))
@@ -711,12 +710,12 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
             s, e = float(g["s"]), float(g["e"])
             dur = max(1.0, e - s)
             kind = str(g.get("kind", "keyword")).lower()
-            text = str(g.get("text", "")).replace("—", "-").strip()[:40]
+            text = str(g.get("text", "")).replace(", ", "-").strip()[:40]
             if not text and kind != "bars":
                 continue
 
             # HyperFrames first (consensus-best graphics quality), Pillow
-            # fallback (deterministic, never blocks) — same chain pattern
+            # fallback (deterministic, never blocks), same chain pattern
             # as Pexels -> Pixabay -> Kling for b-roll.
             hf_seq = workdir / f"gfxseq_{i:03d}"
             if _hf_render_graphic(kind, g, dur, vid_w, vid_h, hf_seq):
@@ -726,7 +725,7 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                 continue
 
             if kind == "stat":
-                m = re.search(r"([\d,.]+)\s*(%|x|k|m\b)?",
+                m = re.search(r"([\d.]+)\s*(%|x|k|m\b)?",
                               str(g.get("value", text)), re.I)
                 num = float(m.group(1).replace(",", "")) if m else 0
                 suffix = (m.group(2) or "") if m else ""
@@ -734,7 +733,7 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
 
                 def df(dr, img, t, dur, num=num, suffix=suffix, label=label):
                     cur = num * _ease(t / (dur * 0.45))
-                    shown = (f"{cur:,.1f}" if num < 10 and num % 1
+                    shown = (f"{cur:.1f}" if num < 10 and num % 1
                              else f"{int(round(cur)):,}") + suffix
                     tw = dr.textlength(shown, font=f_big)
                     dr.text(((vid_w - tw) / 2, 6), shown, font=f_big,
@@ -824,7 +823,7 @@ def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
         return str(cached[0])
     try:
         import urllib.request, urllib.parse
-        # Cloudflare rejects the default python UA (403/1010) — send a real one
+        # Cloudflare rejects the default python UA (403/1010), send a real one
         ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 autoeditor/1.0")
         orient = "portrait" if portrait else "landscape"
@@ -851,7 +850,7 @@ def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
             log(f"pexels: '{query}' -> {dst.name}")
             return str(dst)
     except Exception as e:
-        log(f"pexels '{query}' failed ({type(e).__name__}) — kling fallback")
+        log(f"pexels '{query}' failed ({type(e).__name__}), kling fallback")
     return None
 
 
@@ -910,8 +909,8 @@ def _remotion_viz(viz: dict, dur: float, vid_w: int, vid_h: int) -> str | None:
     if not comp or not (REMOTION_PROJ / "package.json").exists():
         return None
     props = {"durSec": round(max(2.5, dur), 2), "w": vid_w, "h": vid_h,
-             "title": str(viz.get("title", ""))[:36].replace("—", "-"),
-             "items": [str(x)[:26].replace("—", "-")
+             "title": str(viz.get("title", ""))[:36].replace(", ", "-"),
+             "items": [str(x)[:26].replace(", ", "-")
                        for x in (viz.get("items") or [])][:5],
              "value": str(viz.get("value", ""))[:12],
              "label": str(viz.get("title", viz.get("label", "")))[:36]}
@@ -934,7 +933,7 @@ def _remotion_viz(viz: dict, dur: float, vid_w: int, vid_h: int) -> str | None:
             log(f"remotion viz: {comp} '{props['title']}' -> {dst.name}")
             return str(dst)
     except Exception as e:
-        log(f"remotion viz {comp} failed ({type(e).__name__}) — stock fallback")
+        log(f"remotion viz {comp} failed ({type(e).__name__}), stock fallback")
     return None
 
 

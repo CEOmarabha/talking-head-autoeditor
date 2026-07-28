@@ -57,7 +57,7 @@ if command -v node >/dev/null && command -v npm >/dev/null; then
     ok "diagram renderer already installed"
   fi
 else
-  warn "Node not found — animated diagrams will be skipped (everything else works)"
+  warn "Node not found, animated diagrams will be skipped (everything else works)"
 fi
 
 step "Config files"
@@ -69,14 +69,14 @@ cat <<EOF
 ${GREEN}Setup complete.${RESET}
 
   1. Add at least one API key to  ${ROOT}/.env
-       DEEPSEEK_API_KEY=...   (the creative brain, ~1c per video)
-       PEXELS_API_KEY=...     (free stock b-roll)
+       DEEPSEEK_API_KEY=xxx  (the creative brain, about 1c per video)
+       PEXELS_API_KEY=xxx    (free stock b-roll)
   2. Set your colours and font in  ${ROOT}/brand.yaml
   3. Measure your camera's audio offset ONCE:
        make calibrate VIDEO=/path/to/a/take.mov
   4. Edit a video:
        make edit VIDEO=/path/to/raw.mov
 
-  No keys at all? It still runs — you get a cut, captioned, loudness-normalised,
+  No keys at all? It still runs, you get a cut, captioned, loudness-normalised,
   fully verified video, just with fewer creative flourishes.
 EOF

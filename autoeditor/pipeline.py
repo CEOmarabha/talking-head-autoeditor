@@ -77,7 +77,7 @@ def deletterbox(src: Path, workdir: Path) -> Path:
         return src   # no meaningful bars
     target = "1920:1080" if cw > chh else "1080:1920"
     out = workdir / "deletterboxed.mp4"
-    log(f"phase 1.5: letterbox detected — true content {cw}x{chh} at "
+    log(f"phase 1.5: letterbox detected, true content {cw}x{chh} at "
         f"({cx},{cy}); cropping bars, canvas -> {target.replace(':','x')}")
     run([FFMPEG, "-y", "-i", src, "-vf",
          f"crop={cw}:{chh}:{cx}:{cy},scale={target}",
@@ -96,7 +96,7 @@ AV_OFFSET_MS = CFG.rules.av_offset_ms
 def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int = AV_OFFSET_MS) -> Path:
     """Phase 1.6 -- a root cause of lip-sync drift: phone recordings
     drop frames (VFR jitter), and every frame-grid tool downstream
-    (auto-editor especially) assumes constant fps — cuts land offset from
+    (auto-editor especially) assumes constant fps, cuts land offset from
     the audio and lips drift. Rebuild the source on a strict CFR grid FIRST
     so the entire pipeline operates on exact frame math. Always on."""
     out = workdir / "cfr.mp4"
@@ -121,7 +121,7 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
 def verify_sync(master: Path, ref_cut: Path, edl: dict, duration: float) -> dict:
     """Mechanical lip-sync verifier . At probe points chosen OUTSIDE every overlay/punch
     window, the final master must match the pre-overlay cut in BOTH streams:
-    video frames aligned (top-band image match — below caption, no overlays)
+    video frames aligned (top-band image match, below caption, no overlays)
     and audio aligned (normalized cross-correlation peak within ±25ms).
     Drift is monotonic, so alignment at spread points proves the timeline."""
     import numpy as np
@@ -197,9 +197,9 @@ def silence_cut(src: Path, workdir: Path, margin: str = "0.15s",
 
     Quiet recordings (e.g. phone across the room, mean volume ~-40dB) fall
     below auto-editor's default 4% loudness threshold, which then deletes
-    SPEECH as 'silence' — the 2026-07-23 incident turned a 6:14 lesson into
+    SPEECH as 'silence', the 2026-07-23 incident turned a 6:14 lesson into
     46s. So: try progressively gentler thresholds, and if the cut still
-    keeps less than ``min_keep`` of the source, ship the SOURCE UNCUT — a
+    keeps less than ``min_keep`` of the source, ship the SOURCE UNCUT, a
     long video beats a butchered one. Returns (path, retention_ratio).
     """
     src_dur = _dur(src) or 1.0
@@ -226,7 +226,7 @@ def silence_cut(src: Path, workdir: Path, margin: str = "0.15s",
     if best is not None and best_ratio >= min_keep:
         return best, best_ratio
     log(f"phase 2 GUARDRAIL: best cut kept only {max(best_ratio,0):.0%} "
-        f"(< {min_keep:.0%}) — quiet recording; using SOURCE UNCUT so no "
+        f"(< {min_keep:.0%}), quiet recording; using SOURCE UNCUT so no "
         "speech is lost")
     out = workdir / "cut.mp4"
     shutil.copy(src, out)
@@ -237,7 +237,7 @@ def word_guarded_cut(src: Path, workdir: Path,
                      min_pause: float = 0.9, head: float = 0.30,
                      tail: float = 0.35) -> tuple[Path, float, list]:
     """Phase 2 REWRITE (2026-07-24 word-integrity incident): auto-editor cuts
-    by LOUDNESS, and you soft word-endings fall below any threshold — the
+    by LOUDNESS, and you soft word-endings fall below any threshold, the
     retake lost 152/623 words MID-SENTENCE while 'kept 55%' looked legal.
     New law: the transcript is the single source of truth for what is speech.
     Transcribe the SOURCE first; silence may only be removed BETWEEN padded
@@ -248,19 +248,19 @@ def word_guarded_cut(src: Path, workdir: Path,
     raw_words = transcribe(src, workdir)
     dur = _dur(src) or 1.0
     if len(raw_words) < 10:
-        log("phase 2: <10 words transcribed — falling back to loudness cut")
+        log("phase 2: <10 words transcribed, falling back to loudness cut")
         out, ratio = silence_cut(src, workdir)
         return out, ratio, raw_words
     cuts = detect_dead_air(raw_words, dur, min_pause, head, tail)
     if not cuts:
         out = workdir / "cut.mp4"
         shutil.copy(src, out)
-        log("phase 2: word-guarded cut — no removable pauses; source kept whole")
+        log("phase 2: word-guarded cut, no removable pauses; source kept whole")
         return out, 1.0, raw_words
     out = apply_cuts(src, cuts, workdir)
     ratio = _dur(out) / dur
     log(f"phase 2: word-guarded cut removed {len(cuts)} pause(s) "
-        f"(≥{min_pause}s, pad {head}/{tail}s) — kept {ratio:.0%}, "
+        f"(≥{min_pause}s, pad {head}/{tail}s), kept {ratio:.0%}, "
         f"all {len(raw_words)} words preserved")
     return out, ratio, raw_words
 
@@ -273,7 +273,7 @@ RESTART_MARKERS = (
 
 def _absorb_restart(words: list, norm: list, i: int,
                     look_back: float = 8.0) -> int:
-    """Return the index the retake cut should START from — walking back over a
+    """Return the index the retake cut should START from, walking back over a
     spoken self-correction ('alright, let's make that clear') and any short
     aborted fragment right before it. Those belong to the bad take."""
     t0 = words[i]["s"]
@@ -315,7 +315,7 @@ def detect_retakes(words: list, max_gap: float = 14.0,
     (the clean one) and cut everything from the start of the first attempt to
     the start of the final attempt. Longest repeat wins, so partial restarts
     ('a stranger cuts in front of you / a stranger cuts in front of you and
-    nobody...') collapse correctly."""
+    nobody..') collapse correctly."""
     norm = [re.sub(r"[^a-z0-9']", "", w["w"].lower()) for w in words]
     cuts, n, skip_to = [], len(words), 0
     for i in range(n):
@@ -344,7 +344,7 @@ def detect_retakes(words: list, max_gap: float = 14.0,
                          "e": max(0.0, words[j]["s"] - 0.10), "why": why})
             skip_to = j
     for c in cuts:
-        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']} — "
+        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}, "
             "keeping the later take")
     return cuts
 
@@ -360,7 +360,7 @@ def detect_false_starts(words: list, script_path: Path | None = None,
     abandoned, the second the real line. Cut the first.
 
     Guards against you deliberate parallel structure ('What is my
-    Superiority signal... What is my Autonomy signal...'): only short
+    Superiority signal.. What is my Autonomy signal..'): only short
     sentences qualify, and a first sentence that appears verbatim in the
     script is intentional and never cut."""
     script_prose = ""
@@ -390,7 +390,7 @@ def detect_false_starts(words: list, script_path: Path | None = None,
             continue
         phrase = " ".join(norm(x["w"]) for x in a).strip()
         if script_prose and phrase and phrase in script_prose:
-            continue        # you wrote it that way — intentional
+            continue        # you wrote it that way, intentional
         cuts.append({"s": max(0.0, a[0]["s"] - 0.10),
                      "e": max(0.0, b[0]["s"] - 0.10),
                      "why": f"false start ({pre}-word prefix repeat)"})
@@ -404,7 +404,7 @@ def detect_lead_noise(words: list, max_p: float = 0.70,
     """Throat-clear / cough on the opening frame (2026-07-25, the speaker: 'how about
     cutting out the cough at the very beginning').
 
-    The cough detector only fires on loud spans containing NO words — but
+    The cough detector only fires on loud spans containing NO words, but
     whisper transcribes a cough as a low-confidence word ('Your', p=0.54),
     so it slipped through and became the first frame of the video. Signature:
     the FIRST word is low-confidence AND separated from the next word by a
@@ -429,7 +429,7 @@ def detect_dead_air(words: list, duration: float, min_pause: float = 0.9,
                     head: float = 0.30, tail: float = 0.35) -> list:
     """Pause removal on an EXISTING transcript. Used both by the phase-2
     word-guarded cut and as a second sweep afterwards: the raw-source pass
-    misses gaps where whisper first heard phantom words (2026-07-25 — 4.5s of
+    misses gaps where whisper first heard phantom words (2026-07-25. 4.5s of
     dead air survived mid-sentence in the delivered chunk 1)."""
     cuts = []
     if not words:
@@ -452,7 +452,7 @@ def detect_anomaly_cuts(src: Path, words: list,
     survived to the final render. Conservative by design.
 
     SCRIPT SHIELD (2026-07-24, incident #3): low whisper confidence is NOT
-    proof of a flub — it cut 'Superiority, Autonomy,' out of the SAC reveal
+    proof of a flub, it cut 'Superiority, Autonomy,' out of the SAC reveal
     because whisper was unsure of the words you said perfectly. When the
     teleprompter script is known, a garble span whose words appear in the
     script is REAL CONTENT and is never cut."""
@@ -480,7 +480,7 @@ def detect_anomaly_cuts(src: Path, words: list,
                 if on_script(run_w):
                     log(f"anomaly SKIPPED [{run_w[0]['s']:.1f}-"
                         f"{run_w[-1]['e']:.1f}]: low confidence but the words "
-                        "are in the script — real content, not a flub")
+                        "are in the script, real content, not a flub")
                 else:
                     cuts.append({"s": max(0, run_w[0]["s"] - 0.1),
                                  "e": run_w[-1]["e"] + 0.1, "why": "garbled"})
@@ -518,7 +518,7 @@ def detect_anomaly_cuts(src: Path, words: list,
 def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     """Director-mode retake removal: delete [s,e) ranges (flubbed takes,
     trailing 'um's) with frame-accurate AV re-encode + concat. Caller must
-    re-transcribe afterwards — all downstream times are post-cut."""
+    re-transcribe afterwards, all downstream times are post-cut."""
     if not cuts:
         return src
     total = _dur(src)
@@ -577,7 +577,7 @@ def transcribe(video: Path, workdir: Path) -> list[dict]:
     return json.loads(wj.read_text())
 
 def script_correct(words: list[dict], script_path: Path) -> list[dict]:
-    """2026-07-24: you reads from a teleprompter script — that script is
+    """2026-07-24: you reads from a teleprompter script, that script is
     ground truth for caption TEXT (whisper stays ground truth for TIMING).
     Sequence-align whisper words to the script's words and replace misheard
     cores with the scripted spelling; whisper's punctuation/casing shell is
@@ -600,7 +600,7 @@ def script_correct(words: list[dict], script_path: Path) -> list[dict]:
                 orig = words[j1 + k]["w"]
                 stok = stoks[i1 + k]
                 # PARAPHRASE LAW : only correct actual
-                # MISHEARINGS — whisper unsure of the word, or the heard
+                # MISHEARINGS, whisper unsure of the word, or the heard
                 # word is phonetically close to the scripted one. A word
                 # whisper heard confidently that differs from the script is
                 # you paraphrasing on purpose: the spoken word wins.
@@ -615,7 +615,7 @@ def script_correct(words: list[dict], script_path: Path) -> list[dict]:
                 fixed += 1
     matched = sum(i2 - i1 for op, i1, i2, _, _ in sm.get_opcodes()
                   if op == "equal")
-    log(f"captions: script alignment — {matched} exact, "
+    log(f"captions: script alignment, {matched} exact, "
         f"{fixed} misheard word(s) corrected from script, "
         f"{skipped} paraphrase(s) kept as spoken")
     return words
@@ -626,7 +626,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
     """HARD GATE 3 : compare the DELIVERED speech to the
     teleprompter script SEMANTICALLY.
 
-    you law: "I paraphrase, I add elaboration, I skip sentences — that is
+    you law: "I paraphrase, I add elaboration, I skip sentences, that is
     NOT a loss of integrity. The idea was still said, in my own wording."
     So only real DAMAGE fails: a sentence the edit chopped mid-thought
     (the 2026-07-24 incident: 'assigning status for around five hundred
@@ -665,7 +665,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
         if frac >= 0.80:
             delivered += 1
         elif frac < 0.15:
-            skipped += 1          # you skipped it on purpose — allowed
+            skipped += 1          # you skipped it on purpose, allowed
         else:
             lo, hi = span.get(si, (0, -1))
             heard = " ".join(w["w"] for w in final_words[max(0, lo - 2):hi + 3])
@@ -677,7 +677,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
               "damaged": [], "ok": True}
     if not suspects:
         log(f"script integrity: {delivered} delivered, {skipped} skipped "
-            f"by choice, 0 suspect — PASS")
+            f"by choice, 0 suspect. PASS")
         return result
 
     # --- DeepSeek judges: paraphrase/skip = fine, mid-sentence damage = fail
@@ -712,9 +712,9 @@ def script_integrity(final_words: list[dict], script_path: Path,
                 result["damaged"].append({**s, "why": v.get("why", "")})
         result["judge"] = "deepseek"
     except Exception as e:
-        # judge unavailable: mechanical fallback — damage = an interior run of
+        # judge unavailable: mechanical fallback, damage = an interior run of
         # >=3 script words missing while BOTH flanks of the sentence matched
-        log(f"script integrity: judge unavailable ({type(e).__name__}) — "
+        log(f"script integrity: judge unavailable ({type(e).__name__}), "
             "mechanical fallback")
         result["judge"] = "mechanical"
         for si, s in enumerate(sents):
@@ -734,7 +734,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
     (workdir / "script_integrity.json").write_text(json.dumps(result, indent=2))
     log(f"script integrity: {delivered} delivered, {skipped} skipped by "
         f"choice, {len(suspects)} reviewed -> {len(result['damaged'])} "
-        f"DAMAGED — {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
+        f"DAMAGED, {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
     for d in result["damaged"]:
         log(f"  ✗ script: {d['script'][:80]!r}")
         log(f"    heard : {d['heard'][:80]!r}  ({d.get('why','')[:60]})")
@@ -761,7 +761,7 @@ def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
                        scale: float = 0.045, max_words: int = 4) -> list[dict]:
     """Phase 4 (libass-free): render each caption card as a transparent PNG
     (Pillow), first word in brand gold, rest white, black outline. Composited
-    later with ffmpeg's `overlay` filter — works on minimal ffmpeg builds
+    later with ffmpeg's `overlay` filter, works on minimal ffmpeg builds
     that lack libass/drawtext. `scale`/`max_words` come from the style
     profile (shorts = bigger cards, fewer words per card)."""
     from PIL import Image, ImageDraw, ImageFont
@@ -771,7 +771,7 @@ def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
     cards, chunk = [], []
 
     def flush(chunk, idx):
-        text_words = [c["w"].replace("—", "-") for c in chunk]
+        text_words = [c["w"].replace(", ", "-") for c in chunk]
         img = Image.new("RGBA", (vid_w, int(size * 2.2)), (0, 0, 0, 0))
         dr = ImageDraw.Draw(img)
         widths = [dr.textlength(w + " ", font=font) for w in text_words]
@@ -816,7 +816,7 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
     # chunking identical to the card system
     chunks, cur = [], []
     for w in words:
-        cur.append(dict(w, w=w["w"].replace("—", "-")))
+        cur.append(dict(w, w=w["w"].replace(", ", "-")))
         if len(cur) >= max_words or (w["w"] and w["w"][-1] in ".!?"):
             chunks.append(cur); cur = []
     if cur:
@@ -882,7 +882,7 @@ def build_srt(words: list[dict], out: Path):
         chunk.append(w)
         if len(chunk) >= 8 or (w["w"] and w["w"][-1] in ".!?"):
             blocks.append(f"{n}\n{ts(chunk[0]['s'])} --> {ts(chunk[-1]['e'])}\n"
-                          + " ".join(c["w"] for c in chunk).replace("—", "-") + "\n")
+                          + " ".join(c["w"] for c in chunk).replace(", ", "-") + "\n")
             chunk = []; n += 1
     if chunk:
         blocks.append(f"{n}\n{ts(chunk[0]['s'])} --> {ts(chunk[-1]['e'])}\n"
@@ -1005,8 +1005,8 @@ def variants(master: Path, outdir: Path, w: int, h: int) -> dict:
     if h > w:
         # PORTRAIT source: a real 16:9 needs a canvas, not a relabel
         # (2026-07-23: the "16x9" for a vertical lesson was just the vertical
-        # master — wrong for YouTube). Blurred-fill pillarbox, subject
-        # centered — the standard vertical-on-YouTube treatment. The minimal
+        # master, wrong for YouTube). Blurred-fill pillarbox, subject
+        # centered, the standard vertical-on-YouTube treatment. The minimal
         # ffmpeg build has no blur filter, so scale-down/up IS the blur.
         run([FFMPEG, "-y", "-i", master, "-filter_complex",
              "[0:v]split=2[a][b];"
@@ -1016,7 +1016,7 @@ def variants(master: Path, outdir: Path, w: int, h: int) -> dict:
              "-c:a", "copy", out["16x9"]])
     else:
         shutil.copy(master, out["16x9"])
-    # aspect-aware center crops — valid for landscape AND portrait sources
+    # aspect-aware center crops, valid for landscape AND portrait sources
     run([FFMPEG, "-y", "-i", master, "-vf",
          "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),scale=1080:1920",
          "-c:a", "copy", out["9x16"]])
@@ -1037,7 +1037,7 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
         "kept_ratio": round(retention, 3),
         "ok": retention >= 0.55,
         "note": "" if retention >= 0.55 else
-                "silence-cut removed too much — likely quiet audio; "
+                "silence-cut removed too much, likely quiet audio; "
                 "re-record closer to mic or re-run (guardrail should have "
                 "shipped source uncut)"}
     p = run([FFMPEG, "-i", outs["16x9"], "-af",
@@ -1064,11 +1064,11 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     qa["checks"]["no_black_frames"] = {
         "black_runs": len(real), "ok": not real,
         "note": (f"{len(runs) - len(real)} dark run(s) inside intentional "
-                 "diagram/card windows — not counted") if len(runs) != len(real) else ""}
-    qa["checks"]["no_em_dash"] = {"ok": not any("—" in w["w"] for w in words)}
+                 "diagram/card windows, not counted") if len(runs) != len(real) else ""}
+    qa["checks"]["no_em_dash"] = {"ok": not any(", " in w["w"] for w in words)}
     qa["checks"]["captions_present"] = {"ok": len(words) > 0}
     qa["checks"]["brand_font_worksans"] = {"ok": ass_font_ok,
-        "note": "" if ass_font_ok else "WorkSans not installed — fell back to Arial Black. Install Work Sans for full brand compliance."}
+        "note": "" if ass_font_ok else "WorkSans not installed, fell back to Arial Black. Install Work Sans for full brand compliance."}
     qa["checks"]["all_variants"] = {"ok": all(v.exists() and v.stat().st_size > 0
                                               for v in outs.values())}
     qa["pass"] = all(c["ok"] for c in qa["checks"].values()
@@ -1145,11 +1145,11 @@ def main():
                   "cap_margin": 0.24},
     }[style]
     log(f"phase 1: {info['width']}x{info['height']} {info['duration']:.1f}s "
-        f"ok — style={style}")
+        f"ok, style={style}")
     cut, retention, raw_words = word_guarded_cut(
         src, work, min_pause=(0.55 if style == "short" else 0.9))
     # every downstream layer (caption band length above all) is built against
-    # info["duration"] — leaving the PRE-cut value stretched the master ~21s
+    # info["duration"], leaving the PRE-cut value stretched the master ~21s
     # past the end of speech with a dead tail (2026-07-24).
     info["duration"] = _dur(cut)
     words = transcribe(cut, work)
@@ -1177,7 +1177,7 @@ def main():
             words = transcribe(cut, work)
     if a.script and a.script.exists():
         words = script_correct(words, a.script)
-    # auto anomaly removal (coughs/garbled audio) — AUTO MODE ONLY; in
+    # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
     # director mode (--edl) the director owns every cut decision.
     if not (a.edl and a.edl.exists()):
         anomalies = detect_anomaly_cuts(cut, words, a.script)
@@ -1208,7 +1208,7 @@ def main():
         else:
             edl, edl_src = prem.make_edl(words, clips, info["duration"],
                                          use_llm=not a.no_llm, style=style)
-        log(f"phase 4p: EDL via {edl_src} — {len(edl['punch_ins'])} punch-ins, "
+        log(f"phase 4p: EDL via {edl_src}, {len(edl['punch_ins'])} punch-ins, "
             f"{len(edl['broll'])} b-roll ({len(clips)} clips avail), "
             f"{len(edl['graphics'])} graphics")
         (outdir / "EDL.json").write_text(json.dumps(
@@ -1298,17 +1298,16 @@ def main():
     word_ratio = _kept / max(1, len(words))
     # 0.92, not 0.97: this compares whisper against whisper on the SAME audio,
     # and its own run-to-run variance is ~1-3% (v6 read 96.3% on a master the
-    # semantic judge passed clean). Real damage is nothing like marginal —
-    # the 2026-07-24 incident scored 75%. script_integrity is the sharp gate.
+    # semantic judge passed clean). Real damage is nothing like marginal, # the 2026-07-24 incident scored 75%. script_integrity is the sharp gate.
     wi_ok = word_ratio >= 0.92
     qa["checks"]["word_integrity"] = {
         "expected_words": len(words), "found_in_master": _kept,
         "ratio": round(word_ratio, 3), "ok": wi_ok,
-        "note": "" if wi_ok else "words missing from final master — "
+        "note": "" if wi_ok else "words missing from final master, "
                 "speech was damaged after the cut phase"}
     qa["pass"] = qa["pass"] and wi_ok
     log(f"word integrity: {_kept}/{len(words)} words in master "
-        f"({word_ratio:.1%}) — {'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}")
+        f"({word_ratio:.1%}), {'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}")
     # HARD GATE 3: semantic comparison to the teleprompter script. Paraphrase,
     # elaboration and skipped sentences are FINE ; only sentences
     # the edit damaged mid-thought block delivery.
@@ -1345,8 +1344,7 @@ def main():
         if main_out.stat().st_size <= 49 * 1024 * 1024:
             tg_file = main_out
         else:
-            tg_file = work / "tg_copy.mp4"   # was `workdir` (undefined) —
-            # NameError was swallowed by the catch-all below, so large
+            tg_file = work / "tg_copy.mp4"   # was `workdir` (undefined), # NameError was swallowed by the catch-all below, so large
             # masters silently never reached Telegram (2026-07-24).
             d = _dur(main_out) or 1
             vbit = max(800, int(46 * 8192 / d - 128))

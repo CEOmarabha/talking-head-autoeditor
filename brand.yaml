@@ -1,4 +1,4 @@
-# Your look and your editorial rules. The engine reads this — never edit the
+# Your look and your editorial rules. The engine reads this, never edit the
 # Python to change a colour, a font, or how aggressively it cuts.
 
 brand:
@@ -13,7 +13,7 @@ brand:
 rules:
   # ---- cutting -----------------------------------------------------------
   min_pause_long: 0.90     # a silence this long (seconds) is removable
-  min_pause_short: 0.55    # ...for vertical/short-form pacing
+  min_pause_short: 0.55    # same, for vertical/short-form pacing
   pad_head: 0.30           # air kept BEFORE each word
   pad_tail: 0.35           # air kept AFTER each word
                            # these two are why cuts can never land inside a word

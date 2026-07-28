@@ -1,4 +1,4 @@
-# Demo — your first edit, start to finish
+# Demo: your first edit, start to finish
 
 Fifteen minutes from `git clone` to a finished video. No footage required for the first two steps.
 
@@ -38,7 +38,7 @@ ffmpeg       ok
 llm          not configured (heuristic fallback will be used)
 ```
 
-That last line is fine — it will still produce a complete, verified video. Add a key when you want authored edits.
+That last line is fine, it will still produce a complete, verified video. Add a key when you want authored edits.
 
 ---
 
@@ -59,9 +59,9 @@ PEXELS_API_KEY=...        # free, gives you stock b-roll
 
 ---
 
-## 2 · Calibrate your camera — once, ever
+## 2 · Calibrate your camera, once ever
 
-**Do not skip this.** Many phone apps record USB-microphone audio out of sync with the video, and no editor can detect it from the inside. Five minutes here prevents every video you ever make from feeling subtly wrong.
+Do not skip this. Many phone apps record USB-microphone audio out of sync with the video, and no editor can detect it from the inside. Five minutes here prevents every video you ever make from feeling subtly wrong.
 
 ```bash
 make calibrate VIDEO=~/Movies/any-take.mov
@@ -111,20 +111,20 @@ make edit VIDEO=~/Movies/lesson1.mov SCRIPT=~/scripts/lesson1.txt
 ### Watching it work
 
 ```
-[1.5]  letterbox detected — true content 2160x1220 at (0,1312); canvas -> 1920x1080
+[1.5]  letterbox detected, true content 2160x1220 at (0,1312); canvas -> 1920x1080
 [1.6]  CFR normalize -> 30fps strict grid + AV offset (audio +100ms delay)
-[1]    1920x1080 262.3s ok — style=long
+[1]    1920x1080 262.3s ok, style=long
 [3]    faster-whisper word-level transcript
-[2]    word-guarded cut removed 18 pause(s) — kept 92%, all 622 words preserved
-       retake cut: [73.3-75.7] retake (7-word repeat) — keeping the later take
+[2]    word-guarded cut removed 18 pause(s), kept 92%, all 622 words preserved
+       retake cut: [73.3-75.7] retake (7-word repeat), keeping the later take
        retake cut: [141.9-155.2] retake (3-word repeat) + self-correction aside
        false-start cut: [220.0-223.7] false start (2-word prefix repeat)
        lead-noise cut: [2.48-3.00] lead-in noise (cough/throat clear, p=0.54)
 [3]    623 words post-cut
-       captions: script alignment — 467 exact, 9 misheard corrected, 5 paraphrases kept
+       captions: script alignment: 467 exact, 9 misheard corrected, 5 paraphrases kept
        anomaly SKIPPED [107.9-110.6]: low confidence but the words are in the
-                                      script — real content, not a flub
-[4p]   EDL via deepseek — 9 punch-ins, 10 b-roll, 9 graphics
+                                      script, real content, not a flub
+[4p]   EDL via deepseek: 9 punch-ins, 10 b-roll, 9 graphics
        remotion viz: StepsViz 'THREE SIGNALS'
        pexels: 'neurons firing brain activity' -> neurons_firing__37101560.mp4
 [5/6]  composite 10 b-roll + 9 graphics + loudness pass 1
@@ -134,13 +134,13 @@ make edit VIDEO=~/Movies/lesson1.mov SCRIPT=~/scripts/lesson1.txt
        sync probe @132.61s: mae=0.1 offset=0.0ms OK
        sync probe @195.06s: mae=0.1 offset=0.0ms OK
        sync probe @221.81s: mae=0.1 offset=0.0ms OK
-       word integrity: 616/619 words in master (99.5%) — PASS
-       script integrity: 27 delivered, 1 skipped by choice, 0 DAMAGED — PASS
+       word integrity: 616/619 words in master (99.5%) PASS
+       script integrity: 27 delivered, 1 skipped by choice, 0 DAMAGED
 [8]    hash-lock release
 QA: PASS
 ```
 
-Read that middle block closely — it's the system explaining its editorial reasoning. It found five flubbed takes, kept the good read of each, corrected nine misheard caption words while leaving five deliberate paraphrases alone, and **declined** to cut a passage it would previously have deleted because the words were in the script.
+Read that middle block closely, it's the system explaining its editorial reasoning. It found five flubbed takes, kept the good read of each, corrected nine misheard caption words while leaving five deliberate paraphrases alone, and **declined** to cut a passage it would previously have deleted because the words were in the script.
 
 ---
 
@@ -149,7 +149,7 @@ Read that middle block closely — it's the system explaining its editorial reas
 This is the behaviour worth understanding, because it's the reason to use this over a simpler tool:
 
 ```
-word integrity: 616/619 words in master (99.5%) — PASS
+word integrity: 616/619 words in master (99.5%) PASS
 script integrity: 26 delivered, 1 skipped by choice, 8 reviewed -> 1 DAMAGED
   ✗ script: 'There are three signals your Lizard Brain broadcasts and reads
              in every single human interaction: Superiority, Autonomy, and Certainty.'
@@ -157,10 +157,10 @@ script integrity: 26 delivered, 1 skipped by choice, 8 reviewed -> 1 DAMAGED
     why   : script names three signals; heard version loses Superiority and
             Autonomy, leaving only Certainty named
 QA: FAIL
-delivery: RuntimeError: script damage - video delivery blocked
+delivery: RuntimeError: script damage, video delivery blocked
 ```
 
-The file is still on disk — nothing is deleted — but it is **not delivered**, and the report tells you the exact sentence and why. In this real case the cause was the anomaly detector removing 2.9 seconds it had misjudged as garble. The fix shipped as the script shield described in [PIPELINE.md](PIPELINE.md#anomaly-cuts-and-the-script-shield).
+The file is still on disk, nothing is deleted, but it is **not delivered**, and the report tells you the exact sentence and why. In this real case the cause was the anomaly detector removing 2.9 seconds it had misjudged as garble. The fix shipped as the script shield described in [PIPELINE.md](PIPELINE.md#anomaly-cuts-and-the-script-shield).
 
 ---
 
@@ -182,7 +182,7 @@ The file is still on disk — nothing is deleted — but it is **not delivered**
 - **Flub freely.** Pause a beat, say the line again, keep rolling. Retake detection keeps the last read. This is faster than restarting a take.
 - **Talk to yourself.** *"Let me say that again"* is recognised as a restart marker and removed along with the bad attempt.
 - **Pause between sentences.** Anything over ~0.9s is removed automatically, so generous pauses cost nothing and make cuts cleaner.
-- **Stay near the mic.** Sync and cutting are robust; nothing fixes room echo.
+- **Stay near the mic.** Sync and cutting are reliable; nothing fixes room echo.
 - **Supply the script.** It's what lets the editor tell a mishearing from a paraphrase, and a flub from an unusual word.
 
 ---
@@ -192,8 +192,8 @@ The file is still on disk — nothing is deleted — but it is **not delivered**
 | Symptom | Cause |
 |---|---|
 | `llm not configured` | No key in `.env`, or `.env` wasn't copied from `.env.example` |
-| Video feels out of sync, gates all pass | Source offset — run `make calibrate` |
+| Video feels out of sync, gates all pass | Source offset, run `make calibrate` |
 | Only 1 b-roll clip appeared | The model call failed; check `PEXELS_API_KEY` and rerun. Retries make this rare. |
 | `brand_font` flagged in QA | Your `font_pattern` font isn't installed; a system font was substituted |
-| Diagrams missing | Node 18+ wasn't present at install time — install Node, re-run `make install` |
-| Render feels slow | It's CPU-bound. 20–35 min per 4-min video on Apple Silicon is normal. |
+| Diagrams missing | Node 18+ wasn't present at install time, install Node, re-run `make install` |
+| Render feels slow | It is CPU-bound. 20 to 35 minutes per 4-minute video on Apple Silicon is normal. |
