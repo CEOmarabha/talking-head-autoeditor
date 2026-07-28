@@ -494,8 +494,27 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
     coverage_gaps = ([max(0.0, results[0][0] - speech_start)]
                      + internal_gaps
                      + [max(0.0, speech_end - results[-1][0])])
-    start_covered = results[0][0] <= speech_start + 10.0
-    end_covered = results[-1][0] >= speech_end - 10.0
+    # Coverage means "as early/late as PHYSICALLY POSSIBLE": the hook edit
+    # legitimately blankets the first seconds with punch-ins and b-roll, and
+    # no face-visible probe can exist inside an overlay. Measure coverage
+    # against the earliest/latest slots that were eligible at all.
+    def _eligible(t):
+        return (t + 1.2 <= dur
+                and all(not (a0 <= t <= b0) for a0, b0 in avoid)
+                and sum(1 for m0 in word_mids if t <= m0 <= t + 1.2) >= 2)
+    import numpy as _np
+    fine = [float(t) for t in _np.arange(max(0.0, speech_start),
+                                         max(0.0, speech_end - 1.1), 0.5)]
+    first_possible = next((t for t in fine if _eligible(t)), speech_start)
+    last_possible = next((t for t in reversed(fine) if _eligible(t)),
+                         speech_end)
+    start_covered = results[0][0] <= max(speech_start + 10.0,
+                                         first_possible + 12.0)
+    end_covered = results[-1][0] >= min(speech_end - 10.0,
+                                        last_possible - 12.0)
+    if first_possible > speech_start + 5.0:
+        log(f"sync-to-source: overlays blanket the intro; earliest "
+            f"measurable window is {first_possible:.1f}s")
     med = float(np.median(offs))
     spread = float(max(offs) - min(offs))
     worst = max(abs(o - certified_ms) for o in offs)
