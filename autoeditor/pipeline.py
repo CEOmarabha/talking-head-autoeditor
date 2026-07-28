@@ -129,10 +129,10 @@ def measure_av_offset(src: Path, start: float = 15.0,
         f = r[:n * 48 * 32].reshape(n, 32, 48).astype(np.float32)
         mo = np.abs(np.diff(f, axis=0)).mean(axis=(1, 2))
         p2 = run([FFMPEG, "-v", "quiet", "-ss", str(start), "-t", str(window),
-                  "-i", src, "-vn", "-ac", "1", "-ar", "8000",
+                  "-i", src, "-vn", "-ac", "1", "-ar", "48000",
                   "-f", "f32le", "-"], check=False)
         a = np.abs(np.frombuffer(p2.stdout, dtype=np.float32))
-        hop = 8000 // FPS
+        hop = 48000 // FPS  # 1600 exactly; 8000//30=266 skewed the audio timebase to 30.075Hz, a fake +150ms/min drift
         au = a[:len(a) // hop * hop].reshape(-1, hop).mean(1)
         return mo, au
 
@@ -201,6 +201,109 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
     run([FFMPEG, "-y", "-i", src, "-vf", f"fps={fps}",
          "-c:v", "libx264", "-preset", "fast", "-crf", "18",
          "-c:a", "aac", "-b:a", "192k", *af, out], timeout=3600)
+    return out
+
+
+def verify_sync_source(master: Path, cfr_video: Path, raw_src: Path,
+                       edl: dict, av_offset_ms: int, workdir: Path) -> dict:
+    """HARD GATE 5: the finished master must be in sync with the RAW RECORDING.
+
+    verify_sync compares the master against the cut, and both inherit whatever
+    the correction stage did, so it reported 0.0ms on ten renders that were
+    visibly wrong. This gate uses the one reference that cannot lie. At probe
+    points outside every overlay window: match 1.2s of master AUDIO into the
+    raw recording by cross-correlation (sample-accurate, survives loudnorm at
+    0.99+), then find which raw-timeline FRAME the master shows at that moment.
+    Video time minus audio time = true desync, measured end to end.
+    Median must sit within 60ms of the intended correction, spread within 100ms\n    (two frame-grid quantizations alone can account for ~66ms of spread)."""
+    import numpy as np
+    SR, FPS = 16000, 30.0
+
+    def pcm(path):
+        pr = run([FFMPEG, "-v", "quiet", "-i", path, "-vn", "-ac", "1",
+                  "-ar", str(SR), "-f", "f32le", "-"], check=False)
+        return np.frombuffer(pr.stdout, dtype=np.float32).astype(np.float64)
+
+    raw_a, mas_a = pcm(raw_src), pcm(master)
+    out = {"ok": False, "probes": [], "median_ms": None, "spread_ms": None,
+           "expected_ms": av_offset_ms, "note": ""}
+    if len(raw_a) < SR * 5 or len(mas_a) < SR * 5:
+        out["note"] = "audio too short to verify"
+        log("sync-to-source: cannot verify (audio too short) - BLOCKED")
+        return out
+
+    n = int(1.2 * SR)
+    N = len(raw_a)
+    size = 1 << int(np.ceil(np.log2(N + n)))
+    R = np.fft.rfft(raw_a, size)
+    csum = np.cumsum(raw_a ** 2)
+    win_e = csum[n:] - csum[:-n]
+
+    def locate(needle):
+        q = np.fft.rfft(needle[::-1], size)
+        c = np.fft.irfft(R * q, size)[n - 1:N]
+        denom = np.sqrt(win_e * (needle ** 2).sum()) + 1e-9
+        m = min(len(c), len(denom))
+        sc = c[:m] / denom[:m]
+        i = int(np.argmax(sc))
+        return i / SR, float(sc[i])
+
+    def band(path, t):
+        pr = run([FFMPEG, "-v", "quiet", "-ss", f"{t:.4f}", "-i", path,
+                  "-frames:v", "1", "-vf",
+                  "crop=iw:ih*0.45:0:ih*0.20,scale=160:44,format=gray",
+                  "-f", "rawvideo", "-"], check=False)
+        a = np.frombuffer(pr.stdout, dtype=np.uint8)
+        return a[:160 * 44].reshape(44, 160).astype(np.float32) \
+            if len(a) >= 160 * 44 else None
+
+    avoid = [(float(e["s"]) - 1.0, float(e["e"]) + 1.0)
+             for k in ("broll", "graphics", "punch_ins")
+             for e in (edl or {}).get(k, [])]
+    dur = len(mas_a) / SR
+    step = max(10.0, (dur - 12) / 10)
+    probes = [t for t in np.arange(6.0, dur - 4, step)
+              if all(not (a0 <= t <= b0) for a0, b0 in avoid)][:10]
+
+    offs = []
+    for Tm in probes:
+        needle = mas_a[int(Tm * SR):int(Tm * SR) + n]
+        if len(needle) < n or needle.std() < 1e-4:
+            continue
+        Tr, sc = locate(needle - needle.mean())
+        if sc < 0.6:
+            continue
+        fm = band(master, Tm)
+        if fm is None:
+            continue
+        best_k, best_mae = None, 1e18
+        for k in range(-9, 10):
+            fr = band(cfr_video, Tr + k / FPS)
+            if fr is None:
+                continue
+            mae = float(np.abs(fr - fm).mean())
+            if mae < best_mae:
+                best_k, best_mae = k, mae
+        if best_k is None or best_mae > 30:
+            continue
+        ms = best_k * 1000.0 / FPS
+        offs.append(ms)
+        out["probes"].append({"t": round(float(Tm), 1),
+                              "raw_t": round(Tr, 2), "corr": round(sc, 3),
+                              "desync_ms": round(ms), "mae": round(best_mae, 1)})
+    if len(offs) < 4:
+        out["note"] = f"only {len(offs)} usable probe(s), cannot verify"
+        log(f"sync-to-source: {out['note']} - BLOCKED")
+        return out
+    med = float(np.median(offs))
+    spread = float(max(offs) - min(offs))
+    out["median_ms"] = round(med)
+    out["spread_ms"] = round(spread)
+    out["ok"] = abs(med - av_offset_ms) <= 60 and spread <= 100
+    log(f"sync-to-source: {len(offs)} probes vs RAW, median {med:+.0f}ms "
+        f"(intended {av_offset_ms:+d}ms), spread {spread:.0f}ms - "
+        f"{'PASS' if out['ok'] else 'FAIL - DELIVERY BLOCKED'}")
+    (workdir / "sync_to_source.json").write_text(json.dumps(out, indent=2))
     return out
 
 
@@ -743,8 +846,15 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     if not cuts:
         return src
     total = _dur(src)
-    drops = sorted((max(0, float(c["s"])), min(total, float(c["e"])))
+    # GRID SNAP: video trims quantize to the 30fps frame grid while audio
+    # trims cut at sample precision, so every unsnapped boundary contributes
+    # up to 33ms of AV mismatch and ~30 boundaries random-walk it past 100ms.
+    # Snapping both streams to the same grid keeps segment durations equal.
+    G = 30.0
+    drops = sorted((max(0.0, round(float(c["s"]) * G) / G),
+                    min(total, round(float(c["e"]) * G) / G))
                    for c in cuts)
+    drops = [(a0, b0) for a0, b0 in drops if b0 - a0 > 1.0 / G]
     keeps, t = [], 0.0
     for s, e in drops:
         if s > t:
@@ -1374,6 +1484,7 @@ def main():
     src = a.video.expanduser().resolve()
     if not src.exists():
         sys.exit(f"no such file: {src}")
+    orig_src = src   # the raw recording: reference for verify_sync_source
     outdir = (a.out or src.parent / f"{src.stem}_PSE_EDIT").resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="pse-edit-"))
@@ -1382,20 +1493,13 @@ def main():
     fixed = deletterbox(src, work)
     if fixed != src:
         src = fixed
-    # LIP-SYNC LAW: measure the source offset on EVERY render. A constant
-    # carried over from another recording is how nine renders shipped out of
-    # sync while the mechanical gate reported 0.0ms drift on all of them.
-    meas = measure_av_offset(src)
+    # Constants come from human calibration (brand.yaml / --av-offset) ONLY.
+    # The mouth-motion auto-measure mis-measured twice and each "correction"
+    # CREATED the desync it claimed to fix. The authority on whether a render
+    # is in sync is verify_sync_source: master vs the raw recording itself.
     offset = a.av_offset
-    if meas["reliable"]:
-        # measured value wins; positive lag means audio is LATE, so advance it
-        offset = -int(meas["ms"])
-        if offset != a.av_offset:
-            log(f"av-offset: using measured {offset:+d}ms "
-                f"(configured default was {a.av_offset:+d}ms)")
-    else:
-        log(f"av-offset: measurement unreliable, falling back to "
-            f"configured {offset:+d}ms. Run a calibration ladder if lips look off.")
+    if offset:
+        log(f"av-offset: applying configured {offset:+d}ms")
     src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
@@ -1549,13 +1653,16 @@ def main():
                        _dur(main_out_v))
     qa["checks"]["lip_sync_verified"] = {"ok": sync["ok"],
                                          "probes": sync["probes"]}
-    qa["checks"]["source_av_offset"] = {
-        "measured_ms": meas["ms"], "correlation": meas["corr"],
-        "reliable": meas["reliable"], "applied_ms": offset,
-        "ok": meas["reliable"] or offset != 0,
-        "note": "" if meas["reliable"] else
-                "offset could not be measured from this footage; the "
-                "configured value was used. Check lips by eye."}
+    # GATE 4: no flubbed take may survive into the delivered file.
+    residue = verify_no_retakes(final_words, a.script, work)
+    qa["checks"]["retake_residue"] = residue
+    qa["pass"] = qa["pass"] and residue["ok"]
+    # GATE 5: true end-to-end sync, master vs the raw recording.
+    ssync = verify_sync_source(main_out_v, src, orig_src,
+                               edl if (not a.no_premium and words) else {},
+                               offset, work)
+    qa["checks"]["sync_to_source"] = ssync
+    qa["pass"] = qa["pass"] and ssync["ok"]
     qa["pass"] = qa["pass"] and sync["ok"]
     # HARD GATE 2 : the delivered
     # master must still CONTAIN the speech. Transcribe the final master and
@@ -1612,6 +1719,11 @@ def main():
             raise RuntimeError("words missing - video delivery blocked")
         if not qa["checks"].get("script_integrity", {"ok": True}).get("ok"):
             raise RuntimeError("script damage - video delivery blocked")
+        if not qa["checks"].get("retake_residue", {"ok": True}).get("ok"):
+            raise RuntimeError("flubbed take survived - video delivery blocked")
+        if not qa["checks"].get("sync_to_source", {"ok": True}).get("ok"):
+            raise RuntimeError("master out of sync with the raw recording - "
+                               "video delivery blocked")
         # Most chat APIs cap uploads around 50MB. Master fits -> send as-is (full
         # quality). Too big -> 1080p phone copy; full master stays on disk.
         main_out = next(iter(outs.values()))

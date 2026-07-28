@@ -46,9 +46,9 @@ A third bug left a 21-second dead tail after the speech ended, because a stale d
 
 The pattern connecting all three: every signal the editor trusts is a proxy, and proxies lie. Loudness stands in for speech. Model confidence stands in for clarity. Duration stands in for content. So the architecture stopped relying on proxies alone and started checking the finished artifact against what should be in it.
 
-## The four gates
+## The five gates
 
-After rendering, the pipeline re-analyses its own output file. Three of these gates can stop delivery outright.
+After rendering, the pipeline re-analyses its own output file. Four of these gates can stop delivery outright.
 
 ### Lip-sync verification
 
@@ -56,7 +56,7 @@ Five probe points spread across the finished master, each shifted so it lands ou
 
 Timeline drift accumulates monotonically, so alignment at spread points proves the whole timeline. Fails if any probe drifts more than 25ms.
 
-This check has one blind spot, and covering it matters more than the check itself. It compares the master against the cut, and both inherit any offset baked into the source recording, so it passes happily on footage whose lips never matched. The pipeline therefore measures the source offset on every render, trusting the result only when three disjoint slices of the window agree, and saying so in the log when they do not.
+This check has one blind spot: it compares the master against the cut, and both inherit whatever the correction stage did, so it passes happily on a wrong correction. A separate gate covers it by measuring the finished master directly against the raw recording, matching audio by cross-correlation and video by frame comparison. That gate blocked a render at -233ms and named the exact bad correction that caused it. Details in the verification doc.
 
 ### Word integrity
 

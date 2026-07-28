@@ -39,66 +39,25 @@ This gate found four separate root causes, each because it refused to pass:
 3. A variable-frame-rate source with dropped frames. CFR normalization is now always on, before anything else runs.
 4. A 21-second dead tail, caught when a probe landed inside it and returned `mae=99.0`.
 
-### The blind spot, and how it is covered
+### The blind spot, and what finally covered it
 
-This gate compares the master against the cut. Both inherit whatever offset is baked into the source recording, so both agree, and it reports a clean 0.0ms on footage whose lips never matched to begin with.
+This gate compares the master against the cut. Both inherit whatever the correction stage did to the audio, so the gate reports a clean 0.0ms even when the correction itself was wrong. Ten renders shipped that way.
 
-That is not a flaw in the check. There is no un-offset reference inside the pipeline to compare against. But leaving it uncovered cost nine consecutive renders that all passed this gate and were all visibly out of sync, because a constant measured on one recording was reused on a different one without re-measuring.
+The first attempt to cover this was an automatic mouth-motion measurement of the source. It is retired from decision-making, and the story is instructive. Its audio envelope was binned with an integer-truncated hop, which skewed the audio timebase to 30.075Hz against the video's 30Hz. That looks exactly like the audio drifting late by 150ms per minute. Every measurement it produced pointed the same direction, each "correction" based on it created real desync where none existed, and a self-validation test passed because a known shift moves a biased peak by the same amount either way. An estimator validating itself proves consistency, not truth.
 
-So the source offset is now measured on every render, before any correction is applied. Mouth-region motion is cross-correlated against the audio envelope, and the result is only trusted when three disjoint slices of the window agree within 100ms. Bearded faces and soft consonants produce weak correlation peaks, and that agreement test is what separates a real peak from noise.
+What covers the blind spot now is gate 5 below: measuring the finished master against the raw recording, which is the one reference that cannot inherit a mistake.
 
-When the measurement is reliable it overrides the configured value and logs the substitution. When it is not, the pipeline says so plainly and falls back to your configured number:
-
-```
-av-offset measured: +333ms (corr 0.150, slices [333, 400, 133], UNRELIABLE, spread too wide)
-av-offset: measurement unreliable, falling back to configured -200ms.
-```
-
-Either way it lands in `QA_REPORT.json` under `source_av_offset`, with the correlation and the slice spread, so a render can never again be silently wrong about this. For footage the estimator cannot read, [`calibrate.py`](../autoeditor/calibrate.py) still gives you a ladder to judge by eye, which remains the ground truth.
-
-## Gate 2, word integrity
+## Gate 5, sync to source
 
 Blocks delivery.
 
-Transcribes the delivered master, not any intermediate file, and sequence-aligns it against the transcript taken right after cutting. Reports what fraction of words survived.
+At probe points chosen outside every overlay window, take 1.2 seconds of the master's audio and find where it sits in the raw recording by cross-correlation. That match is sample-accurate and survives loudness normalization at 0.99+ correlation. Then find which raw-timeline frame the master is showing at that same moment, by comparing a mid-frame band against the raw frames around the audio position. Video time minus audio time is the true end-to-end desync, measured with no model, no mouth heuristics, and no opinion.
 
-This one is about mechanical damage after the cut stage: a bad filter graph, a truncated encode, an overlay that clobbered audio. It compares the pipeline against itself, so it does not care what the speaker said or whether they followed a script.
+The median across probes must sit within 60ms of the intended correction and the spread within 100ms, since two frame-grid quantizations alone account for about 66ms of spread.
 
-It passes when `found_in_master / expected` clears `word_integrity_min`, which defaults to 0.97.
+Validated against the render a viewer had rejected by eye: the gate blocked it and reported the desync at -233ms, which matched the bogus -200ms "correction" that had been applied, plus one frame of CFR bias. The measurement found not just that the render was wrong but exactly what had made it wrong.
 
-On tuning: two transcriptions of identical audio disagree by 1 to 3 percent, since speech models are not deterministic across runs. So 0.97 sits just above the noise floor. Real damage is not subtle. The incident that motivated this gate scored 0.75. Dropping to 0.92 is reasonable if you see it flapping, but below 0.90 it stops meaning anything.
-
-## Gate 3, script integrity
-
-Blocks delivery. Needs `--script` and a configured model.
-
-### Why it is hard
-
-A speaker reading from a teleprompter does not read it verbatim. They paraphrase, they elaborate, they skip. All of that is correct behaviour and none of it is damage. Meanwhile a cut that removes two words from a sentence is damage.
-
-A similarity threshold cannot separate those cases. Both look like "the delivery differs from the script."
-
-### How it works
-
-Word-align the delivered speech to the script with `difflib.SequenceMatcher`. Score every script sentence by how much of it matched. Above 80 percent it counts as delivered and needs no review. Below 15 percent it was skipped on purpose and is allowed. Everything in between is ambiguous and goes to a model, with both texts in front of it, for a single verdict of FINE or DAMAGED plus a reason.
-
-The prompt says outright that paraphrase, elaboration and skipping are all acceptable, and gives worked examples of each. The only failure is speech the editor destroyed.
-
-### The splice ledger
-
-A model judging a transcript can be wrong in a way the audio is not. That happened here: the gate flagged "it sounds like having all the answers" delivered as "it sounds like head is all the answer," and blocked the render. The audio was fine. The speech model had misheard, with confidence of 0.34 on "head" and 0.48 on "answer."
-
-So the pipeline keeps a ledger of every splice position, remapped through each subsequent cut into the final timeline. A sentence can only be ruled damaged when a cut actually landed inside it. If no splice falls in that span, the edit did not touch those words, whatever the transcript claims, and it gets logged as a transcription artifact for review instead of blocking.
-
-The catch that motivated this gate had a splice running straight through it, so it still blocks.
-
-### Without a model
-
-A mechanical heuristic takes over: a sentence is damaged when an interior run of three or more script words is missing while both flanks matched. That is the signature of a cut through the middle of a sentence, and it is the only pattern detectable without semantics. It is meaningfully weaker, since it cannot recognize a paraphrase, so it errs toward flagging.
-
-### How it was validated
-
-Run against the known-bad master it flagged 14 damaged sentences and correctly passed the 2 the speaker had skipped deliberately. Against the repaired render: 0 damaged, 27 delivered, 1 skipped.
+One structural fix rides along with this gate. Video trims quantize to the frame grid while audio trims cut at sample precision, so every cut boundary used to contribute up to 33ms of mismatch, and thirty boundaries random-walk that past 100ms. Cut boundaries are now snapped to the frame grid before cutting, which makes each segment's audio and video durations exactly equal.
 
 ## Gate 4, retake residue
 
