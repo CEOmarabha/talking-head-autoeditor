@@ -91,8 +91,6 @@ These cases can block a good video, but they do not certify a bad one:
 - VFR RAW files are searched by presentation time and their audio/video stream start-time delta is preserved. Irregular cadence can still make the 30fps neighborhood ambiguous, in which case the frame margin rejects the probe.
 - A staircase can hide between sampled probes if it begins and ends inside one unsampled interval. The per-probe worst-case rule prevents the median from hiding a sampled staircase, but the 75-second coverage ceiling is still sampling, not a continuous proof.
 
-These are deliberate false-block conditions. A face-tracked mouth ROI and a music-robust speech matcher would reduce them, but neither is claimed by the current implementation.
-
 ## Foundational release checks
 
 These populate `QA_REPORT.json`. A failed check leaves the artifact under an `*.UNVERIFIED.mp4` quarantine name and blocks upload. Completed renders enter quarantine before QA begins, so an exception inside a gate cannot strand an ungated file under a final-looking name. Only a full PASS promotes the file to its delivery name.
