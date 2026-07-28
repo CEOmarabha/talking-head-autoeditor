@@ -9,14 +9,16 @@ the finished artifact proves the claim.
 
 ## Watch the code walkthrough
 
-[![Watch the v2 walkthrough on Mainframe](https://img.shields.io/badge/watch_the_v2_walkthrough-Mainframe-111111?style=for-the-badge)](https://mainframe.app/v/0e49f2ee64c35514238070afcbe68f5e)
+[![Watch the narrated v2 walkthrough](https://github.com/CEOmarabha/talking-head-autoeditor/releases/download/v2.0.0/mainframe-v2-walkthrough.jpg)](https://github.com/CEOmarabha/talking-head-autoeditor/releases/download/v2.0.0/mainframe-v2-walkthrough.mp4)
 
-Mainframe generated this narrated walkthrough from the v2 pull request. It
-finished a few minutes after the release was published, which is why it was
-missing from the first version of this page. The
+[Watch or download the 1:06 MP4](https://github.com/CEOmarabha/talking-head-autoeditor/releases/download/v2.0.0/mainframe-v2-walkthrough.mp4).
+It is hosted on this release and does not require a Mainframe account.
+
+Mainframe narrated this walkthrough from the v2 pull request. It finished a
+few minutes after the release was published, which is why it was missing from
+the first version of this page. The
 [successful GitHub check](https://github.com/CEOmarabha/talking-head-autoeditor/runs/90422810538)
-is the build receipt. Playback is hosted by Mainframe and currently uses
-Mainframe sign-in.
+is the build receipt.
 
 ![Existing before and after demo](https://raw.githubusercontent.com/CEOmarabha/talking-head-autoeditor/v2.0.0/docs/media/demo.gif)
 
