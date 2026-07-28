@@ -25,7 +25,11 @@ QA: PASS
 
 ## See it run
 
-A real before and after clip is attached to the [v1.0.0 release](https://github.com/CEOmarabha/talking-head-autoeditor/releases/tag/v1.0.0). Left side is a raw 50 second camera file with a flubbed line in it. Right side is what the editor returned: 41 seconds, the flubbed take removed, bars cropped, punch-ins and captions applied. The log from that same run is in [docs/DEMO.md](docs/DEMO.md).
+![Before and after](docs/media/demo.gif)
+
+Left is the raw camera file, letterboxed, 50 seconds, containing a line the speaker flubbed and immediately said again. Right is what came back: 41 seconds, the flubbed take gone, black bars cropped, punch-ins and word-synced captions applied, loudness normalized.
+
+That is a real run of this repo, not a mockup. The [v1.0.0 release](https://github.com/CEOmarabha/talking-head-autoeditor/releases/tag/v1.0.0) has the full clip with audio, and the terminal log from the same run is in [docs/DEMO.md](docs/DEMO.md).
 
 
 ## Why it works this way

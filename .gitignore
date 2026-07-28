@@ -22,7 +22,9 @@ package-lock.json
 broll_cache/
 sync_calibration/
 out/
-!docs/**/*.gif
+!docs/media/
+!docs/media/*.gif
+!docs/media/*.png
 
 # os
 .DS_Store
