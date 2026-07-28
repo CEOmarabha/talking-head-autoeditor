@@ -179,6 +179,48 @@ class SafetyContracts(unittest.TestCase):
             )
         self.assertEqual(result, {"_transport_error": "incomplete_read"})
 
+    def test_trickled_http_body_cannot_bypass_wall_clock_timeout(self):
+        import http.server
+        import threading
+        import time
+
+        body = b'{"ok":true}'
+
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    for byte in body:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(0.04)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, _format, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), TrickleHandler
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        started = time.monotonic()
+        try:
+            result = providers._post(
+                f"http://127.0.0.1:{server.server_port}/",
+                {"x": 1}, {}, 0.12,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result, {"_transport_error": "timeout"})
+        self.assertLess(elapsed, 1.0)
+
     def test_permanent_http_4xx_is_not_retried(self):
         receipt = {}
         with mock.patch.dict(os.environ, {

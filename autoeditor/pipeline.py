@@ -908,7 +908,7 @@ RESTART_MARKERS = (
 
 def _absorb_restart(words: list, norm: list, i: int,
                     look_back: float = 8.0, script_norm: str = "") -> int:
-    """Return the index the retake cut should START from — walking back over a
+    """Return the index the retake cut should START from, walking back over a
     spoken self-correction ('alright, let's make that clear') and any short
     aborted fragment right before it. Those belong to the bad take."""
     t0 = words[i]["s"]
@@ -1031,7 +1031,7 @@ def detect_retakes(words: list, max_gap: float = 14.0,
                          "e": _cut_edge(words, j), "why": why})
             skip_to = j
     for c in cuts:
-        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']} — "
+        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}, "
             "keeping the later take")
     return cuts
 
@@ -1077,7 +1077,7 @@ def detect_false_starts(words: list, script_path: Path | None = None,
             continue
         phrase = " ".join(norm(x["w"]) for x in a).strip()
         if script_prose and phrase and phrase in script_prose:
-            continue        # Omar wrote it that way — intentional
+            continue        # Omar wrote it that way, intentional
         cuts.append({"s": _cut_edge(words, words.index(a[0])),
                      "e": _cut_edge(words, words.index(b[0])),
                      "why": f"false start ({pre}-word prefix repeat)"})
@@ -1133,7 +1133,7 @@ def detect_lead_noise(words: list, max_p: float = 0.70,
     """Throat-clear / cough on the opening frame (2026-07-25, Omar: 'how about
     cutting out the cough at the very beginning').
 
-    The cough detector only fires on loud spans containing NO words — but
+    The cough detector only fires on loud spans containing NO words, but
     whisper transcribes a cough as a low-confidence word ('Your', p=0.54),
     so it slipped through and became the first frame of the video. Signature:
     the FIRST word is low-confidence AND separated from the next word by a
@@ -1258,7 +1258,7 @@ def detect_anomaly_cuts(src: Path, words: list,
 def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     """Director-mode retake removal: delete [s,e) ranges (flubbed takes,
     trailing 'um's) with frame-accurate AV re-encode + concat. Caller must
-    re-transcribe afterwards — all downstream times are post-cut."""
+    re-transcribe afterwards, all downstream times are post-cut."""
     if not cuts:
         return src
     total = _dur(src)
@@ -1509,7 +1509,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
     """HARD GATE 3 (Omar 2026-07-24): compare the DELIVERED speech to the
     teleprompter script SEMANTICALLY.
 
-    Omar's law: "I paraphrase, I add elaboration, I skip sentences — that is
+    Omar's law: "I paraphrase, I add elaboration, I skip sentences. That is
     NOT a loss of integrity. The idea was still said, in my own wording."
     So only real DAMAGE fails: a sentence the edit chopped mid-thought
     (the 2026-07-24 incident: 'assigning status for around five hundred
@@ -1588,7 +1588,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
               "damaged": [], "ok": True}
     if not suspects:
         log(f"script integrity: {delivered} delivered, {skipped} skipped "
-            f"by choice, 0 suspect — PASS")
+            f"by choice, 0 suspect, PASS")
         return result
 
     # DeepSeek judges paraphrase versus cut damage. Mechanical evidence wins
@@ -1721,7 +1721,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
     log(f"script integrity: {delivered} delivered, {skipped} skipped by "
         f"choice, {len(suspects)} reviewed -> {len(result['damaged'])} DAMAGED"
         + (f", {mis} transcription artifact(s)" if mis else "")
-        + f" — {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
+        + f", {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
     for d in result["damaged"]:
         log(f"  ✗ script: {d['script'][:80]!r}")
         log(f"    heard : {d['heard'][:80]!r}  ({d.get('why','')[:60]})")

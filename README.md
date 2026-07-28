@@ -1,5 +1,10 @@
 # Verified talking-head auto-editor
 
+[![release](https://img.shields.io/github/v/release/CEOmarabha/talking-head-autoeditor)](https://github.com/CEOmarabha/talking-head-autoeditor/releases/latest)
+[![safety tests](https://github.com/CEOmarabha/talking-head-autoeditor/actions/workflows/ci.yml/badge.svg)](https://github.com/CEOmarabha/talking-head-autoeditor/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![license](https://img.shields.io/github/license/CEOmarabha/talking-head-autoeditor)](LICENSE)
+
 Point it at a raw camera file. It removes silence, deletes the takes you flubbed and re-read, cuts your coughs, adds punch-ins, pulls topical b-roll, animates diagrams for the frameworks you teach, burns word-synced captions, normalizes loudness, and hands you a finished file.
 
 Then it re-watches its own work and refuses to deliver the video if it broke anything. That second part is the reason this project exists.
@@ -22,6 +27,22 @@ phase 7    QA gate
            script integrity: 27 delivered, 1 skipped by choice, 0 DAMAGED
 QA: PASS
 ```
+
+## Current release
+
+[Version 2.0.0](https://github.com/CEOmarabha/talking-head-autoeditor/releases/tag/v2.0.0)
+changes the trust boundary after ten renders shipped with lip-sync drift. The
+source files were synchronized. A biased automatic estimator applied a bad
+correction, then the old gate compared two files that shared the same mistake
+and reported 0.0ms.
+
+The correction estimator is retired from production decisions. Source sync is
+measured from the finished master back to the RAW recording, nonzero offsets
+need a source-bound human certification, cut math uses integer frames and
+samples, and every DeepSeek plan must pass a deterministic score of 100.
+
+Read [the complete incident and v2 design](docs/RELEASE_V2.md), or jump to the
+[worked regression inputs](docs/examples/V2_REGRESSION_PROOFS.md).
 
 ## See it run
 

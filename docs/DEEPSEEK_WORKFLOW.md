@@ -54,8 +54,9 @@ data in both the system message and the user message.
 The provider rejects retired aliases, non-stop finish reasons, empty content,
 partial top-level objects, malformed JSON, transport failures, and validator
 failures. It retries transient failures, does not retry permanent 4xx
-configuration failures, handles truncated HTTP bodies, and writes a safe
-receipt without the API key or response body.
+configuration failures, handles truncated HTTP bodies, applies a true
+wall-clock deadline while reading chunked responses, and writes a safe receipt
+without the API key or response body.
 
 ## Creative EDL Schema
 
@@ -186,9 +187,19 @@ the V4 Pro fail-closed workflow.
 
 ## Verification Before Claiming Parity
 
-Run the unit and fault tests, then a credentialed DeepSeek smoke plan. For a
-release candidate, run the same transcript fixture three times. Each run must
-produce complete JSON, score 100, resolve every planned asset, and pass the
-finished-master gates. Human review still decides whether the editorial taste
-meets the current reference video. That human decision cannot be replaced by a
-schema score.
+Run the unit and fault tests, then run the credentialed DeepSeek plan fixture
+three times. Each plan run must produce complete JSON and score 100. A
+designated RAW and script reference must then complete one full production run
+with every planned asset resolved and every finished-master gate passed. Human
+review still decides whether the editorial taste meets the current reference
+video. That human decision cannot be replaced by a schema score.
+
+The tracked transport fixture is
+[`scripts/smoke_deepseek_v4.py`](../scripts/smoke_deepseek_v4.py). It uses V4
+Pro with maximum reasoning against a framework transcript and reports the
+director result, critic rounds, score, event counts, and validated-plan hash.
+Run it three times before claiming creative parity. The smoke worker has a
+separate wall-clock deadline, so a chunked provider response cannot hold the
+test open forever. A completed result proves the contract is satisfiable by
+the real provider and leaves a repeatable receipt instead of a private
+terminal-only test.

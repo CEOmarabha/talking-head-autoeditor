@@ -76,9 +76,24 @@ def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict | None:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", **headers})
+    deadline = time.monotonic() + max(float(timeout), 0.001)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
+            body = bytearray()
+            read_chunk = getattr(r, "read1", r.read)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                try:
+                    r.fp.raw._sock.settimeout(remaining)
+                except (AttributeError, OSError):
+                    pass
+                chunk = read_chunk(65536)
+                if not chunk:
+                    break
+                body.extend(chunk)
+            return json.loads(body.decode())
     except urllib.error.HTTPError as exc:
         return {"_transport_error": f"http_{exc.code}"}
     except urllib.error.URLError:
