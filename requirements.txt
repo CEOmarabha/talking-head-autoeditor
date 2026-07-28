@@ -1,0 +1,5 @@
+# Deliberately small. Everything else is ffmpeg.
+faster-whisper>=1.0.0     # word-level transcription (CTranslate2, CPU-friendly)
+auto-editor>=24.0.0       # loudness-based cutting (fallback path only)
+pillow>=10.0.0            # caption / card rendering (no libass required)
+numpy>=1.24.0             # sync verification cross-correlation

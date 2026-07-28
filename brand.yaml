@@ -1,0 +1,33 @@
+# Your look and your editorial rules. The engine reads this — never edit the
+# Python to change a colour, a font, or how aggressively it cuts.
+
+brand:
+  accent: "#E8C7A7"        # highlighted caption word, card titles, diagram lines
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans" # matched against font files you have installed;
+                           # falls back to a system font and flags it in QA
+  caption_scale: 0.045     # caption height as a fraction of frame height
+  caption_words: 4         # words per caption chunk (3 reads better vertically)
+
+rules:
+  # ---- cutting -----------------------------------------------------------
+  min_pause_long: 0.90     # a silence this long (seconds) is removable
+  min_pause_short: 0.55    # ...for vertical/short-form pacing
+  pad_head: 0.30           # air kept BEFORE each word
+  pad_tail: 0.35           # air kept AFTER each word
+                           # these two are why cuts can never land inside a word
+  retake_min_words: 3      # repeated run length that counts as a retake
+  retake_max_gap: 14.0     # max seconds between the flub and the re-read
+
+  # ---- verification gates (see docs/VERIFICATION.md) ----------------------
+  sync_tolerance_ms: 25    # audio/video drift allowed at every probe
+  word_integrity_min: 0.97 # fraction of spoken words that must survive
+  require_script_gate: true
+
+  # ---- source repair -----------------------------------------------------
+  av_offset_ms: 0          # + delays audio. Measure YOUR rig once:
+                           #   make calibrate VIDEO=take.mov
+                           # USB mics recorded through some phone apps run
+                           # ~100ms out of sync before any editing happens.
+  target_lufs: -14.0       # YouTube/Spotify-safe loudness
