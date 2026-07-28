@@ -178,7 +178,16 @@ def verify_sync(master: Path, ref_cut: Path, edl: dict, duration: float) -> dict
         log(f"sync probe @{r['t']}s: mae={r.get('mae')} "
             f"offset={r.get('offset_ms')}ms "
             f"{'OK' if r.get('ok') else 'FAIL'}")
-    return {"ok": ok and len(results) >= 3, "probes": results}
+    # Short clips with dense overlays can leave fewer than 3 windows where the
+    # face is on screen. Requiring 3 there fails good videos, so the floor
+    # scales with how much clear footage actually exists. Zero clear probes is
+    # still a failure: unverified is not the same as verified.
+    need = 3 if duration >= 60 else (2 if duration >= 25 else 1)
+    enough = len(results) >= need
+    if results and not enough:
+        log(f"sync: only {len(results)} clear probe(s) available, need {need}")
+    return {"ok": ok and enough, "probes": results,
+            "probes_used": len(results), "probes_required": need}
 
 
 # ---------------------------------------------------------------- phase 2
