@@ -1381,7 +1381,17 @@ def script_integrity(final_words: list[dict], script_path: Path,
             skipped += 1          # skipped by choice, no large cut nearby
         else:
             lo, hi = span.get(si, (0, -1))
-            heard = " ".join(w["w"] for w in final_words[max(0, lo - 2):hi + 3])
+            # Give the judge the COMPLETE delivered thought. A window that
+            # stops 3 words past the match clipped a paraphrase mid-phrase
+            # and the judge rightly called the clipped string truncated.
+            # Extend right to the end of the sentence (or 15 words).
+            h_end = hi + 3
+            for x in range(hi, min(len(final_words), hi + 15)):
+                h_end = x + 1
+                if final_words[x]["w"].strip().endswith((".", "!", "?")):
+                    break
+            heard = " ".join(w["w"] for w in
+                             final_words[max(0, lo - 4):h_end])
             t0 = final_words[max(0, lo)]["s"] if lo <= hi else 0.0
             t1 = final_words[min(len(final_words) - 1, hi)]["e"] if lo <= hi else 0.0
             suspects.append({"script": s, "heard": heard,
