@@ -588,8 +588,11 @@ def detect_anomaly_cuts(src: Path, words: list,
     if sounding:
         spans.append((cur, total))
     for a, b in spans:
-        if 0.3 <= b - a <= 3.0 and not any(
-                w["s"] < b + 0.1 and w["e"] > a - 0.1 for w in words):
+        # A cough is short. Allowing up to 3s let this remove real speech that
+        # the transcript happened to miss ("gets left on read" -> "gets led").
+        # Wider word margin for the same reason: near-misses are not noise.
+        if 0.3 <= b - a <= 1.2 and not any(
+                w["s"] < b + 0.35 and w["e"] > a - 0.35 for w in words):
             cuts.append({"s": round(a, 2), "e": round(b, 2), "why": "cough/noise"})
     for c in cuts:
         log(f"anomaly cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}")
