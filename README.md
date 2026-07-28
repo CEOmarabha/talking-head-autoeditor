@@ -46,9 +46,9 @@ A third bug left a 21-second dead tail after the speech ended, because a stale d
 
 The pattern connecting all three: every signal the editor trusts is a proxy, and proxies lie. Loudness stands in for speech. Model confidence stands in for clarity. Duration stands in for content. So the architecture stopped relying on proxies alone and started checking the finished artifact against what should be in it.
 
-## The three gates
+## The four gates
 
-After rendering, the pipeline re-analyses its own output file. Two of these gates can stop delivery outright.
+After rendering, the pipeline re-analyses its own output file. Three of these gates can stop delivery outright.
 
 ### Lip-sync verification
 
@@ -89,6 +89,12 @@ script integrity: 26 delivered, 1 skipped by choice, 8 reviewed -> 1 DAMAGED
   why   : lost Superiority and Autonomy, only one of three named
 delivery: RuntimeError: script damage, video delivery blocked
 ```
+
+### Retake residue
+
+The cutting stage removes flubbed takes. This gate proves it worked, by running the same repeat detection over the finished master. A duplicate phrase found here means a flub shipped.
+
+It exists because retake removal was the last job still trusted to run correctly, and it did not. A self-correction and the bad take after it were removed while the aborted fragment in front of them stayed in the video, and nothing caught it, because no check was looking at the delivered file for repeats. Run against that render, this gate blocks and names all four survivors.
 
 Full detail in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 

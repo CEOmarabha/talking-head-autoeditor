@@ -100,6 +100,23 @@ A mechanical heuristic takes over: a sentence is damaged when an interior run of
 
 Run against the known-bad master it flagged 14 damaged sentences and correctly passed the 2 the speaker had skipped deliberately. Against the repaired render: 0 damaged, 27 delivered, 1 skipped.
 
+## Gate 4, retake residue
+
+Blocks delivery.
+
+Re-transcribes the delivered master and runs the same repeated-phrase detection the cutter uses. Anything it finds is a flubbed take that survived into the finished video.
+
+Every other guarantee in this pipeline checks the artifact rather than the plan. Retake removal was the one job still trusted to simply run correctly, and it failed in a way that was invisible from the inside: the detector removed a spoken self-correction and the bad take following it, but its walk-back to catch the aborted fragment in front stopped at the fragment's own sentence boundary. The stumble stayed in the video while everything around it was cleaned up, and no check was looking at the output for repeats, so it shipped.
+
+Repeats that appear twice in the script are ignored, the same shield the cutter uses, since a phrase written twice is deliberate.
+
+Run against the render that shipped wrong, it blocks and names each survivor:
+
+```
+retake residue: 4 flubbed take(s) SURVIVED - DELIVERY BLOCKED
+  x [139.6-155.2] "A man with in or woman. Alright, let's make that clear..."
+```
+
 ## The non-blocking checks
 
 These populate `QA_REPORT.json` and mark a run for review without stopping delivery.

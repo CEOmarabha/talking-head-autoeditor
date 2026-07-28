@@ -204,6 +204,40 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
     return out
 
 
+def verify_no_retakes(final_words: list, script_path: Path | None = None,
+                      workdir: Path | None = None) -> dict:
+    """HARD GATE 4: prove no flubbed take survived into the delivered file.
+
+    Every other guarantee here checks the artifact rather than the plan, and
+    retake removal was the one job still being trusted to run correctly. It
+    did not: a self-correction and its bad take were removed while the aborted
+    fragment in front of them stayed in the video, and nothing noticed because
+    no check was looking at the finished master for repeats.
+
+    So: re-transcribe the master and run the same repeat detection over it. A
+    duplicate found HERE means a flub shipped. Repeats that also appear twice
+    in the script are deliberate writing and are ignored, same shield the
+    cutter uses."""
+    survivors = detect_retakes(final_words, script_path=script_path)
+    out = {"survivors": [], "ok": True}
+    for c in survivors:
+        said = " ".join(w["w"] for w in final_words
+                        if c["s"] <= w["s"] < c["e"])[:120]
+        out["survivors"].append({"s": c["s"], "e": c["e"],
+                                 "why": c.get("why", ""), "text": said})
+    out["ok"] = not out["survivors"]
+    if out["ok"]:
+        log("retake residue: none, no flubbed take survived")
+    else:
+        log(f"retake residue: {len(out['survivors'])} flubbed take(s) SURVIVED "
+            "- DELIVERY BLOCKED")
+        for x in out["survivors"]:
+            log(f"  x [{x['s']:.1f}-{x['e']:.1f}] {x['text'][:80]!r}")
+    if workdir:
+        (workdir / "retake_residue.json").write_text(json.dumps(out, indent=2))
+    return out
+
+
 def verify_sync(master: Path, ref_cut: Path, edl: dict, duration: float) -> dict:
     """Mechanical lip-sync verifier . At probe points chosen OUTSIDE every overlay/punch
     window, the final master must match the pre-overlay cut in BOTH streams:
@@ -367,8 +401,8 @@ RESTART_MARKERS = (
 
 
 def _absorb_restart(words: list, norm: list, i: int,
-                    look_back: float = 8.0) -> int:
-    """Return the index the retake cut should START from, walking back over a
+                    look_back: float = 8.0, script_norm: str = "") -> int:
+    """Return the index the retake cut should START from — walking back over a
     spoken self-correction ('alright, let's make that clear') and any short
     aborted fragment right before it. Those belong to the bad take."""
     t0 = words[i]["s"]
@@ -386,16 +420,33 @@ def _absorb_restart(words: list, norm: list, i: int,
             break
     if hit is None:
         return i
+    # Swallow every SHORT aborted sentence stacked before the aside, not just
+    # one. A fragment like "A man with in... or woman." ends in a period, so a
+    # single hop back to the previous sentence boundary lands on its own edge
+    # and leaves the fragment in the video. Keep stepping back while the
+    # sentences stay short and close together.
     start = hit
-    # also swallow a short aborted fragment immediately before the aside
-    prev_end = None
-    for x in range(hit - 1, lo - 1, -1):
-        if words[x]["w"].strip().endswith((".", "!", "?")):
-            prev_end = x
+    ends = lambda i: words[i]["w"].strip().endswith((".", "!", "?"))
+    while start - 1 > lo:
+        # the sentence immediately preceding `start` ENDS at start-1; find
+        # where it begins by looking for the punctuation before that.
+        end_idx = start - 1
+        prev_end = None
+        for x in range(end_idx - 1, lo - 1, -1):
+            if ends(x):
+                prev_end = x
+                break
+        frag_start = (prev_end + 1) if prev_end is not None else lo
+        if frag_start >= start:
             break
-    frag_start = (prev_end + 1) if prev_end is not None else lo
-    if (hit - frag_start) <= 9 and hit > frag_start and (
-            words[hit]["s"] - words[hit - 1]["e"]) <= 2.0:
+        if (start - frag_start) > 9:          # a real sentence, not a fragment
+            break
+        if (words[start]["s"] - words[start - 1]["e"]) > 2.5:
+            break                              # too far away to belong to it
+        if script_norm:
+            phrase = " " + " ".join(norm[frag_start:start]).strip() + " "
+            if len(phrase) > 12 and phrase in script_norm:
+                break        # this is a line he actually wrote, not a flub
         start = frag_start
     return start
 
@@ -461,7 +512,8 @@ def detect_retakes(words: list, max_gap: float = 14.0,
             # absorb the wind-up: a self-correction aside Omar says out loud
             # ("alright, let's make that clear") and any short aborted
             # fragment right before it belong to the bad take, not the good one.
-            back = _absorb_restart(words, norm, i)
+            back = _absorb_restart(words, norm, i,
+                                   script_norm=script_norm)
             if back < i:
                 start_i, why = back, why + " + self-correction aside"
             cuts.append({"s": _cut_edge(words, start_i),
