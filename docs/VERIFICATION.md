@@ -57,9 +57,11 @@ An external review of the first version found two holes, both fixed:
 
 The applied offset was also the oracle. The gate compared its measurement against the correction the pipeline had just applied, so a wrong `--av-offset -200` would measure -200, match -200, and pass. Now the oracle is independent: the only trusted nonzero correction is one a human calibration stored in `<recording>.avoffset`. The sidecar contains the selected offset and the exact RAW SHA-256, so replacing a file under the same name invalidates the calibration. An applied value that does not match the certified value is rejected before rendering, and gate 5 checks the value again as defense in depth.
 
-The frame reference was the CFR intermediate, which inherits the same defects as the master. Frames are now matched against the raw file itself, replaying only the spatial deletterbox chain.
+The frame reference was the CFR intermediate, which inherits the same defects as the master. Frames are now matched against the raw file itself, replaying only the spatial deletterbox chain. The verifier derives that transform from the raw file on every invocation. It does not trust mutable state left by the render process, so Gate 5 produces the same spatial reference when rerun in a fresh process.
 
 The review also hardened the acceptance rules: every probe must individually sit within 67ms, since a median hides staircase drift; usable probes must cover both ends of the delivered speech and may not be more than 75 seconds apart, including edge coverage; audio matches need a uniqueness margin over the second-best peak so a repeated sentence cannot match the wrong take; frame matches need a margin over the runner-up so a static shot cannot match ambiguously; probes require transcript words inside the needle, not just waveform energy; and the master-to-raw time mapping must strictly increase, because cuts only remove material. A backward high-confidence match now blocks the run instead of being silently discarded. The frame score weights pixels that move across the three-frame sample, so facial motion is not drowned out by a static background. Container audio/video start-time differences are included when mapping decoded samples back to RAW presentation time.
+
+Probe coverage uses fixed 20-second anchors. For each anchor, the gate tries the nearest eligible half-second position inside a bounded 10-second neighborhood and accepts the first unambiguous result. This matters at the endpoints: the first implementation called one timestamp "forced," but an overlay or pause at that exact timestamp erased the probe. The bounded search actually attempts nearby clear speech without opening an unlimited cherry-picking search.
 
 Validated against a render a viewer had rejected by eye: blocked at median -233ms, which named the bogus -200ms correction plus one frame of CFR bias.
 
@@ -67,6 +69,12 @@ The hardened gate also passed an aligned synthetic master at six distributed
 probes with median 0ms, worst 0ms, and maximum gap 8 seconds. The same source
 with audio delayed by 200ms failed at every usable probe with median and worst
 both 200ms.
+
+The first fully measured production master exposed two more verifier defects.
+Duplicate endpoint candidates were treated as a backward mapping, and a fresh
+verification process had no in-memory deletterbox transform. After fixing both,
+the unchanged hash-locked master passed 12 RAW probes from 6.0 to 199.0 seconds:
+median 0ms, worst 0ms, spread 0ms, and maximum coverage gap 24.5 seconds.
 
 ### The cut-boundary fix that rides along
 
@@ -90,6 +98,12 @@ These cases can block a good video, but they do not certify a bad one:
 - Silence cannot become evidence. The concrete trigger is fewer than two transcript word midpoints inside a 1.2-second needle. The candidate is skipped.
 - VFR RAW files are searched by presentation time and their audio/video stream start-time delta is preserved. Irregular cadence can still make the 30fps neighborhood ambiguous, in which case the frame margin rejects the probe.
 - A staircase can hide between sampled probes if it begins and ends inside one unsampled interval. The per-probe worst-case rule prevents the median from hiding a sampled staircase, but the 75-second coverage ceiling is still sampling, not a continuous proof.
+
+## Independent ASR adjudication
+
+Script integrity begins with the finished master transcript. If a splice-implicated sentence would block delivery, the pipeline extracts only that contested window from the finished master and transcribes it again with the larger medium model, without a script prompt and without previous-text conditioning. The blocker clears only when this second pass recovers every meaningful script term missing from the primary transcript and covers at least 80 percent of the sentence. A model error, disagreement, or confirmed loss remains blocked.
+
+This is a narrow false-positive guard, not permission for a cut detector to certify itself. Cut labels such as `pause`, `retake`, or `false start` do not exempt a sentence from review. The concrete production case was primary ASR hearing “priority, autonomy, and certainty” while targeted medium ASR heard “superiority, autonomy, and certainty, SAC” from the unchanged finished artifact. A regression also confirms that two ASR passes agreeing on “around Philly” cannot clear the missing “five hundred million years.”
 
 ## Foundational release checks
 

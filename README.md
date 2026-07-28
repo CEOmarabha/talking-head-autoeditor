@@ -54,7 +54,7 @@ After rendering, the pipeline re-analyses its own output file. Every release gat
 
 Five probe points spread across the finished master, each shifted so it lands outside every punch-in, b-roll and graphic window recorded in the EDL, since the speaker's face is not on screen during those. At each point it compares the master against the pre-overlay cut in both streams: image match on the frame band below the captions, and normalized cross-correlation on the audio.
 
-Fails if any local render-equivalence probe drifts more than 25ms. The independent source gate also requires four usable probes, endpoint and gap coverage, a unique audio match, an unambiguous motion-weighted frame match, a strictly increasing RAW mapping, and a per-probe error no greater than 67ms.
+Fails if any local render-equivalence probe drifts more than 25ms. The independent source gate also requires four usable probes, endpoint and gap coverage, a unique audio match, an unambiguous motion-weighted frame match, a strictly increasing RAW mapping, and a per-probe error no greater than 67ms. It derives raw spatial normalization inside the gate and searches a bounded neighborhood around fixed timeline anchors, so a fresh verifier process and an overlay on one exact endpoint cannot silently change coverage.
 
 This check has one blind spot: it compares the master against the cut, and both inherit whatever the correction stage did, so it passes happily on a wrong correction. A separate gate covers it by measuring the finished master directly against the raw recording, matching audio by cross-correlation and video by frame comparison. That gate blocked a render at -233ms and named the exact bad correction that caused it. Details in the verification doc.
 
@@ -79,6 +79,12 @@ DAMAGED   script: "it has been assigning status for around five hundred million 
 ```
 
 The gate also cross-references its own splice ledger. A sentence can only be ruled damaged if a cut actually landed inside it. Without that check it would block videos over words the speech model merely misheard, which happened before the ledger existed.
+
+When a splice-implicated sentence would block, the gate transcribes only that
+window from the finished master again with the medium speech model. It clears
+the blocker only if the second pass recovers all meaningful script terms
+missing from the first pass and covers at least 80 percent of the sentence.
+Cut labels never exempt a sentence, and disagreement still blocks.
 
 Real output from a blocked render:
 

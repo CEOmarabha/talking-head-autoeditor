@@ -90,6 +90,71 @@ class SafetyContracts(unittest.TestCase):
         ]
         self.assertEqual(pipeline._nonmonotonic_matches(matches), [])
 
+    def test_start_probe_searches_past_an_overlay_but_stays_bounded(self):
+        words = [6.2, 6.6, 8.0, 8.4, 20.1, 20.5, 28.0, 28.4]
+        groups = pipeline._probe_candidate_groups(
+            words, [(-1.0, 6.0)], 30.0, 0.2, 29.0
+        )
+        self.assertTrue(groups[0])
+        self.assertLessEqual(groups[0][0], 10.2)
+        blocked = pipeline._probe_candidate_groups(
+            words, [(-1.0, 12.0)], 30.0, 0.2, 29.0
+        )
+        self.assertEqual(blocked[0], [])
+
+    def test_source_gate_reconstructs_spatial_normalization(self):
+        module_text = Path(pipeline.__file__).read_text()
+        function = next(
+            node for node in ast.parse(module_text).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "verify_sync_source"
+        )
+        source = ast.get_source_segment(module_text, function)
+        self.assertIn("_deletterbox_spec(raw_src)", source)
+        names = {
+            node.id for node in ast.walk(function)
+            if isinstance(node, ast.Name)
+        }
+        self.assertNotIn("DELETTERBOX_VF", names)
+
+    def test_independent_asr_can_clear_a_primary_homophone(self):
+        script = (
+            "There are three signals your Lizard Brain broadcasts and reads "
+            "in every single human interaction: Superiority, Autonomy, and "
+            "Certainty."
+        )
+        primary = (
+            "Here's three signals your lizard brain broadcasts and reads in "
+            "every single human interaction. The priority, autonomy, and "
+            "certainty."
+        )
+        secondary = (
+            "There's three signals your lizard brain broadcasts and reads in "
+            "every single human interaction superiority autonomy and certainty."
+        )
+        result = pipeline._independent_asr_recovery(
+            script, primary, secondary
+        )
+        self.assertTrue(result["clears"])
+        self.assertEqual(result["recovered_content"], ["superiority"])
+
+    def test_independent_asr_does_not_clear_confirmed_loss(self):
+        result = pipeline._independent_asr_recovery(
+            "The result is five hundred million years.",
+            "The result is around Philly.",
+            "The result is around Philly.",
+        )
+        self.assertFalse(result["clears"])
+
+    def test_independent_asr_cannot_ignore_a_missing_negation(self):
+        result = pipeline._independent_asr_recovery(
+            "The system is not cryptographically secure.",
+            "The system is secure.",
+            "The system is cryptographically secure.",
+        )
+        self.assertIn("not", result["missing_content"])
+        self.assertFalse(result["clears"])
+
     def test_multi_aspect_release_is_not_supported(self):
         self.assertNotIn("all", pipeline.SUPPORTED_ASPECTS)
 

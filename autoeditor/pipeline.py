@@ -51,6 +51,39 @@ def preflight(src: Path) -> dict:
     return {"duration": dur, "width": int(vs["width"]), "height": int(vs["height"]),
             "fps": vs.get("r_frame_rate", "30/1")}
 
+def _deletterbox_spec(src: Path) -> tuple[str, tuple[int, int, int, int] | None]:
+    """Derive the raw-to-content spatial transform without changing the file."""
+    p = run([FFMPEG, "-ss", "30", "-t", "20", "-i", src, "-vf",
+             "cropdetect=limit=24:round=2", "-f", "null", "-"], check=False)
+    crops = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)",
+                       p.stderr.decode(errors="replace"))
+    if not crops:
+        return "", None
+    # Mode first, then largest area and numeric tuple as deterministic
+    # tie-breakers. Render and fresh-process verification must derive the same
+    # transform even when cropdetect reports two shapes equally often.
+    winner = max(
+        set(crops),
+        key=lambda crop: (
+            crops.count(crop),
+            int(crop[0]) * int(crop[1]),
+            tuple(map(int, crop)),
+        ),
+    )
+    cw, chh, cx, cy = map(int, winner)
+    probe = run([FFPROBE, "-v", "quiet", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                 src], check=False)
+    try:
+        fw, fh = map(int, probe.stdout.decode().strip().split(","))
+    except ValueError:
+        return "", None
+    if cw * chh >= fw * fh * 0.88 or cw < 320 or chh < 320:
+        return "", None
+    target = "1920:1080" if cw > chh else "1080:1920"
+    return f"crop={cw}:{chh}:{cx}:{cy},scale={target}", (cw, chh, cx, cy)
+
+
 def deletterbox(src: Path, workdir: Path) -> Path:
     """Phase 1.5: strip baked-in letterbox/pillarbox bars.
 
@@ -59,37 +92,20 @@ def deletterbox(src: Path, workdir: Path) -> Path:
     edited it as a vertical video. Detect the true content band with
     cropdetect; if the bars eat >12% of the frame, crop them off and
     upscale to the standard canvas for the TRUE orientation."""
-    p = run([FFMPEG, "-ss", "30", "-t", "20", "-i", src, "-vf",
-             "cropdetect=limit=24:round=2", "-f", "null", "-"], check=False)
-    crops = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)",
-                       p.stderr.decode(errors="replace"))
-    if not crops:
-        return src
-    cw, chh, cx, cy = map(int, max(set(crops), key=crops.count))
-    probe = run([FFPROBE, "-v", "quiet", "-select_streams", "v:0",
-                 "-show_entries", "stream=width,height", "-of", "csv=p=0",
-                 src], check=False)
-    try:
-        fw, fh = map(int, probe.stdout.decode().strip().split(","))
-    except ValueError:
-        return src
-    if cw * chh >= fw * fh * 0.88 or cw < 320 or chh < 320:
+    transform, crop = _deletterbox_spec(src)
+    if not transform or crop is None:
         return src   # no meaningful bars
-    target = "1920:1080" if cw > chh else "1080:1920"
+    cw, chh, cx, cy = crop
     out = workdir / "deletterboxed.mp4"
     log(f"phase 1.5: letterbox detected, true content {cw}x{chh} at "
-        f"({cx},{cy}); cropping bars, canvas -> {target.replace(':','x')}")
-    global DELETTERBOX_VF
-    DELETTERBOX_VF = f"crop={cw}:{chh}:{cx}:{cy},scale={target}"
-    run([FFMPEG, "-y", "-i", src, "-vf",
-         f"crop={cw}:{chh}:{cx}:{cy},scale={target}",
+        f"({cx},{cy}); cropping bars")
+    run([FFMPEG, "-y", "-i", src, "-vf", transform,
          "-c:v", "libx264", "-preset", "fast", "-crf", "18",
          "-c:a", "aac", "-b:a", "192k", out])
     return out
 
 
 CUT_BOUNDARIES: list = []   # (position_s, removed_s) splices in the output timeline
-DELETTERBOX_VF = ""          # spatial chain deletterbox applied; gate 5 replays it on RAW frames
 AV_OFFSET_MS = 0
 SUPPORTED_ASPECTS = ("auto", "16x9", "9x16")
 # Automatic measurement is retired from decisions. A nonzero value may only
@@ -255,6 +271,35 @@ def _nonmonotonic_matches(results: list[tuple]) -> list[dict]:
     ]
 
 
+def _probe_candidate_groups(word_mids: list[float], avoid: list[tuple],
+                            dur: float, speech_start: float,
+                            speech_end: float) -> list[list[float]]:
+    """Return bounded, nearest-first candidates around fixed time anchors."""
+    import numpy as np
+    anchors = sorted(
+        [speech_start, max(speech_start, speech_end - 1.1)]
+        + list(np.arange(speech_start, speech_end, 20.0))
+    )
+    anchors = [
+        anchor for i, anchor in enumerate(anchors)
+        if i == 0 or anchor - anchors[i - 1] >= 0.25
+    ]
+    grid = [float(t) for t in np.arange(
+        max(0.0, speech_start - 0.1), max(0.0, speech_end - 1.1) + 0.25, 0.5
+    )]
+    groups = []
+    for anchor in anchors:
+        eligible = [
+            t for t in grid
+            if abs(t - anchor) <= 10.0
+            and t + 1.2 <= dur
+            and all(not (a0 <= t <= b0) for a0, b0 in avoid)
+            and sum(1 for m0 in word_mids if t <= m0 <= t + 1.2) >= 2
+        ]
+        groups.append(sorted(eligible, key=lambda t: (abs(t - anchor), t)))
+    return groups
+
+
 def _stream_start_delta(path: Path) -> float:
     """Return audio-start minus video-start on the container timeline."""
     probe = run([
@@ -338,7 +383,12 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
         second = float(sc2.max()) if m else -1.0
         return i1 / SR, best, second
 
-    spatial = (DELETTERBOX_VF + ",") if DELETTERBOX_VF else ""
+    # Reconstruct the transform from RAW inside the verifier. Depending on the
+    # mutable DELETTERBOX_VF set by an earlier render step made a fresh,
+    # independent Gate 5 process compare different spatial canvases and reject
+    # every frame candidate.
+    raw_spatial_vf, _ = _deletterbox_spec(raw_src)
+    spatial = (raw_spatial_vf + ",") if raw_spatial_vf else ""
 
     def band(path, t, raw):
         vf = ((spatial if raw else "")
@@ -373,56 +423,52 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
     dur = len(mas_a) / SR
     speech_start = min(word_mids) if word_mids else 0.0
     speech_end = max(word_mids) if word_mids else dur
-    first_speech_probe = max(0.0, speech_start - 0.1)
-    last_speech_probe = max(0.0, speech_end - 1.1)
-    candidate_pool = sorted(
-        [first_speech_probe, last_speech_probe,
-         5.0, max(5.0, dur - 6.0)]
-        + list(np.arange(6.0, dur - 4, max(8.0, (dur - 12) / 14))))
-    candidate_pool = [
-        float(t) for t in candidate_pool
-        if all(not (a0 <= t <= b0) for a0, b0 in avoid)
-    ]
-    # Endpoint and regular-spacing candidates can differ only by floating
-    # noise. Treating both as independent probes creates an identical
-    # master/RAW pair, which is not a backward mapping.
-    cands = []
-    for candidate in candidate_pool:
-        if not cands or candidate - cands[-1] >= 0.25:
-            cands.append(candidate)
+    # A forced probe must be a search policy, not one timestamp. An overlay or
+    # a short pause at that exact instant made the old "forced" start vanish,
+    # even when clear speaking footage existed seconds later. Around fixed
+    # 20-second anchors, try the nearest eligible half-second positions within
+    # a bounded 10-second neighborhood. Stop at the first unambiguous result
+    # for each anchor, so this cannot cherry-pick an unlimited search.
+    candidate_groups = _probe_candidate_groups(
+        word_mids, avoid, dur, speech_start, speech_end
+    )
 
     results = []
-    for Tm in cands:
-        i0 = int(Tm * SR)
-        needle = mas_a[i0:i0 + n]
-        if len(needle) < n:
-            continue
-        # speech requirement: at least 2 transcript words inside the needle
-        if sum(1 for m0 in word_mids if Tm <= m0 <= Tm + 1.2) < 2:
-            continue
-        Tr, sc, sc2 = locate(needle - needle.mean())
-        Tr += raw_start_delta
-        if sc < 0.6 or (sc - sc2) < 0.08:      # weak or not unique
-            continue
-        fm = band3(master, Tm + master_start_delta, raw=False)
-        if fm is None:
-            continue
-        motion_fraction = float(np.mean(np.abs(fm[2] - fm[0]) >= 4.0))
-        if motion_fraction < 0.005:
-            continue                            # no visual timing evidence
-        maes = {}
-        for k in range(-9, 10):
-            fr = band3(raw_src, Tr + k / FPS, raw=True)
-            if fr is not None:
-                maes[k] = frame_score(fm, fr)
-        if not maes:
-            continue
-        bk = min(maes, key=maes.get)
-        rest = [v for k2, v in maes.items() if abs(k2 - bk) > 1]
-        if maes[bk] > 30 or (rest and min(rest) - maes[bk] < 1.0):
-            continue                            # ambiguous frame match
-        results.append((float(Tm), Tr, sc, bk * 1000.0 / FPS, maes[bk],
-                        motion_fraction))
+    tried = set()
+    for candidates in candidate_groups:
+        for Tm in candidates:
+            candidate_key = round(Tm, 3)
+            if candidate_key in tried:
+                continue
+            tried.add(candidate_key)
+            i0 = int(Tm * SR)
+            needle = mas_a[i0:i0 + n]
+            if len(needle) < n:
+                continue
+            Tr, sc, sc2 = locate(needle - needle.mean())
+            Tr += raw_start_delta
+            if sc < 0.6 or (sc - sc2) < 0.08:  # weak or not unique
+                continue
+            fm = band3(master, Tm + master_start_delta, raw=False)
+            if fm is None:
+                continue
+            motion_fraction = float(np.mean(np.abs(fm[2] - fm[0]) >= 4.0))
+            if motion_fraction < 0.005:
+                continue                        # no visual timing evidence
+            maes = {}
+            for k in range(-9, 10):
+                fr = band3(raw_src, Tr + k / FPS, raw=True)
+                if fr is not None:
+                    maes[k] = frame_score(fm, fr)
+            if not maes:
+                continue
+            bk = min(maes, key=maes.get)
+            rest = [v for k2, v in maes.items() if abs(k2 - bk) > 1]
+            if maes[bk] > 30 or (rest and min(rest) - maes[bk] < 1.0):
+                continue                        # ambiguous frame match
+            results.append((float(Tm), Tr, sc, bk * 1000.0 / FPS, maes[bk],
+                            motion_fraction))
+            break
 
     # Monotonicity is a hard invariant. Silently dropping a backward match can
     # cherry-pick four plausible probes from an invalid mapping.
@@ -633,7 +679,7 @@ def word_guarded_cut(src: Path, workdir: Path,
                      min_pause: float = 0.9, head: float = 0.30,
                      tail: float = 0.35) -> tuple[Path, float, list]:
     """Phase 2 REWRITE (2026-07-24 word-integrity incident): auto-editor cuts
-    by LOUDNESS, and Omar's soft word-endings fall below any threshold — the
+    by LOUDNESS, and Omar's soft word-endings fall below any threshold, so the
     retake lost 152/623 words MID-SENTENCE while 'kept 55%' looked legal.
     New law: the transcript is the single source of truth for what is speech.
     Transcribe the SOURCE first; silence may only be removed BETWEEN padded
@@ -644,7 +690,7 @@ def word_guarded_cut(src: Path, workdir: Path,
     raw_words = transcribe(src, workdir)
     dur = _dur(src) or 1.0
     if len(raw_words) < 10:
-        log("phase 2: <10 words transcribed — falling back to loudness cut")
+        log("phase 2: <10 words transcribed, falling back to loudness cut")
         out, ratio = silence_cut(src, workdir)
         return out, ratio, raw_words
     cuts = detect_dead_air(raw_words, dur, min_pause, head, tail)
@@ -653,12 +699,12 @@ def word_guarded_cut(src: Path, workdir: Path,
     if not cuts:
         out = workdir / "cut.mp4"
         shutil.copy(src, out)
-        log("phase 2: word-guarded cut — no removable pauses; source kept whole")
+        log("phase 2: word-guarded cut, no removable pauses; source kept whole")
         return out, 1.0, raw_words
     out = apply_cuts(src, cuts, workdir)
     ratio = _dur(out) / dur
     log(f"phase 2: word-guarded cut removed {len(cuts)} pause(s) "
-        f"(≥{min_pause}s, pad {head}/{tail}s) — kept {ratio:.0%}, "
+        f"(≥{min_pause}s, pad {head}/{tail}s), kept {ratio:.0%}, "
         f"all {len(raw_words)} words preserved")
     return out, ratio, raw_words
 
@@ -944,7 +990,7 @@ def detect_anomaly_cuts(src: Path, words: list,
     survived to the final render. Conservative by design.
 
     SCRIPT SHIELD (2026-07-24, incident #3): low whisper confidence is NOT
-    proof of a flub — it cut 'Superiority, Autonomy,' out of the SAC reveal
+    proof of a flub. It cut 'Superiority, Autonomy,' out of the SAC reveal
     because whisper was unsure of the words Omar said perfectly. When the
     teleprompter script is known, a garble span whose words appear in the
     script is REAL CONTENT and is never cut."""
@@ -980,7 +1026,7 @@ def detect_anomaly_cuts(src: Path, words: list,
                 if on_script(run_w):
                     log(f"anomaly SKIPPED [{run_w[0]['s']:.1f}-"
                         f"{run_w[-1]['e']:.1f}]: low confidence but the words "
-                        "are in the script — real content, not a flub")
+                        "are in the script, real content, not a flub")
                 else:
                     cuts.append({"s": max(0, run_w[0]["s"] - 0.1),
                                  "e": run_w[-1]["e"] + 0.1, "why": "garbled"})
@@ -1060,28 +1106,17 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     # real edit damage from a speech-model mishearing.
     global CUT_BOUNDARIES
     kept = []
-    for b, r, cap in CUT_BOUNDARIES:                # remap old boundaries
+    for b, r in CUT_BOUNDARIES:                     # remap old boundaries
         if any(s0 <= b <= e0 for s0, e0 in drops):
             continue                                # this splice was cut away
-        kept.append((b - sum(min(e0, b) - s0 for s0, e0 in drops if s0 < b),
-                     r, cap))
-    def _capable(gap_s, gap_e):
-        """True when any cut overlapping this gap can clip words: anomaly
-        cuts use raw timestamps, and director-mode cuts are hand-authored.
-        Pause, dead-air, retake and false-start cuts derive their edges from
-        word timestamps and cannot land inside a word."""
-        whys = [str(c.get("why", "")) for c in cuts
-                if float(c["s"]) < gap_e and float(c["e"]) > gap_s]
-        safe = ("pause", "dead air", "retake", "false start",
-                "lead-in noise", "opening cough")
-        return any(not w.startswith(safe) for w in whys) or not whys
+        kept.append((b - sum(min(e0, b) - s0
+                             for s0, e0 in drops if s0 < b), r))
 
     accf = 0
     for i, (sf, ef) in enumerate(keepf[:-1]):
         accf += ef - sf
         removed = (keepf[i + 1][0] - ef) / G
-        kept.append((round(accf / G, 3), round(removed, 3),
-                     _capable(ef / G, keepf[i + 1][0] / G)))
+        kept.append((round(accf / G, 3), round(removed, 3)))
     CUT_BOUNDARIES = sorted(kept)
 
     vparts, aparts, vl, al = [], [], [], []
@@ -1201,11 +1236,76 @@ def _gap_has_big_cut(sents, si, sent_of, span, final_words) -> bool:
             next_t = final_words[max(0, span[sj][0])]["s"]
             break
     return any(prev_t - 0.3 <= b <= next_t + 0.3 and r >= 2.0
-               for b, r, _c in CUT_BOUNDARIES)
+               for b, r in CUT_BOUNDARIES)
+
+
+def _independent_asr_recovery(script: str, primary: str,
+                              secondary: str) -> dict:
+    """Measure whether a second ASR recovered content missing from the first."""
+    import difflib
+    stop = {
+        "about", "after", "again", "also", "because", "been", "before",
+        "being", "between", "could", "every", "from", "have", "into",
+        "just", "more", "other", "should", "some", "than", "that", "their",
+        "there", "these", "they", "this", "those", "through", "very",
+        "what", "when", "where", "which", "while", "with", "would", "your",
+    }
+    critical_short = {
+        "no", "not", "never", "nor", "one", "two", "three", "four", "five",
+        "six", "seven", "eight", "nine", "ten",
+    }
+    toks = lambda text: [
+        re.sub(r"[^a-z0-9']", "", token.lower())
+        for token in text.split()
+        if re.sub(r"[^a-z0-9']", "", token.lower())
+    ]
+    expected, heard1, heard2 = toks(script), toks(primary), toks(secondary)
+    content = {
+        token for token in expected
+        if (len(token) >= 5 or token.isdigit() or token in critical_short)
+        and token not in stop
+    }
+    missing = sorted(content - set(heard1))
+    recovered = sorted(set(missing) & set(heard2))
+    sm = difflib.SequenceMatcher(a=expected, b=heard2, autojunk=False)
+    coverage = sum(block.size for block in sm.get_matching_blocks()) / max(
+        1, len(expected)
+    )
+    return {
+        "coverage": round(coverage, 3),
+        "missing_content": missing,
+        "recovered_content": recovered,
+        "clears": bool(missing) and set(missing) <= set(recovered)
+                  and coverage >= 0.80,
+    }
+
+
+def _secondary_asr_text(master: Path, start: float, end: float,
+                        workdir: Path) -> str:
+    """Transcribe one contested artifact window with independent medium ASR."""
+    clip = workdir / "secondary_asr.wav"
+    result_file = workdir / "secondary_asr.json"
+    script_file = workdir / "_secondary_asr.py"
+    run([
+        FFMPEG, "-y", "-ss", f"{max(0.0, start - 2.0):.3f}",
+        "-t", f"{max(1.0, end - start + 5.0):.3f}", "-i", master,
+        "-vn", "-ac", "1", "-ar", "16000", clip
+    ])
+    script_file.write_text(
+        "import json,sys\n"
+        "from faster_whisper import WhisperModel\n"
+        "m=WhisperModel('medium',device='cpu',compute_type='int8')\n"
+        "s,_=m.transcribe(sys.argv[1],beam_size=5,vad_filter=False,"
+        "condition_on_previous_text=False)\n"
+        "json.dump({'text':' '.join(x.text.strip() for x in s)},"
+        "open(sys.argv[2],'w'))\n"
+    )
+    run([VENV_PY, script_file, clip, result_file], timeout=900)
+    return str(json.loads(result_file.read_text()).get("text", ""))
 
 
 def script_integrity(final_words: list[dict], script_path: Path,
-                     workdir: Path) -> dict:
+                     workdir: Path, master: Path | None = None) -> dict:
     """HARD GATE 3 (Omar 2026-07-24): compare the DELIVERED speech to the
     teleprompter script SEMANTICALLY.
 
@@ -1251,7 +1351,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
             t0_ = final_words[max(0, lo_)]["s"]
             t1_ = final_words[min(len(final_words) - 1, hi_)]["e"]
             cut_near = any(t0_ - 0.6 <= b <= t1_ + 0.6
-                           and cap for b, _r, cap in CUT_BOUNDARIES)
+                           for b, _r in CUT_BOUNDARIES)
         gap_has_big_cut = (frac < 0.15
                            and _gap_has_big_cut(
                                sents, si, sent_of, span, final_words))
@@ -1348,6 +1448,41 @@ def script_integrity(final_words: list[dict], script_path: Path,
                 result["damaged"].append(
                     {**sus, "why": "semantic judge unavailable or incomplete; "
                                     "a cut is implicated in this sentence"})
+    # A single small-model homophone is not proof of damaged audio. For every
+    # would-be blocker, transcribe only that finished-artifact window with an
+    # independent larger model. Clear it only when the second ASR recovers all
+    # meaningful script terms absent from the first transcript and preserves
+    # at least 80 percent of the sentence. Any error or disagreement stays
+    # blocked.
+    if result["damaged"] and master and master.exists():
+        still_damaged = []
+        for damaged in result["damaged"]:
+            try:
+                secondary = _secondary_asr_text(
+                    master, damaged["t0"], damaged["t1"], workdir
+                )
+                recovery = _independent_asr_recovery(
+                    damaged["script"], damaged["heard"], secondary
+                )
+                audited = {
+                    **damaged,
+                    "secondary_asr": secondary,
+                    "secondary_recovery": recovery,
+                }
+                if recovery["clears"]:
+                    audited["why"] = (
+                        "independent medium ASR recovered the content terms "
+                        "missing from the primary transcript"
+                    )
+                    result.setdefault("misheard", []).append(audited)
+                    log("  ~ primary ASR artifact cleared by independent "
+                        f"medium ASR: {recovery['recovered_content']}")
+                else:
+                    still_damaged.append(audited)
+            except Exception as e:
+                damaged["secondary_asr_error"] = type(e).__name__
+                still_damaged.append(damaged)
+        result["damaged"] = still_damaged
     result["ok"] = not result["damaged"]
     (workdir / "script_integrity.json").write_text(json.dumps(result, indent=2))
     mis = len(result.get("misheard", []))
@@ -2003,7 +2138,7 @@ def main():
     # elaboration and skipped sentences are FINE ; only sentences
     # the edit damaged mid-thought block delivery.
     if a.script and a.script.exists():
-        si = script_integrity(final_words, a.script, work)
+        si = script_integrity(final_words, a.script, work, master=main_out_v)
         qa["checks"]["script_integrity"] = si
         qa["pass"] = qa["pass"] and si["ok"]
         shutil.copy(work / "script_integrity.json",
