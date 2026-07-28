@@ -1797,12 +1797,6 @@ def main():
     residue = verify_no_retakes(final_words, a.script, work)
     qa["checks"]["retake_residue"] = residue
     qa["pass"] = qa["pass"] and residue["ok"]
-    # GATE 5: true end-to-end sync, master vs the raw recording.
-    ssync = verify_sync_source(main_out_v, orig_src,
-                               edl if (not a.no_premium and words) else {},
-                               offset, certified, final_words, work)
-    qa["checks"]["sync_to_source"] = ssync
-    qa["pass"] = qa["pass"] and ssync["ok"]
     qa["pass"] = qa["pass"] and sync["ok"]
     # HARD GATE 2 : the delivered
     # master must still CONTAIN the speech. Transcribe the final master and
@@ -1830,6 +1824,12 @@ def main():
     qa["pass"] = qa["pass"] and wi_ok
     log(f"word integrity: {_kept}/{len(words)} words in master "
         f"({word_ratio:.1%}), {'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}")
+        # GATE 5: true end-to-end sync, master vs the raw recording.
+    ssync = verify_sync_source(main_out_v, orig_src,
+                               edl if (not a.no_premium and words) else {},
+                               offset, certified, final_words, work)
+    qa["checks"]["sync_to_source"] = ssync
+    qa["pass"] = qa["pass"] and ssync["ok"]
     # HARD GATE 3: semantic comparison to the teleprompter script. Paraphrase,
     # elaboration and skipped sentences are FINE ; only sentences
     # the edit damaged mid-thought block delivery.
