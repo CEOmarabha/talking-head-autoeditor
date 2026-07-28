@@ -36,6 +36,16 @@ source files were synchronized. A biased automatic estimator applied a bad
 correction, then the old gate compared two files that shared the same mistake
 and reported 0.0ms.
 
+### Watch the v2 walkthrough
+
+[![Watch the v2 walkthrough on Mainframe](https://img.shields.io/badge/watch_the_v2_walkthrough-Mainframe-111111?style=for-the-badge)](https://mainframe.app/v/0e49f2ee64c35514238070afcbe68f5e)
+
+Mainframe generated the walkthrough from the v2 pull request just after the
+release went live. GitHub preserved the
+[successful video check](https://github.com/CEOmarabha/talking-head-autoeditor/runs/90422810538)
+that produced it. Playback is hosted by Mainframe and currently uses Mainframe
+sign-in.
+
 The correction estimator is retired from production decisions. Source sync is
 measured from the finished master back to the RAW recording, nonzero offsets
 need a source-bound human certification, cut math uses integer frames and
