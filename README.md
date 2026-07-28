@@ -23,6 +23,11 @@ phase 7    QA gate
 QA: PASS
 ```
 
+## See it run
+
+A real before and after clip is attached to the [v1.0.0 release](https://github.com/CEOmarabha/talking-head-autoeditor/releases/tag/v1.0.0). Left side is a raw 50 second camera file with a flubbed line in it. Right side is what the editor returned: 41 seconds, the flubbed take removed, bars cropped, punch-ins and captions applied. The log from that same run is in [docs/DEMO.md](docs/DEMO.md).
+
+
 ## Why it works this way
 
 Automatic editors are easy to build and easy to trust wrongly. The failure mode is not a crash. It is a video that looks fine, runs the right length, and quietly has your words missing from it.
