@@ -39,11 +39,22 @@ This gate found four separate root causes, each because it refused to pass:
 3. A variable-frame-rate source with dropped frames. CFR normalization is now always on, before anything else runs.
 4. A 21-second dead tail, caught when a probe landed inside it and returned `mae=99.0`.
 
-### What it cannot catch
+### The blind spot, and how it is covered
 
-Offset baked into the source recording. The gate compares the master against the cut, both inherit the source's offset, both agree, and it reports a clean 0.0ms on a file whose lips never matched to begin with.
+This gate compares the master against the cut. Both inherit whatever offset is baked into the source recording, so both agree, and it reports a clean 0.0ms on footage whose lips never matched to begin with.
 
-That is not a flaw in the check. Nothing internal can detect it, because there is no un-offset reference to compare against. [`calibrate.py`](../autoeditor/calibrate.py) handles it instead: a human watches a ladder of candidate offsets once per recording setup, and the winner goes in `brand.yaml`. The module docstring explains why automated mouth-motion correlation was tried first and abandoned.
+That is not a flaw in the check. There is no un-offset reference inside the pipeline to compare against. But leaving it uncovered cost nine consecutive renders that all passed this gate and were all visibly out of sync, because a constant measured on one recording was reused on a different one without re-measuring.
+
+So the source offset is now measured on every render, before any correction is applied. Mouth-region motion is cross-correlated against the audio envelope, and the result is only trusted when three disjoint slices of the window agree within 100ms. Bearded faces and soft consonants produce weak correlation peaks, and that agreement test is what separates a real peak from noise.
+
+When the measurement is reliable it overrides the configured value and logs the substitution. When it is not, the pipeline says so plainly and falls back to your configured number:
+
+```
+av-offset measured: +333ms (corr 0.150, slices [333, 400, 133], UNRELIABLE, spread too wide)
+av-offset: measurement unreliable, falling back to configured -200ms.
+```
+
+Either way it lands in `QA_REPORT.json` under `source_av_offset`, with the correlation and the slice spread, so a render can never again be silently wrong about this. For footage the estimator cannot read, [`calibrate.py`](../autoeditor/calibrate.py) still gives you a ladder to judge by eye, which remains the ground truth.
 
 ## Gate 2, word integrity
 

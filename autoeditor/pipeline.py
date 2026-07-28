@@ -94,6 +94,91 @@ AV_OFFSET_MS = CFG.rules.av_offset_ms
 # Positive delays the audio (use when audio LEADS the video).
 
 
+def measure_av_offset(src: Path, start: float = 15.0,
+                      window: float = 60.0) -> dict:
+    """Measure the AV offset baked into the SOURCE, before any editing.
+
+    This closes the one hole verify_sync structurally cannot see. That gate
+    compares the master against the cut, and both inherit the source's own
+    offset, so it reports 0.0ms drift on footage whose lips never matched.
+    Nine renders shipped that way because a constant measured on a DIFFERENT
+    recording was reused here without re-measuring.
+
+    Mouth-region motion is cross-correlated against the audio envelope. The
+    result is only trusted when three disjoint slices of the window agree,
+    which is what separates a real peak from noise on a bearded face.
+    Returns {"ms", "corr", "reliable"}; ms is positive when audio LAGS video.
+    """
+    import numpy as np
+    FPS = 30
+    # candidate mouth boxes as fractions of frame (speakers frame themselves
+    # differently, so try a few and keep whichever correlates best)
+    boxes = [(0.42, 0.45, 0.18, 0.20), (0.35, 0.50, 0.30, 0.25),
+             (0.30, 0.30, 0.40, 0.35)]
+
+    def series(box):
+        x, y, w, h = box
+        crop = f"crop=iw*{w}:ih*{h}:iw*{x}:ih*{y}"
+        p1 = run([FFMPEG, "-v", "quiet", "-ss", str(start), "-t", str(window),
+                  "-i", src, "-vf", f"{crop},fps={FPS},scale=48:32,format=gray",
+                  "-f", "rawvideo", "-"], check=False)
+        r = np.frombuffer(p1.stdout, dtype=np.uint8)
+        n = len(r) // (48 * 32)
+        if n < 60:
+            return None, None
+        f = r[:n * 48 * 32].reshape(n, 32, 48).astype(np.float32)
+        mo = np.abs(np.diff(f, axis=0)).mean(axis=(1, 2))
+        p2 = run([FFMPEG, "-v", "quiet", "-ss", str(start), "-t", str(window),
+                  "-i", src, "-vn", "-ac", "1", "-ar", "8000",
+                  "-f", "f32le", "-"], check=False)
+        a = np.abs(np.frombuffer(p2.stdout, dtype=np.float32))
+        hop = 8000 // FPS
+        au = a[:len(a) // hop * hop].reshape(-1, hop).mean(1)
+        return mo, au
+
+    def onset(x):
+        d = np.diff(x); d[d < 0] = 0
+        sd = d.std()
+        return (d - d.mean()) / sd if sd > 0 else d
+
+    def lag(m, a):
+        n = min(len(m), len(a))
+        m, a = m[:n], a[:n]
+        best, bl = -9.0, 0
+        for L in range(-12, 13):
+            c = (np.corrcoef(m[:n - L], a[L:])[0, 1] if L >= 0
+                 else np.corrcoef(m[-L:], a[:n + L])[0, 1])
+            if np.isfinite(c) and c > best:
+                best, bl = float(c), L
+        return bl * 1000.0 / FPS, best
+
+    results = []
+    for box in boxes:
+        mo, au = series(box)
+        if mo is None:
+            continue
+        m, a = onset(mo), onset(au)
+        whole, corr = lag(m, a)
+        third = min(len(m), len(a)) // 3
+        if third < 30:
+            continue
+        parts = [lag(m[i * third:(i + 1) * third],
+                     a[i * third:(i + 1) * third])[0] for i in range(3)]
+        spread = max(parts) - min(parts)
+        results.append({"ms": whole, "corr": corr, "spread": spread,
+                        "parts": parts})
+    if not results:
+        log("av-offset: could not measure (no usable video window)")
+        return {"ms": 0.0, "corr": 0.0, "reliable": False}
+    best = max(results, key=lambda r: (r["spread"] <= 100, r["corr"]))
+    reliable = best["spread"] <= 100
+    log(f"av-offset measured: {best['ms']:+.0f}ms "
+        f"(corr {best['corr']:.3f}, slices {[round(x) for x in best['parts']]}, "
+        f"{'reliable' if reliable else 'UNRELIABLE, spread too wide'})")
+    return {"ms": round(best["ms"]), "corr": round(best["corr"], 3),
+            "reliable": reliable}
+
+
 def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int = AV_OFFSET_MS) -> Path:
     """Phase 1.6 -- a root cause of lip-sync drift: phone recordings
     drop frames (VFR jitter), and every frame-grid tool downstream
@@ -1245,7 +1330,21 @@ def main():
     fixed = deletterbox(src, work)
     if fixed != src:
         src = fixed
-    src = cfr_normalize(src, work, av_offset_ms=a.av_offset)  # VFR repair + AV-offset law, always on
+    # LIP-SYNC LAW: measure the source offset on EVERY render. A constant
+    # carried over from another recording is how nine renders shipped out of
+    # sync while the mechanical gate reported 0.0ms drift on all of them.
+    meas = measure_av_offset(src)
+    offset = a.av_offset
+    if meas["reliable"]:
+        # measured value wins; positive lag means audio is LATE, so advance it
+        offset = -int(meas["ms"])
+        if offset != a.av_offset:
+            log(f"av-offset: using measured {offset:+d}ms "
+                f"(configured default was {a.av_offset:+d}ms)")
+    else:
+        log(f"av-offset: measurement unreliable, falling back to "
+            f"configured {offset:+d}ms. Run a calibration ladder if lips look off.")
+    src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
     style = a.style
@@ -1398,6 +1497,13 @@ def main():
                        _dur(main_out_v))
     qa["checks"]["lip_sync_verified"] = {"ok": sync["ok"],
                                          "probes": sync["probes"]}
+    qa["checks"]["source_av_offset"] = {
+        "measured_ms": meas["ms"], "correlation": meas["corr"],
+        "reliable": meas["reliable"], "applied_ms": offset,
+        "ok": meas["reliable"] or offset != 0,
+        "note": "" if meas["reliable"] else
+                "offset could not be measured from this footage; the "
+                "configured value was used. Check lips by eye."}
     qa["pass"] = qa["pass"] and sync["ok"]
     # HARD GATE 2 : the delivered
     # master must still CONTAIN the speech. Transcribe the final master and

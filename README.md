@@ -56,6 +56,8 @@ Five probe points spread across the finished master, each shifted so it lands ou
 
 Timeline drift accumulates monotonically, so alignment at spread points proves the whole timeline. Fails if any probe drifts more than 25ms.
 
+This check has one blind spot, and covering it matters more than the check itself. It compares the master against the cut, and both inherit any offset baked into the source recording, so it passes happily on footage whose lips never matched. The pipeline therefore measures the source offset on every render, trusting the result only when three disjoint slices of the window agree, and saying so in the log when they do not.
+
 ### Word integrity
 
 Re-transcribes the delivered master and sequence-aligns it against the transcript from the cut stage. This catches damage introduced after cutting, by compositing or re-encoding or a bad filter graph. Fails when more than 3 percent of words vanished along the way.
