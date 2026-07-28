@@ -1,7 +1,7 @@
 .PHONY: help install edit calibrate certify check test clean
 .DEFAULT_GOAL := help
 
-PY := .venv/bin/python
+PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 OUT ?= $(HOME)/Desktop/autoedit-out
 
 help:  ## Show this help
@@ -13,11 +13,13 @@ help:  ## Show this help
 install:  ## One-time setup (ffmpeg, venv, models)
 	@bash install.sh
 
-edit:  ## Edit a video.  VIDEO=raw.mov [SCRIPT=script.txt] [STYLE=long|short]
-	@test -n "$(VIDEO)" || { echo "usage: make edit VIDEO=/path/to/raw.mov"; exit 1; }
+edit:  ## Edit a video. VIDEO=raw.mov SCRIPT=script.txt [NO_LLM=1]
+	@test -n "$(VIDEO)" || { echo "usage: make edit VIDEO=/path/to/raw.mov SCRIPT=/path/to/script.txt"; exit 1; }
+	@test -n "$(SCRIPT)" || { echo "SCRIPT is required by brand.yaml"; exit 1; }
 	$(PY) -m autoeditor "$(VIDEO)" \
 	  --out "$(OUT)/$(notdir $(basename $(VIDEO)))" \
-	  $(if $(SCRIPT),--script "$(SCRIPT)") \
+	  --script "$(SCRIPT)" \
+	  $(if $(NO_LLM),--no-llm) \
 	  $(if $(STYLE),--style $(STYLE),--style long) \
 	  $(if $(ASPECT),--aspects $(ASPECT),--aspects 16x9)
 
@@ -35,7 +37,7 @@ check:  ## Verify the install is working
 	@ffmpeg -version >/dev/null && echo "ffmpeg       ok"
 	@$(PY) -c "from autoeditor import providers; \
 	  providers.load_dotenv(); \
-	  print('llm          ' + ('ok' if providers.llm_available() else 'not configured (heuristic fallback will be used)'))"
+	  print('deepseek     ' + ('ok: ' + providers.DEFAULT_DEEPSEEK_MODEL if providers.llm_available('deepseek') else 'not configured; use --no-llm explicitly'))"
 
 test:  ## Run safety regression tests
 	$(PY) -m unittest discover -s tests -v
