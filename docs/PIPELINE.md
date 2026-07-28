@@ -20,7 +20,7 @@ The guiding rule: **route each phase to the tool that's genuinely best at it, an
  [3]  transcribe ........... word-level timings on the cut timeline
       script correction .... fix misheard words, preserve paraphrase
       |
- [4]  EDL ................. one LLM call: punch-ins, b-roll, graphics
+ [4]  EDL ................. V4 Pro director + critic, typed contract
  [4p] asset resolution ..... diagrams -> stock -> local library -> skip
       |
  [5]  composite ............ overlays, captions, sound design
@@ -116,25 +116,55 @@ captions: script alignment: 467 exact, 9 misheard corrected, 5 paraphrases kept 
 
 ## Phase 4, the edit decision list
 
-One LLM call produces the entire creative layer as JSON: punch-in windows with zoom scales, b-roll spans with search queries and optional diagram specs, and graphic cards with kind and text.
+DeepSeek V4 Pro receives the complete post-cut transcript and produces the
+creative layer as JSON. A V4 Pro critic sees the complete transcript, the
+current candidate, and every validator error, then returns a full replacement
+EDL. If deterministic validation still finds errors, the compiler feeds those
+exact errors into the next bounded repair round, up to three critic rounds.
 
-The prompt carries **director principles**, editable prose in `premium.py` covering when a punch-in is earned, when an animated diagram beats stock footage, how sparse sound design should be, plus a worked example. Principles are prose, not code, so you can rewrite them in your own voice.
+The prompt gives the model ten ordered steps, exact field types, duration and
+density limits, a worked JSON object, local clip families, style rules, and the
+versioned protocol identifier. Every event must copy an exact 5-20 word spoken
+quote and state why that moment earns the event.
 
-A deterministic heuristic emits the same JSON shape when no model is configured or the call fails. Structure is identical; only taste differs.
+`creative_contract.validate_edl` treats model times as proposals. It locates
+the full contiguous quote in word-level ASR, rejects short, paraphrased, or
+invented matches, writes measured word times, and checks hook placement,
+opening visual coverage, maximum visual gap, framework diagrams, minimum event
+spacing, density, and collisions. Displayed titles, items, labels, and numbers
+must be supported by speech near the anchor. The critic output must score 100.
+
+Model mode blocks if either call or the final contract fails. The deterministic
+heuristic is selected only through `--no-llm`.
 
 ### Parsing the model's JSON
 
 Models wrap JSON in prose and code fences. A greedy `\{.*\}` regex swallows the trailing text and throws, which silently degraded this pipeline's entire creative layer to the heuristic, with no symptom except a video that looked plain.
 
-`providers.extract_json` scans for the first **balanced, string-aware** object and validates it carries the expected keys. Calls also retry with backoff.
+`providers.extract_json` scans for the first **balanced, string-aware** object
+and requires every requested key. DeepSeek calls use JSON mode, thinking
+enabled, maximum reasoning effort, a 32,768-token output allowance, finish
+reason checks, empty-content retries, and safe receipts.
 
 ### Asset chain
 
-Each b-roll beat resolves through a chain, taking the first that succeeds:
+An event planned as a diagram must render through Remotion as that exact typed
+diagram. It cannot retain diagram credit by degrading to unrelated stock.
+Ordinary b-roll resolves through a chain, taking the first source that
+succeeds:
 
-**Animated diagram** (Remotion, for frameworks, lists, numbered ideas) → **Pexels** → **Pixabay** → **your local clip library** → **skip the beat**
+**Pexels** → **Pixabay** → **your local clip library** → **unresolved**
 
-Skipping is a legitimate outcome. A missing overlay leaves the speaker on screen; a wrong overlay looks careless.
+The renderer records which source resolved every event. Empty local families
+never select arbitrary footage, and any path rated REJECT in any catalog stays
+rejected. Cache hits are checked for duration and orientation. Downloads and
+diagram renders use a temporary file, validate it, then atomically publish the
+cache entry. A skipped planned beat fails `creative_assets_resolved` and leaves
+the master quarantined. It measures the resolved file itself, so a short clip
+cannot freeze its last frame through a longer planned window.
+
+The full model protocol is in
+[DEEPSEEK_WORKFLOW.md](DEEPSEEK_WORKFLOW.md).
 
 ---
 
@@ -152,6 +182,9 @@ Skipping is a legitimate outcome. A missing overlay leaves the speaker on screen
 
 ## Phases 7 and 8, gates and release
 
-Covered in full in [VERIFICATION.md](VERIFICATION.md). In short: the render is re-analysed as an artifact, three gates run, two can block delivery, and the output is hash-locked with a JSON receipt.
+Covered in full in [VERIFICATION.md](VERIFICATION.md). In short: the native
+master, delivered aspect, final transcript, source recording, script, EDL,
+resolved assets, and receipts are re-analysed as artifacts. Every release
+check can block, and the output is hash-locked with a JSON receipt.
 
 Delivery failures are **logged, never swallowed**. A silently caught `NameError` here once disabled every large-file delivery for days, and the only symptom was "the video never arrived."

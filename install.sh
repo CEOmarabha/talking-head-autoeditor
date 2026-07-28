@@ -47,7 +47,7 @@ print("   speech model cached")
 PY
 ok "transcription ready"
 
-step "Optional: animated diagram renderer (Remotion, needs Node 18+)"
+step "Animated diagram renderer (Remotion, needs Node 18+)"
 if command -v node >/dev/null && command -v npm >/dev/null; then
   if [[ ! -d "$DATA/remotion-viz/node_modules" ]]; then
     mkdir -p "$DATA/remotion-viz"
@@ -57,27 +57,35 @@ if command -v node >/dev/null && command -v npm >/dev/null; then
     ok "diagram renderer already installed"
   fi
 else
-  warn "Node not found, animated diagrams will be skipped (everything else works)"
+  warn "Node not found; edits that require framework diagrams will fail closed"
 fi
 
 step "Config files"
 [[ -f "$ROOT/.env" ]] || { cp "$ROOT/.env.example" "$ROOT/.env"; ok "created .env (add your keys)"; }
 [[ -f "$ROOT/brand.yaml" ]] && ok "brand.yaml present"
 
+step "Hermes operator skill"
+HERMES_SKILL_DIR="$HOME/.hermes/skills/media/pse-talking-head-autoedit"
+mkdir -p "$HERMES_SKILL_DIR"
+install -m 0644 \
+  "$ROOT/integrations/hermes/pse-talking-head-autoedit/SKILL.md" \
+  "$HERMES_SKILL_DIR/SKILL.md"
+ok "Hermes skill points to the canonical fail-closed workflow"
+
 cat <<EOF
 
 ${GREEN}Setup complete.${RESET}
 
   1. Add at least one API key to  ${ROOT}/.env
-       DEEPSEEK_API_KEY=xxx  (the creative brain, about 1c per video)
+       DEEPSEEK_API_KEY=xxx  (V4 Pro director, critic, and semantic judge)
        PEXELS_API_KEY=xxx    (free stock b-roll)
   2. Set your colours and font in  ${ROOT}/brand.yaml
   3. If RAW sync needs correction, calibrate and certify that recording:
        make calibrate VIDEO=/path/to/raw.mov
        make certify VIDEO=/path/to/raw.mov OFFSET=0
   4. Edit a video:
-       make edit VIDEO=/path/to/raw.mov
+       make edit VIDEO=/path/to/raw.mov SCRIPT=/path/to/script.txt
 
-  No keys at all? It still runs, you get a cut, captioned, loudness-normalised,
-  fully verified video, just with fewer creative flourishes.
+  Deterministic mode without a model:
+       make edit VIDEO=/path/to/raw.mov SCRIPT=/path/to/script.txt NO_LLM=1
 EOF

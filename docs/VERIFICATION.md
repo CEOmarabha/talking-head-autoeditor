@@ -20,6 +20,34 @@ Everything passed and the video was destroyed. `speech_retention` was measuring 
 
 The fix was not a better threshold. It was checking a different thing: re-analyse the delivered file and compare it against what should be in it.
 
+## Creative provenance and asset gate
+
+Blocks model-driven delivery.
+
+The finished run must carry a production receipt that names
+`deepseek-v4-pro`, maximum reasoning effort, the current creative protocol,
+successful director and critic requests, a complete-transcript hash, and a
+critic contract score of 100. QA recomputes both the transcript hash and the
+hash of the exact validated EDL that reached the renderer. Prompt hashes and
+finish reasons are recorded without storing the API key or model response
+body.
+
+Every planned b-roll and graphic event must also resolve into an asset that
+reaches the composite. The QA report compares planned and resolved counts.
+The gate then samples every planned visual window in the composited master and
+compares the caption-free upper 55 percent against the pre-overlay reference.
+It measures off-window frames first to establish the ordinary re-encoding
+baseline. Every planned event must create a change above that baseline. This
+catches a valid asset and valid filter plan that never became visible in the
+artifact without allowing changing caption cards to supply the evidence.
+
+These checks close three silent downgrade paths: a failed model call presented
+as a DeepSeek edit, an approved EDL whose assets could not be resolved, and a
+renderer that dropped valid visual inputs.
+
+`--no-llm` writes an explicit heuristic receipt. A hand-authored EDL writes an
+explicit operator receipt. Neither can be confused with a DeepSeek plan.
+
 ## Gate 1, lip-sync verification
 
 Blocks delivery.
@@ -45,13 +73,46 @@ This gate compares the master against the cut. Both inherit whatever the correct
 
 The first attempt to cover this was an automatic mouth-motion measurement of the source. It is retired from decision-making, and the story is instructive. Its audio envelope was binned with an integer-truncated hop, which skewed the audio timebase to 30.075Hz against the video's 30Hz. That looks exactly like the audio drifting late by 150ms per minute. Every measurement it produced pointed the same direction, each "correction" based on it created real desync where none existed, and a self-validation test passed because a known shift moves a biased peak by the same amount either way. An estimator validating itself proves consistency, not truth.
 
-What covers the blind spot now is gate 5 below: measuring the finished master against the raw recording, which is the one reference that cannot inherit a mistake.
+What covers the blind spot now is gate 5 below: measuring the native-canvas
+composited master against the raw recording, which is the one reference that
+cannot inherit a mistake. A separate derivative gate then binds the delivered
+crop or pillarbox back to that master.
+
+## Delivery aspect derivative
+
+Blocks delivery.
+
+Cross-orientation exports cannot be compared directly to the RAW frame band.
+A correct portrait-to-16:9 pillarbox or landscape-to-9:16 center crop changes
+the canvas enough to make an ordinary frame comparison fail.
+
+Gate 1 and Gate 5 therefore run on the native-canvas composited master. The
+delivery derivative gate reconstructs the exact aspect transform and compares
+the delivered file against that master at distributed timestamps plus the
+midpoint of every punch-in, b-roll event, and graphic. It also requires:
+
+- duration equality within one 30 fps frame;
+- identical decoded audio SHA-256;
+- audio-versus-video stream start within 25ms;
+- frame MAE no greater than 12 after the exact center crop or foreground crop.
+
+For a portrait pillarbox, the frame check extracts the center foreground from
+the 16:9 delivery and compares it with the portrait master. The generated side
+background is intentionally outside the proof region. For a landscape center
+crop, the check applies the exact 9:16 crop to the master before comparison.
+Synthetic tests cover both transforms and reject a visually correct derivative
+whose audio was replaced.
 
 ## Gate 5, sync to source
 
 Blocks delivery.
 
-At probe points chosen outside every overlay window, take 1.2 seconds of the master's audio and find where it sits in the raw recording by cross-correlation. Then find which raw frame the master is showing at that moment, matching a three-frame temporal band against spatially normalized RAW frames. Video time minus audio time is the true end-to-end desync, measured with no model and no opinion.
+At probe points chosen outside every overlay window, take 1.2 seconds of the
+native master's audio and find where it sits in the raw recording by
+cross-correlation. Then find which raw frame the master is showing at that
+moment, matching a three-frame temporal band against spatially normalized RAW
+frames. Video time minus audio time is the true end-to-end desync, measured
+with no model and no opinion.
 
 An external review of the first version found two holes, both fixed:
 
@@ -59,9 +120,9 @@ The applied offset was also the oracle. The gate compared its measurement agains
 
 The frame reference was the CFR intermediate, which inherits the same defects as the master. Frames are now matched against the raw file itself, replaying only the spatial deletterbox chain. The verifier derives that transform from the raw file on every invocation. It does not trust mutable state left by the render process, so Gate 5 produces the same spatial reference when rerun in a fresh process.
 
-The review also hardened the acceptance rules: every probe must individually sit within 67ms, since a median hides staircase drift; usable probes must cover both ends of the delivered speech and may not be more than 75 seconds apart, including edge coverage; audio matches need a uniqueness margin over the second-best peak so a repeated sentence cannot match the wrong take; frame matches need a margin over the runner-up so a static shot cannot match ambiguously; probes require transcript words inside the needle, not just waveform energy; and the master-to-raw time mapping must strictly increase, because cuts only remove material. A backward high-confidence match now blocks the run instead of being silently discarded. The frame score weights pixels that move across the three-frame sample, so facial motion is not drowned out by a static background. Container audio/video start-time differences are included when mapping decoded samples back to RAW presentation time.
+The review also hardened the acceptance rules: every probe must individually sit within 67ms, since a median hides staircase drift; usable probes must cover both ends of the delivered speech and may not be more than 30 seconds apart, including edge coverage; audio matches need a uniqueness margin over the second-best peak so a repeated sentence cannot match the wrong take; frame matches need a margin over the runner-up so a static shot cannot match ambiguously; probes require transcript words inside the needle, not just waveform energy; and the master-to-raw time mapping must strictly increase, because cuts only remove material. A backward high-confidence match now blocks the run instead of being silently discarded. The frame score weights pixels that move across the three-frame sample, so facial motion is not drowned out by a static background. Container audio/video start-time differences are included when mapping decoded samples back to RAW presentation time.
 
-Probe coverage uses fixed 20-second anchors. For each anchor, the gate tries the nearest eligible half-second position inside a bounded 10-second neighborhood and accepts the first unambiguous result. This matters at the endpoints: the first implementation called one timestamp "forced," but an overlay or pause at that exact timestamp erased the probe. The bounded search actually attempts nearby clear speech without opening an unlimited cherry-picking search.
+Probe coverage uses four runtime quartiles plus fixed 20-second anchors. The quartiles keep a 15-second short from becoming mathematically unable to reach the four-probe floor. For each anchor, the gate tries the nearest eligible half-second position inside a bounded 10-second neighborhood and accepts the first unambiguous result. This matters at the endpoints: the first implementation called one timestamp "forced," but an overlay or pause at that exact timestamp erased the probe. The bounded search actually attempts nearby clear speech without opening an unlimited cherry-picking search.
 
 Validated against a render a viewer had rejected by eye: blocked at median -233ms, which named the bogus -200ms correction plus one frame of CFR bias.
 
@@ -94,14 +155,26 @@ These cases can block a good video, but they do not certify a bad one:
 
 - A loud music or SFX bed can push needle correlation below 0.6. The concrete trigger is a 1.2-second speech window where the added bed carries enough unshared energy to erase the RAW speech peak. That probe is discarded; fewer than four usable probes blocks delivery.
 - A visually static talking head can leave too little timing evidence. The concrete trigger is fewer than 0.5 percent of pixels changing by four gray levels across the three-frame band, or a runner-up frame score within 1.0 of the winner. The probe is discarded.
-- B-roll or graphics can cover too much of the program. The concrete trigger is fewer than four speech probes outside the recorded overlay windows, missing either speech endpoint by more than ten seconds, or a gap above 75 seconds. Delivery blocks for insufficient coverage.
+- B-roll or graphics can cover too much of the program. The concrete trigger is fewer than four speech probes outside the recorded overlay windows, missing either speech endpoint by more than ten seconds, or a gap above 30 seconds. Delivery blocks for insufficient coverage. Short programs still receive four quartile anchors when four eligible speech windows exist.
 - Silence cannot become evidence. The concrete trigger is fewer than two transcript word midpoints inside a 1.2-second needle. The candidate is skipped.
 - VFR RAW files are searched by presentation time and their audio/video stream start-time delta is preserved. Irregular cadence can still make the 30fps neighborhood ambiguous, in which case the frame margin rejects the probe.
-- A staircase can hide between sampled probes if it begins and ends inside one unsampled interval. The per-probe worst-case rule prevents the median from hiding a sampled staircase, but the 75-second coverage ceiling is still sampling, not a continuous proof.
+- A staircase can hide between sampled probes if it begins and ends inside one unsampled interval. The per-probe worst-case rule prevents the median from hiding a sampled staircase, and the 30-second coverage ceiling limits the blind interval. This is still sampling, not a continuous proof.
 
 ## Independent ASR adjudication
 
-Script integrity begins with the finished master transcript. If a splice-implicated sentence would block delivery, the pipeline extracts only that contested window from the finished master and transcribes it again with the larger medium model, without a script prompt and without previous-text conditioning. The blocker clears only when this second pass recovers every meaningful script term missing from the primary transcript and covers at least 80 percent of the sentence. A model error, disagreement, or confirmed loss remains blocked.
+Script integrity begins with the finished master transcript. If a
+splice-implicated sentence would block delivery, the pipeline extracts only
+that contested window from the finished master and transcribes it again with
+the larger medium model, without a script prompt and without previous-text
+conditioning. The blocker clears only when this second pass recovers every
+meaningful script term missing from the primary transcript and covers at least
+80 percent of the sentence. A model error, disagreement, or confirmed loss
+remains blocked.
+
+A sentence with almost no delivered words and a recorded splice of at least
+two seconds in its script gap is mechanically missing. It blocks before model
+opinion, and neither a `FINE` verdict nor independent ASR of an unrelated
+window can clear it.
 
 This is a narrow false-positive guard, not permission for a cut detector to certify itself. Cut labels such as `pause`, `retake`, or `false start` do not exempt a sentence from review. The concrete production case was primary ASR hearing “priority, autonomy, and certainty” while targeted medium ASR heard “superiority, autonomy, and certainty, SAC” from the unchanged finished artifact. A regression also confirms that two ASR passes agreeing on “around Philly” cannot clear the missing “five hundred million years.”
 
@@ -109,7 +182,20 @@ This is a narrow false-positive guard, not permission for a cut detector to cert
 
 These populate `QA_REPORT.json`. A failed check leaves the artifact under an `*.UNVERIFIED.mp4` quarantine name and blocks upload. Completed renders enter quarantine before QA begins, so an exception inside a gate cannot strand an ungated file under a final-looking name. Only a full PASS promotes the file to its delivery name.
 
+Operator-supplied control files are also fail closed. A missing `--script`,
+`--edl`, `--music`, or `--background` path stops before media preflight. A
+mistyped path cannot silently disable a gate or switch director mode to
+automatic planning. Contradictory combinations such as `--edl --no-llm` or
+`--no-premium --background` also stop instead of ignoring operator intent.
+Internal sync probes with less than one second of decoded audio are failed and
+excluded from the usable-probe count.
+
 Loudness has to sit within 1.5 LUFS of target. The black-frame check is brand-aware, so dark runs inside diagram and card windows are treated as intentional rather than dropped frames. Without that exemption it false-fails on every gold-on-black card. The font check warns when your font is not installed and a system fallback was used. Speech retention confirms a sane fraction of the source survived, and there are sanity checks on captions and the selected output.
+
+Caption QA distinguishes burned and sidecar delivery. A burn request requires
+real caption renderer inputs to have entered the successful composite graph. A
+`--no-burn` run requires a nonempty SRT sidecar. Missing font and missing
+caption inputs can no longer pass merely because transcript words exist.
 
 The release CLI produces one aspect only. The former `--aspects all` path was removed because only the first derivative was being gated. A large Telegram watch copy is also compared directly against the gated master in both audio and video after transcoding; matching duration alone is not accepted as proof.
 
@@ -129,7 +215,7 @@ The release CLI produces one aspect only. The former `--aspects all` path was re
     "script_integrity": {
       "script_sentences": 35, "delivered": 27,
       "skipped_by_speaker": 1, "suspects": 8,
-      "damaged": [], "judge": "deepseek", "ok": true
+      "damaged": [], "judge": "deepseek-v4-pro", "ok": true
     }
   },
   "pass": true,

@@ -35,7 +35,7 @@ make check
 ```
 python deps  ok
 ffmpeg       ok
-llm          not configured (heuristic fallback will be used)
+llm          not configured (historical v1 demo used heuristic mode)
 ```
 
 That last line is fine, it will still produce a complete, verified video. Add a key when you want authored edits.

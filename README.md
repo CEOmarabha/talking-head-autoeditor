@@ -15,7 +15,7 @@ phase 2    word-guarded cut removed 18 pause(s), kept 92%, all 622 words preserv
            retake cut: [141.9-155.2] 3-word repeat plus self-correction aside
            false-start cut: [220.0-223.7] 2-word prefix repeat
            head-noise cut: [0.00-0.35] opening cough
-phase 4p   EDL via deepseek: 9 punch-ins, 10 b-roll, 9 graphics
+phase 4p   EDL via deepseek-v4-pro: 9 punch-ins, 10 b-roll, 9 graphics
 phase 7    QA gate
            sync probe @31.9s: offset=0.0ms OK      (x5)
            word integrity: 616/619 words in master (99.5%) PASS
@@ -46,17 +46,29 @@ A third bug left a 21-second dead tail after the speech ended, because a stale d
 
 The pattern connecting all three: every signal the editor trusts is a proxy, and proxies lie. Loudness stands in for speech. Model confidence stands in for clarity. Duration stands in for content. So the architecture stopped relying on proxies alone and started checking the finished artifact against what should be in it.
 
-## The five gates
+## The artifact gates
 
 After rendering, the pipeline re-analyses its own output file. Every release gate can stop delivery outright. The completed render stays under an `*.UNVERIFIED.mp4` quarantine name until all gates pass, then it is promoted to the final delivery name.
 
 ### Lip-sync verification
 
-Five probe points spread across the finished master, each shifted so it lands outside every punch-in, b-roll and graphic window recorded in the EDL, since the speaker's face is not on screen during those. At each point it compares the master against the pre-overlay cut in both streams: image match on the frame band below the captions, and normalized cross-correlation on the audio.
+Five probe points spread across the finished master, each shifted so it lands outside every punch-in, b-roll and graphic window recorded in the EDL, since the speaker's face is not on screen during those. At each point it compares the master against the pre-overlay cut in both streams: image match on the upper frame band above the captions, and normalized cross-correlation on the audio.
 
 Fails if any local render-equivalence probe drifts more than 25ms. The independent source gate also requires four usable probes, endpoint and gap coverage, a unique audio match, an unambiguous motion-weighted frame match, a strictly increasing RAW mapping, and a per-probe error no greater than 67ms. It derives raw spatial normalization inside the gate and searches a bounded neighborhood around fixed timeline anchors, so a fresh verifier process and an overlay on one exact endpoint cannot silently change coverage.
 
-This check has one blind spot: it compares the master against the cut, and both inherit whatever the correction stage did, so it passes happily on a wrong correction. A separate gate covers it by measuring the finished master directly against the raw recording, matching audio by cross-correlation and video by frame comparison. That gate blocked a render at -233ms and named the exact bad correction that caused it. Details in the verification doc.
+This check has one blind spot: it compares the master against the cut, and
+both inherit whatever the correction stage did, so it passes happily on a
+wrong correction. A separate gate covers it by measuring the native-canvas
+master directly against the raw recording, matching audio by cross-correlation
+and video by frame comparison. That gate blocked a render at -233ms and named
+the exact bad correction that caused it.
+
+The released aspect is then bound back to that native master. The gate
+reconstructs the exact 9:16 center crop or 16:9 portrait foreground, checks
+distributed frames and every planned visual midpoint, and requires matching
+decoded audio, duration, and stream start. This lets source sync remain
+geometrically meaningful without trusting an ungated recrop. Details are in
+the verification doc.
 
 ### Word integrity
 
@@ -78,7 +90,14 @@ DAMAGED   script: "it has been assigning status for around five hundred million 
           heard : "it's been a signing status for around Philly"
 ```
 
-The gate also cross-references its own splice ledger. A sentence can only be ruled damaged if a cut actually landed inside it. Without that check it would block videos over words the speech model merely misheard, which happened before the ledger existed.
+The gate also cross-references its own splice ledger. A sentence can only be
+ruled damaged if a cut actually landed inside it. Without that check it would
+block videos over words the speech model merely misheard, which happened
+before the ledger existed.
+
+A nearly absent sentence with a recorded splice of at least two seconds in its
+script gap is different: deterministic evidence marks it mechanically missing.
+The semantic model cannot certify that loss as an intentional skip.
 
 When a splice-implicated sentence would block, the gate transcribes only that
 window from the finished master again with the medium speech model. It clears
@@ -110,11 +129,20 @@ Four cutting detectors run in sequence. All of them work from the transcript, so
 
 `word_guarded_cut` removes silence between words, padded on both sides. `detect_retakes` finds lines you said twice, keeps the last read, and swallows the self-correction you muttered in between ("let me say that again"). It checks your script first, since a phrase that repeats there is deliberate writing rather than a flub. `detect_false_starts` catches restarts that change the ending, like "You never hesitate" becoming "You never compromise," where the repeat is too short for the run matcher to see. `detect_head_noise_audio` removes the cough on the opening frame, which speech models transcribe as a low-confidence word and ordinary cough detectors therefore miss.
 
-One model call then authors the edit decision list: punch-ins on emphasis, b-roll queries matched to what is being said, animated diagrams for frameworks and lists, stat cards for numbers. A deterministic heuristic produces the same shape when no model is configured, so nothing blocks on an API.
+DeepSeek V4 Pro authors the edit decision list, then a V4 Pro critic rewrites
+it. Remaining deterministic errors feed up to three bounded critic repair
+rounds. Every event must quote the words that justify it.
+Deterministic code finds that quote in the measured word timeline, replaces the
+model's proposed time, proves every displayed word and number was spoken
+nearby, and checks the opening hook, visual coverage, event spacing, density,
+collisions, and framework diagrams. Model mode fails closed. `--no-llm` is the
+explicit deterministic heuristic mode.
 
 Finishing is karaoke captions where each word lights up as it is spoken, sparse sound design, two-pass loudness to -14 LUFS, aspect-correct export, and a SHA-256 hash-lock with a QA receipt.
 
-Every phase is explained in [docs/PIPELINE.md](docs/PIPELINE.md).
+Every phase is explained in [docs/PIPELINE.md](docs/PIPELINE.md). The exact
+model contract and stop conditions are in
+[docs/DEEPSEEK_WORKFLOW.md](docs/DEEPSEEK_WORKFLOW.md).
 
 ## Install
 
@@ -129,7 +157,7 @@ make install
 That checks for ffmpeg and installs it if missing, builds a virtualenv, installs four Python packages, downloads the speech model, and sets up the Remotion diagram renderer if you have Node.
 
 ```bash
-cp .env.example .env      # add your keys, all of them optional
+cp .env.example .env      # add the keys used by your selected mode
 make check                # confirm everything resolves
 ```
 
@@ -137,13 +165,22 @@ make check                # confirm everything resolves
 
 | Key | Cost | Without it |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | about 1 cent per video | Heuristic edit decisions, no semantic script gate |
-| `PEXELS_API_KEY` | free | No stock b-roll, diagrams still render |
+| `DEEPSEEK_API_KEY` | usage priced by DeepSeek | Use explicit `--no-llm`; ambiguous script damage follows the mechanical fail-closed path |
+| `PEXELS_API_KEY` | free | Pixabay or local catalog must resolve each planned stock beat |
 | `PIXABAY_API_KEY` | free | One fewer b-roll source |
 | `ELEVENLABS_API_KEY` | optional | Synthesized sound-effect kit instead |
 | `TELEGRAM_BOT_TOKEN` | free | No push to your phone, files land on disk |
 
-DeepSeek V4 Flash alone runs the entire creative layer. Transcription, cutting, compositing, captions and diagrams are all local and free. The model is called twice per video: once to author the edit, once to judge script integrity.
+DeepSeek V4 Pro runs the creative director and critic passes with thinking
+enabled, maximum reasoning effort, and JSON mode. A third V4 Pro call runs only
+when the artifact transcript leaves an ambiguous script sentence. Transcription,
+cutting, timing, compositing, captions, diagrams, and every release gate remain
+deterministic.
+
+Every planned event must carry a contiguous 5-20 word quote copied exactly from
+the complete post-cut transcript. Model timecodes are only proposals. The
+validator finds that quote in measured word timings and writes the canonical
+time before rendering.
 
 ## Use it
 
@@ -161,7 +198,10 @@ make edit VIDEO=~/Movies/lesson1.mov SCRIPT=lesson1.txt
 make edit VIDEO=~/Movies/clip.mov STYLE=short ASPECT=9x16
 ```
 
-`SCRIPT` is optional and worth supplying. It powers caption correction, which fixes misheard words while leaving your deliberate paraphrases alone, and it feeds the semantic gate.
+`SCRIPT` is required by the default brand policy. It powers caption correction,
+which fixes misheard words while leaving deliberate paraphrases alone, and it
+feeds the semantic gate. Change `rules.require_script_gate` only when a
+scriptless production is an intentional policy decision.
 
 You get back the master, an SRT sidecar, `EDL.json` with every creative decision and its timing, `QA_REPORT.json` with the gate results and hash-lock, and `SCRIPT_INTEGRITY.json` with the sentence-by-sentence verdicts.
 

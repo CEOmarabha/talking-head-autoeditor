@@ -1,51 +1,75 @@
-"""Pluggable LLM + notification providers.
+"""LLM and notification providers.
 
-The pipeline never *requires* a model. Every LLM call has a deterministic
-fallback, so the editor produces a finished video with zero API keys, you just
-get fewer creative decisions (heuristic punch-ins instead of scripted ones) and
-one fewer verification gate.
-
-Configure with environment variables (or a .env file next to the repo root):
-
-    DEEPSEEK_API_KEY=sk-xxx      # cheapest; ~1 cent per video
-    OPENAI_API_KEY=sk-xxx        # or
-    ANTHROPIC_API_KEY=sk-ant-xxx   # or
-    LLM_MODEL=deepseek-chat        # optional override
-
-    TELEGRAM_BOT_TOKEN=123:ABC     # optional: delivery to your phone
-    TELEGRAM_CHAT_ID=123456789
-
-Priority order is DeepSeek -> OpenAI -> Anthropic -> local `hermes` CLI (if you
-happen to run one) -> None. `None` is a supported state, not an error.
+DeepSeek is an untrusted planner. Callers define the JSON contract and perform
+their own semantic validation after this transport layer verifies that the
+response is complete JSON. A model failure never becomes a successful
+"DeepSeek" result through an unnamed fallback.
 """
 from __future__ import annotations
 
+import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
-__all__ = ["llm_json", "llm_available", "notify", "send_video", "load_dotenv"]
+__all__ = [
+    "DEEPSEEK_MODELS",
+    "DEFAULT_DEEPSEEK_MODEL",
+    "ProviderConfigurationError",
+    "extract_json",
+    "llm_json",
+    "llm_available",
+    "notify",
+    "send_video",
+    "load_dotenv",
+]
 
 _TIMEOUT_DEFAULT = 300
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEEPSEEK_MODELS = frozenset({"deepseek-v4-pro", "deepseek-v4-flash"})
+_RETIRED_DEEPSEEK_MODELS = frozenset({"deepseek-chat", "deepseek-reasoner"})
+
+
+class ProviderConfigurationError(RuntimeError):
+    """A configured provider cannot satisfy the requested model contract."""
 
 
 def load_dotenv(root: Path | None = None) -> None:
-    """Populate os.environ from a .env file. Existing vars always win."""
+    """Load project settings, then the existing Hermes DeepSeek bridge.
+
+    Existing environment variables always win. The Hermes file is limited to
+    keys this program owns; unrelated credentials are never imported.
+    """
     root = root or Path(__file__).resolve().parent.parent
-    env = root / ".env"
-    if not env.exists():
-        return
-    for line in env.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    allowed = {
+        "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL",
+        "LLM_MODEL",
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "PEXELS_API_KEY", "PIXABAY_API_KEY", "ELEVENLABS_API_KEY",
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+        "TELEGRAM_HOME_CHANNEL", "CLIP_CATALOGS",
+    }
+    for env in (root / ".env", Path.home() / ".hermes" / ".env"):
+        if not env.exists():
             continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        for line in env.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key in allowed:
+                os.environ.setdefault(
+                    key, value.strip().strip("'\"")
+                )
 
 
 def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict | None:
@@ -55,28 +79,65 @@ def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        return None
+    except urllib.error.HTTPError as exc:
+        return {"_transport_error": f"http_{exc.code}"}
+    except urllib.error.URLError:
+        return {"_transport_error": "url_error"}
+    except TimeoutError:
+        return {"_transport_error": "timeout"}
+    except http.client.IncompleteRead:
+        return {"_transport_error": "incomplete_read"}
+    except http.client.HTTPException:
+        return {"_transport_error": "http_protocol_error"}
+    except json.JSONDecodeError:
+        return {"_transport_error": "non_json_response"}
+    except OSError:
+        return {"_transport_error": "os_error"}
 
 
-def _provider() -> tuple[str, str, str] | None:
-    """(name, api_key, model) for the first configured provider."""
-    if os.environ.get("DEEPSEEK_API_KEY"):
-        return ("deepseek", os.environ["DEEPSEEK_API_KEY"],
-                os.environ.get("LLM_MODEL", "deepseek-chat"))
+def _deepseek_model(model: str | None = None) -> str:
+    selected = (
+        model
+        or os.environ.get("DEEPSEEK_MODEL")
+        or DEFAULT_DEEPSEEK_MODEL
+    )
+    if selected in _RETIRED_DEEPSEEK_MODELS:
+        raise ProviderConfigurationError(
+            f"DeepSeek model {selected!r} was retired; use "
+            f"{DEFAULT_DEEPSEEK_MODEL!r}"
+        )
+    if selected not in DEEPSEEK_MODELS:
+        raise ProviderConfigurationError(
+            f"unsupported DeepSeek model {selected!r}; allowed: "
+            + ", ".join(sorted(DEEPSEEK_MODELS))
+        )
+    return selected
+
+
+def _provider(preferred: str | None = None,
+              model: str | None = None) -> tuple[str, str, str] | None:
+    """Return ``(name, api_key, model)`` for the requested provider."""
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
+    if preferred == "deepseek":
+        return (
+            ("deepseek", deepseek_key, _deepseek_model(model))
+            if deepseek_key else None
+        )
+    if deepseek_key:
+        return ("deepseek", deepseek_key, _deepseek_model(model))
     if os.environ.get("OPENAI_API_KEY"):
         return ("openai", os.environ["OPENAI_API_KEY"],
-                os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+                model or os.environ.get("LLM_MODEL", "gpt-4o-mini"))
     if os.environ.get("ANTHROPIC_API_KEY"):
         return ("anthropic", os.environ["ANTHROPIC_API_KEY"],
-                os.environ.get("LLM_MODEL", "claude-sonnet-4-5"))
+                model or os.environ.get("LLM_MODEL", "claude-sonnet-4-5"))
     if shutil.which("hermes"):
-        return ("hermes", "", os.environ.get("LLM_MODEL", "deepseek-chat"))
+        return ("hermes", "", model or DEFAULT_DEEPSEEK_MODEL)
     return None
 
 
-def llm_available() -> bool:
-    return _provider() is not None
+def llm_available(provider: str | None = None) -> bool:
+    return _provider(provider) is not None
 
 
 def extract_json(text: str, require: tuple[str, ...] = ()) -> dict | None:
@@ -113,78 +174,173 @@ def extract_json(text: str, require: tuple[str, ...] = ()) -> dict | None:
                     except Exception:
                         cand = None
                     if isinstance(cand, dict) and (
-                            not require or any(k in cand for k in require)):
+                            not require or all(k in cand for k in require)):
                         return cand
                     break
     return None
 
 
 def llm_json(prompt: str, require: tuple[str, ...] = (),
-             timeout: int = _TIMEOUT_DEFAULT, attempts: int = 3) -> dict | None:
-    """Ask the configured model for JSON. Returns None if unavailable/failed.
-
-    Callers MUST treat None as normal and fall back to deterministic logic.
-
-    Retries matter more than they look: a single dropped call used to collapse
-    the whole creative layer to the heuristic fallback (1 b-roll instead of 12)
-    and the only symptom was a thin-looking video. Transient timeouts are the
-    common case, so we back off and try again before giving up.
-    """
+             timeout: int = _TIMEOUT_DEFAULT, attempts: int = 3,
+             *, provider: str | None = None, model: str | None = None,
+             system: str = "", max_tokens: int = 32768,
+             reasoning_effort: str = "max",
+             validator: Callable[[dict], bool] | None = None,
+             purpose: str = "json_task",
+             receipt: dict | None = None) -> dict | None:
+    """Ask a model for complete JSON and record a safe execution receipt."""
+    record = receipt if receipt is not None else {}
+    record.clear()
+    record.update({
+        "purpose": purpose,
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "system_sha256": hashlib.sha256(system.encode()).hexdigest(),
+        "attempts": [],
+        "ok": False,
+    })
     for attempt in range(attempts):
-        got = _llm_json_once(prompt, require,
-                             timeout + attempt * (timeout // 2))
+        got = _llm_json_once(
+            prompt, require, timeout + attempt * (timeout // 2),
+            provider=provider, model=model, system=system,
+            max_tokens=max_tokens, reasoning_effort=reasoning_effort,
+            receipt=record,
+        )
+        if got is not None and validator is not None:
+            try:
+                if not validator(got):
+                    record["attempts"][-1]["result"] = "validator_rejected"
+                    got = None
+            except Exception as exc:
+                record["attempts"][-1]["result"] = (
+                    f"validator_error:{type(exc).__name__}"
+                )
+                got = None
         if got is not None:
+            record["ok"] = True
             return got
+        result = str(record["attempts"][-1].get("result", ""))
+        status_match = re.fullmatch(r"http_(\d{3})", result)
+        if (status_match
+                and 400 <= int(status_match.group(1)) < 500
+                and int(status_match.group(1)) not in {408, 429}):
+            break
         if attempt + 1 < attempts:
-            import time
             time.sleep(2 ** attempt)
     return None
 
 
 def _llm_json_once(prompt: str, require: tuple[str, ...],
-                   timeout: int) -> dict | None:
-    prov = _provider()
+                   timeout: int, *, provider: str | None = None,
+                   model: str | None = None, system: str = "",
+                   max_tokens: int = 32768,
+                   reasoning_effort: str = "max",
+                   receipt: dict | None = None) -> dict | None:
+    prov = _provider(provider, model)
     if prov is None:
+        if receipt is not None:
+            receipt["attempts"].append({"result": "provider_unavailable"})
         return None
     name, key, model = prov
+    if receipt is not None:
+        receipt.update({
+            "provider": name,
+            "model": model,
+            "reasoning_effort": (
+                reasoning_effort if name == "deepseek" else "provider_default"
+            ),
+            "json_mode": name == "deepseek",
+        })
+    attempt_receipt = {"result": "started"}
+    if receipt is not None:
+        receipt["attempts"].append(attempt_receipt)
     raw = ""
     if name == "hermes":
         try:
+            query = f"{system}\n\n{prompt}" if system else prompt
             p = subprocess.run(
-                ["hermes", "chat", "-q", prompt, "-Q", "--max-turns", "1"],
+                ["hermes", "chat", "-q", query, "-Q", "--max-turns", "1"],
                 capture_output=True, timeout=timeout)
+            if p.returncode:
+                attempt_receipt["result"] = f"exit_{p.returncode}"
+                return None
             raw = p.stdout.decode(errors="replace")
         except Exception:
+            attempt_receipt["result"] = "hermes_error"
             return None
     elif name == "anthropic":
+        messages = [{"role": "user", "content": prompt}]
+        payload = {"model": model, "max_tokens": max_tokens,
+                   "messages": messages}
+        if system:
+            payload["system"] = system
         data = _post("https://api.anthropic.com/v1/messages",
-                     {"model": model, "max_tokens": 8000,
-                      "messages": [{"role": "user", "content": prompt}]},
+                     payload,
                      {"x-api-key": key,
                       "anthropic-version": "2023-06-01"}, timeout)
-        if not data:
+        if not data or data.get("_transport_error"):
+            attempt_receipt["result"] = (
+                data.get("_transport_error", "empty_response")
+                if data else "empty_response"
+            )
+            return None
+        if data.get("stop_reason") not in (None, "end_turn", "stop_sequence"):
+            attempt_receipt["result"] = (
+                f"finish_{data.get('stop_reason', 'unknown')}"
+            )
             return None
         raw = "".join(b.get("text", "") for b in data.get("content", []))
     else:
         url = ("https://api.deepseek.com/chat/completions" if name == "deepseek"
                else "https://api.openai.com/v1/chat/completions")
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        payload = {"model": model, "messages": messages,
+                   "max_tokens": max_tokens}
+        if name == "deepseek":
+            payload.update({
+                "response_format": {"type": "json_object"},
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": reasoning_effort,
+            })
         data = _post(url,
-                     {"model": model, "messages": [
-                         {"role": "user", "content": prompt}]},
+                     payload,
                      {"Authorization": f"Bearer {key}"}, timeout)
-        if not data:
+        if not data or data.get("_transport_error"):
+            attempt_receipt["result"] = (
+                data.get("_transport_error", "empty_response")
+                if data else "empty_response"
+            )
             return None
         try:
-            raw = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            finish = choice.get("finish_reason")
+            attempt_receipt["finish_reason"] = finish
+            if finish != "stop":
+                attempt_receipt["result"] = f"finish_{finish or 'missing'}"
+                return None
+            raw = choice["message"]["content"] or ""
+            if data.get("system_fingerprint"):
+                attempt_receipt["system_fingerprint"] = (
+                    data["system_fingerprint"]
+                )
         except (KeyError, IndexError):
+            attempt_receipt["result"] = "malformed_response"
             return None
-    return extract_json(raw, require)
+    if not raw.strip():
+        attempt_receipt["result"] = "empty_content"
+        return None
+    parsed = extract_json(raw, require)
+    attempt_receipt["result"] = "json_ok" if parsed is not None else "json_invalid"
+    return parsed
 
 
 # ------------------------------------------------------------------ delivery
 def _tg() -> tuple[str, str] | None:
     tok, chat = (os.environ.get("TELEGRAM_BOT_TOKEN"),
-                 os.environ.get("TELEGRAM_CHAT_ID"))
+                 (os.environ.get("TELEGRAM_CHAT_ID")
+                  or os.environ.get("TELEGRAM_HOME_CHANNEL")))
     return (tok, chat) if tok and chat else None
 
 
@@ -194,8 +350,12 @@ def notify(text: str) -> bool:
     if not cfg:
         return False
     tok, chat = cfg
-    return _post(f"https://api.telegram.org/bot{tok}/sendMessage",
-                 {"chat_id": chat, "text": text}, {}, 60) is not None
+    result = _post(
+        f"https://api.telegram.org/bot{tok}/sendMessage",
+        {"chat_id": chat, "text": text}, {}, 60
+    )
+    return bool(result and not result.get("_transport_error")
+                and result.get("ok", True))
 
 
 def send_video(path: Path, caption: str = "",
