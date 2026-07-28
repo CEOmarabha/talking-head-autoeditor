@@ -86,6 +86,7 @@ def deletterbox(src: Path, workdir: Path) -> Path:
     return out
 
 
+CUT_BOUNDARIES: list = []   # splice positions in the current output timeline
 AV_OFFSET_MS = CFG.rules.av_offset_ms
 # Many phone apps record USB-microphone audio out of sync with the camera --
 # typically 80-200ms -- and the file is already wrong before any editing.
@@ -314,17 +315,29 @@ def _absorb_restart(words: list, norm: list, i: int,
     return start
 
 
+def _cut_edge(words: list, i: int) -> float:
+    """A cut boundary that can never land inside a word.
+
+    detect_retakes wrote `words[i].s - 0.10` directly, and when the preceding
+    word ended less than 100ms earlier that boundary sliced through it. In one
+    render it clipped "having" down to "hav", which the speech model then read
+    as "head", and the script gate correctly flagged the sentence as damaged.
+    The pause cutter always had this guard. The retake cutters did not."""
+    prev_end = words[i - 1]["e"] if i > 0 else 0.0
+    return round(max(prev_end + 0.03, words[i]["s"] - 0.10), 3)
+
+
 def detect_retakes(words: list, max_gap: float = 14.0,
                    min_n: int = 3) -> list:
-    """Retake removal (2026-07-25, the speaker: 'how did you not notice I messed up
+    """Retake removal (2026-07-25, Omar: 'how did you not notice I messed up
     the first time and didn't cut to where I repeat it correctly').
 
-    When you flubs a line he simply says it again. The transcript then
+    When Omar flubs a line he simply says it again. The transcript then
     contains the SAME word sequence twice, back to back. Keep the LAST take
     (the clean one) and cut everything from the start of the first attempt to
     the start of the final attempt. Longest repeat wins, so partial restarts
     ('a stranger cuts in front of you / a stranger cuts in front of you and
-    nobody..') collapse correctly."""
+    nobody...') collapse correctly."""
     norm = [re.sub(r"[^a-z0-9']", "", w["w"].lower()) for w in words]
     cuts, n, skip_to = [], len(words), 0
     for i in range(n):
@@ -343,24 +356,24 @@ def detect_retakes(words: list, max_gap: float = 14.0,
         if best:
             j, k = best
             start_i, why = i, f"retake ({k}-word repeat)"
-            # absorb the wind-up: a self-correction aside you says out loud
+            # absorb the wind-up: a self-correction aside Omar says out loud
             # ("alright, let's make that clear") and any short aborted
             # fragment right before it belong to the bad take, not the good one.
             back = _absorb_restart(words, norm, i)
             if back < i:
                 start_i, why = back, why + " + self-correction aside"
-            cuts.append({"s": max(0.0, words[start_i]["s"] - 0.10),
-                         "e": max(0.0, words[j]["s"] - 0.10), "why": why})
+            cuts.append({"s": _cut_edge(words, start_i),
+                         "e": _cut_edge(words, j), "why": why})
             skip_to = j
     for c in cuts:
-        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}, "
+        log(f"retake cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']} — "
             "keeping the later take")
     return cuts
 
 
 def detect_false_starts(words: list, script_path: Path | None = None,
                         max_words: int = 7, max_gap: float = 3.5) -> list:
-    """False-start removal (2026-07-25, you @3:42: 'You never hesitate.' ->
+    """False-start removal (2026-07-25, Omar @3:42: 'You never hesitate.' ->
     'You never compromise.').
 
     A retake that changes the ending shares only a short prefix, so the
@@ -368,8 +381,8 @@ def detect_false_starts(words: list, script_path: Path | None = None,
     sentences opening with the same >=2 words, the first one SHORT and
     abandoned, the second the real line. Cut the first.
 
-    Guards against you deliberate parallel structure ('What is my
-    Superiority signal.. What is my Autonomy signal..'): only short
+    Guards against Omar's deliberate parallel structure ('What is my
+    Superiority signal... What is my Autonomy signal...'): only short
     sentences qualify, and a first sentence that appears verbatim in the
     script is intentional and never cut."""
     script_prose = ""
@@ -399,21 +412,63 @@ def detect_false_starts(words: list, script_path: Path | None = None,
             continue
         phrase = " ".join(norm(x["w"]) for x in a).strip()
         if script_prose and phrase and phrase in script_prose:
-            continue        # you wrote it that way, intentional
-        cuts.append({"s": max(0.0, a[0]["s"] - 0.10),
-                     "e": max(0.0, b[0]["s"] - 0.10),
+            continue        # Omar wrote it that way — intentional
+        cuts.append({"s": _cut_edge(words, words.index(a[0])),
+                     "e": _cut_edge(words, words.index(b[0])),
                      "why": f"false start ({pre}-word prefix repeat)"})
     for c in cuts:
         log(f"false-start cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}")
     return cuts
 
 
+def detect_head_noise_audio(src: Path, max_burst: float = 0.7,
+                            min_gap: float = 0.14, window: float = 5.0) -> list:
+    """Opening cough/throat-clear, detected from the AUDIO (2026-07-25).
+
+    The word-level version of this check (`detect_lead_noise`) misses the
+    common case: whisper labels the cough with the first real word and gives
+    that 'word' a long duration spanning the silence after it, so there is no
+    measurable gap to find. The waveform has no such ambiguity -- a cough is a
+    short burst, then silence, then speech starts."""
+    import numpy as np
+    p = run([FFMPEG, "-v", "quiet", "-t", str(window), "-i", src,
+             "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+            check=False)
+    a = np.frombuffer(p.stdout, dtype=np.float32)
+    hop = 400                                     # 25ms bins
+    if len(a) < hop * 8:
+        return []
+    env = np.abs(a[:len(a) // hop * hop].reshape(-1, hop)).mean(1)
+    thr = max(float(env.max()) * 0.12, 0.012)
+    loud = env > thr
+    spans, i = [], 0
+    while i < len(loud):
+        if loud[i]:
+            j = i
+            while j < len(loud) and loud[j]:
+                j += 1
+            spans.append((i * 0.025, j * 0.025))
+            i = j
+        else:
+            i += 1
+    if len(spans) < 2:
+        return []
+    (s0, e0), (s1, _) = spans[0], spans[1]
+    if s0 <= 0.60 and (e0 - s0) <= max_burst and (s1 - e0) >= min_gap:
+        cut = {"s": 0.0, "e": max(0.0, s1 - 0.08),
+               "why": f"opening cough/throat clear ({e0 - s0:.2f}s burst, "
+                      f"{s1 - e0:.2f}s of silence after it)"}
+        log(f"head-noise cut: [{cut['s']:.2f}-{cut['e']:.2f}] {cut['why']}")
+        return [cut]
+    return []
+
+
 def detect_lead_noise(words: list, max_p: float = 0.70,
                       min_gap: float = 0.25) -> list:
-    """Throat-clear / cough on the opening frame (2026-07-25, the speaker: 'how about
+    """Throat-clear / cough on the opening frame (2026-07-25, Omar: 'how about
     cutting out the cough at the very beginning').
 
-    The cough detector only fires on loud spans containing NO words, but
+    The cough detector only fires on loud spans containing NO words — but
     whisper transcribes a cough as a low-confidence word ('Your', p=0.54),
     so it slipped through and became the first frame of the video. Signature:
     the FIRST word is low-confidence AND separated from the next word by a
@@ -554,6 +609,22 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     graph = (";".join(vparts + aparts) + ";"
              + "".join(vl) + f"concat=n={len(keeps)}:v=1:a=0[vout];"
              + "".join(al) + f"concat=n={len(keeps)}:v=0:a=1[aout]")
+    # BOUNDARY LEDGER (2026-07-25): remember where every splice lands in the
+    # OUTPUT timeline. The script gate uses this to tell real edit damage from
+    # a speech-model mishearing: if no splice falls inside a sentence, we did
+    # not damage it, whatever the transcript claims to have heard.
+    global CUT_BOUNDARIES
+    kept = []
+    for b in CUT_BOUNDARIES:                       # remap old boundaries
+        if any(s <= b <= e for s, e in drops):
+            continue                               # this splice was cut away
+        kept.append(b - sum(min(e, b) - s for s, e in drops if s < b))
+    acc = 0.0
+    for s, e in keeps[:-1]:                        # add this pass's splices
+        acc += e - s
+        kept.append(round(acc, 3))
+    CUT_BOUNDARIES = sorted(kept)
+
     # unique per call: apply_cuts now runs twice (word-guarded pause cut, then
     # anomaly cut) and reusing one name made input==output (ffmpeg exit 234).
     n = len(list(workdir.glob("retakes_cut*.mp4")))
@@ -678,8 +749,11 @@ def script_integrity(final_words: list[dict], script_path: Path,
         else:
             lo, hi = span.get(si, (0, -1))
             heard = " ".join(w["w"] for w in final_words[max(0, lo - 2):hi + 3])
+            t0 = final_words[max(0, lo)]["s"] if lo <= hi else 0.0
+            t1 = final_words[min(len(final_words) - 1, hi)]["e"] if lo <= hi else 0.0
             suspects.append({"script": s, "heard": heard,
-                             "matched": round(frac, 2)})
+                             "matched": round(frac, 2),
+                             "t0": round(t0, 2), "t1": round(t1, 2)})
 
     result = {"script_sentences": len(sents), "delivered": delivered,
               "skipped_by_speaker": skipped, "suspects": len(suspects),
@@ -716,9 +790,22 @@ def script_integrity(final_words: list[dict], script_path: Path,
             raise RuntimeError("no judge configured or call failed")
         verdicts = reply.get("verdicts", [])
         for v in verdicts:
-            if str(v.get("verdict", "")).upper().startswith("DAM"):
-                s = suspects[int(v["i"])]
-                result["damaged"].append({**s, "why": v.get("why", "")})
+            if not str(v.get("verdict", "")).upper().startswith("DAM"):
+                continue
+            sus = suspects[int(v["i"])]
+            spliced = any(sus["t0"] - 0.35 <= b <= sus["t1"] + 0.35
+                          for b in CUT_BOUNDARIES)
+            if not spliced:
+                # No cut landed here, so the edit did not damage this line.
+                # The speech model simply misheard it (low-confidence words
+                # like 'having' -> 'head is'). Report, never block.
+                result.setdefault("misheard", []).append(
+                    {**sus, "why": v.get("why", "")})
+                log(f"  ~ transcription artifact (no splice in "
+                    f"{sus['t0']:.1f}-{sus['t1']:.1f}s): "
+                    f"{sus['script'][:60]!r}")
+                continue
+            result["damaged"].append({**sus, "why": v.get("why", "")})
         result["judge"] = "deepseek"
     except Exception as e:
         # judge unavailable: mechanical fallback, damage = an interior run of
@@ -1170,6 +1257,7 @@ def main():
         cleanup = (detect_retakes(words)
                    + detect_false_starts(words, a.script)
                    + detect_lead_noise(words)
+                   + detect_head_noise_audio(cut)
                    + detect_dead_air(words, _dur(cut),
                                      min_pause=(0.55 if style == "short" else 0.9)))
         merged = []
