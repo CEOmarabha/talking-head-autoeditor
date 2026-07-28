@@ -83,6 +83,13 @@ class SafetyContracts(unittest.TestCase):
         self.assertEqual(failures[0]["from_raw_t"], 15.0)
         self.assertEqual(failures[0]["to_raw_t"], 14.5)
 
+    def test_duplicate_probe_is_not_a_backward_mapping(self):
+        matches = [
+            (199.3796, 255.31),
+            (199.3800, 255.31),
+        ]
+        self.assertEqual(pipeline._nonmonotonic_matches(matches), [])
+
     def test_multi_aspect_release_is_not_supported(self):
         self.assertNotIn("all", pipeline.SUPPORTED_ASPECTS)
 

@@ -250,7 +250,8 @@ def _nonmonotonic_matches(results: list[tuple]) -> list[dict]:
     return [
         {"from_master_t": round(a[0], 2), "to_master_t": round(b[0], 2),
          "from_raw_t": round(a[1], 2), "to_raw_t": round(b[1], 2)}
-        for a, b in zip(results, results[1:]) if b[1] <= a[1]
+        for a, b in zip(results, results[1:])
+        if b[0] > a[0] + 0.001 and b[1] <= a[1]
     ]
 
 
@@ -374,12 +375,21 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
     speech_end = max(word_mids) if word_mids else dur
     first_speech_probe = max(0.0, speech_start - 0.1)
     last_speech_probe = max(0.0, speech_end - 1.1)
-    cands = sorted(set(
+    candidate_pool = sorted(
         [first_speech_probe, last_speech_probe,
          5.0, max(5.0, dur - 6.0)]
-        + list(np.arange(6.0, dur - 4, max(8.0, (dur - 12) / 14)))))
-    cands = [t for t in cands
-             if all(not (a0 <= t <= b0) for a0, b0 in avoid)]
+        + list(np.arange(6.0, dur - 4, max(8.0, (dur - 12) / 14))))
+    candidate_pool = [
+        float(t) for t in candidate_pool
+        if all(not (a0 <= t <= b0) for a0, b0 in avoid)
+    ]
+    # Endpoint and regular-spacing candidates can differ only by floating
+    # noise. Treating both as independent probes creates an identical
+    # master/RAW pair, which is not a backward mapping.
+    cands = []
+    for candidate in candidate_pool:
+        if not cands or candidate - cands[-1] >= 0.25:
+            cands.append(candidate)
 
     results = []
     for Tm in cands:
@@ -623,7 +633,7 @@ def word_guarded_cut(src: Path, workdir: Path,
                      min_pause: float = 0.9, head: float = 0.30,
                      tail: float = 0.35) -> tuple[Path, float, list]:
     """Phase 2 REWRITE (2026-07-24 word-integrity incident): auto-editor cuts
-    by LOUDNESS, and you soft word-endings fall below any threshold, the
+    by LOUDNESS, and Omar's soft word-endings fall below any threshold — the
     retake lost 152/623 words MID-SENTENCE while 'kept 55%' looked legal.
     New law: the transcript is the single source of truth for what is speech.
     Transcribe the SOURCE first; silence may only be removed BETWEEN padded
@@ -634,19 +644,21 @@ def word_guarded_cut(src: Path, workdir: Path,
     raw_words = transcribe(src, workdir)
     dur = _dur(src) or 1.0
     if len(raw_words) < 10:
-        log("phase 2: <10 words transcribed, falling back to loudness cut")
+        log("phase 2: <10 words transcribed — falling back to loudness cut")
         out, ratio = silence_cut(src, workdir)
         return out, ratio, raw_words
     cuts = detect_dead_air(raw_words, dur, min_pause, head, tail)
+    for c in cuts:
+        c.setdefault("why", "pause")
     if not cuts:
         out = workdir / "cut.mp4"
         shutil.copy(src, out)
-        log("phase 2: word-guarded cut, no removable pauses; source kept whole")
+        log("phase 2: word-guarded cut — no removable pauses; source kept whole")
         return out, 1.0, raw_words
     out = apply_cuts(src, cuts, workdir)
     ratio = _dur(out) / dur
     log(f"phase 2: word-guarded cut removed {len(cuts)} pause(s) "
-        f"(≥{min_pause}s, pad {head}/{tail}s), kept {ratio:.0%}, "
+        f"(≥{min_pause}s, pad {head}/{tail}s) — kept {ratio:.0%}, "
         f"all {len(raw_words)} words preserved")
     return out, ratio, raw_words
 
@@ -932,8 +944,8 @@ def detect_anomaly_cuts(src: Path, words: list,
     survived to the final render. Conservative by design.
 
     SCRIPT SHIELD (2026-07-24, incident #3): low whisper confidence is NOT
-    proof of a flub, it cut 'Superiority, Autonomy,' out of the SAC reveal
-    because whisper was unsure of the words you said perfectly. When the
+    proof of a flub — it cut 'Superiority, Autonomy,' out of the SAC reveal
+    because whisper was unsure of the words Omar said perfectly. When the
     teleprompter script is known, a garble span whose words appear in the
     script is REAL CONTENT and is never cut."""
     cuts = []
@@ -948,8 +960,16 @@ def detect_anomaly_cuts(src: Path, words: list,
         if not script_toks:
             return False
         toks = [re.sub(r"[^a-z0-9']", "", w["w"].lower()) for w in span_words]
-        toks = [t for t in toks if len(t) > 2]
-        return bool(toks) and sum(t in script_toks for t in toks) / len(toks) >= 0.5
+        toks = [t for t in toks if len(t) >= 4]
+        # ANY scripted word protects the span. Requiring a majority deleted
+        # "on read" because the transcript spelled it "red", which is not in
+        # the script. And with NO testable words left, the honest answer is
+        # "no evidence this is garbage", so the span is protected too: a
+        # mis-hearing into short words ("left on read" -> "led to") once
+        # deleted a real line precisely because it left nothing to test.
+        if not toks:
+            return True
+        return any(t in script_toks for t in toks)
     # garble clusters
     run_w = []
     for w in words:
@@ -960,7 +980,7 @@ def detect_anomaly_cuts(src: Path, words: list,
                 if on_script(run_w):
                     log(f"anomaly SKIPPED [{run_w[0]['s']:.1f}-"
                         f"{run_w[-1]['e']:.1f}]: low confidence but the words "
-                        "are in the script, real content, not a flub")
+                        "are in the script — real content, not a flub")
                 else:
                     cuts.append({"s": max(0, run_w[0]["s"] - 0.1),
                                  "e": run_w[-1]["e"] + 0.1, "why": "garbled"})
@@ -995,7 +1015,7 @@ def detect_anomaly_cuts(src: Path, words: list,
             cuts.append({"s": round(a, 2), "e": round(b, 2), "why": "cough/noise"})
     for c in cuts:
         log(f"anomaly cut: [{c['s']:.1f}-{c['e']:.1f}] {c['why']}")
-    return [{"s": c["s"], "e": c["e"]} for c in cuts]
+    return [{"s": c["s"], "e": c["e"], "why": c["why"]} for c in cuts]
 
 
 def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
@@ -1040,15 +1060,28 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     # real edit damage from a speech-model mishearing.
     global CUT_BOUNDARIES
     kept = []
-    for b, r in CUT_BOUNDARIES:                     # remap old boundaries
+    for b, r, cap in CUT_BOUNDARIES:                # remap old boundaries
         if any(s0 <= b <= e0 for s0, e0 in drops):
             continue                                # this splice was cut away
-        kept.append((b - sum(min(e0, b) - s0 for s0, e0 in drops if s0 < b), r))
+        kept.append((b - sum(min(e0, b) - s0 for s0, e0 in drops if s0 < b),
+                     r, cap))
+    def _capable(gap_s, gap_e):
+        """True when any cut overlapping this gap can clip words: anomaly
+        cuts use raw timestamps, and director-mode cuts are hand-authored.
+        Pause, dead-air, retake and false-start cuts derive their edges from
+        word timestamps and cannot land inside a word."""
+        whys = [str(c.get("why", "")) for c in cuts
+                if float(c["s"]) < gap_e and float(c["e"]) > gap_s]
+        safe = ("pause", "dead air", "retake", "false start",
+                "lead-in noise", "opening cough")
+        return any(not w.startswith(safe) for w in whys) or not whys
+
     accf = 0
     for i, (sf, ef) in enumerate(keepf[:-1]):
         accf += ef - sf
         removed = (keepf[i + 1][0] - ef) / G
-        kept.append((round(accf / G, 3), round(removed, 3)))
+        kept.append((round(accf / G, 3), round(removed, 3),
+                     _capable(ef / G, keepf[i + 1][0] / G)))
     CUT_BOUNDARIES = sorted(kept)
 
     vparts, aparts, vl, al = [], [], [], []
@@ -1168,7 +1201,7 @@ def _gap_has_big_cut(sents, si, sent_of, span, final_words) -> bool:
             next_t = final_words[max(0, span[sj][0])]["s"]
             break
     return any(prev_t - 0.3 <= b <= next_t + 0.3 and r >= 2.0
-               for b, r in CUT_BOUNDARIES)
+               for b, r, _c in CUT_BOUNDARIES)
 
 
 def script_integrity(final_words: list[dict], script_path: Path,
@@ -1218,7 +1251,7 @@ def script_integrity(final_words: list[dict], script_path: Path,
             t0_ = final_words[max(0, lo_)]["s"]
             t1_ = final_words[min(len(final_words) - 1, hi_)]["e"]
             cut_near = any(t0_ - 0.6 <= b <= t1_ + 0.6
-                           for b, _r in CUT_BOUNDARIES)
+                           and cap for b, _r, cap in CUT_BOUNDARIES)
         gap_has_big_cut = (frac < 0.15
                            and _gap_has_big_cut(
                                sents, si, sent_of, span, final_words))
