@@ -79,6 +79,8 @@ def deletterbox(src: Path, workdir: Path) -> Path:
     out = workdir / "deletterboxed.mp4"
     log(f"phase 1.5: letterbox detected, true content {cw}x{chh} at "
         f"({cx},{cy}); cropping bars, canvas -> {target.replace(':','x')}")
+    global DELETTERBOX_VF
+    DELETTERBOX_VF = f"crop={cw}:{chh}:{cx}:{cy},scale={target}"
     run([FFMPEG, "-y", "-i", src, "-vf",
          f"crop={cw}:{chh}:{cx}:{cy},scale={target}",
          "-c:v", "libx264", "-preset", "fast", "-crf", "18",
@@ -86,7 +88,8 @@ def deletterbox(src: Path, workdir: Path) -> Path:
     return out
 
 
-CUT_BOUNDARIES: list = []   # splice positions in the current output timeline
+CUT_BOUNDARIES: list = []   # (position_s, removed_s) splices in the output timeline
+DELETTERBOX_VF = ""          # spatial chain deletterbox applied; gate 5 replays it on RAW frames
 AV_OFFSET_MS = CFG.rules.av_offset_ms
 # Many phone apps record USB-microphone audio out of sync with the camera --
 # typically 80-200ms -- and the file is already wrong before any editing.
@@ -204,20 +207,35 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
     return out
 
 
-def verify_sync_source(master: Path, cfr_video: Path, raw_src: Path,
-                       edl: dict, av_offset_ms: int, workdir: Path) -> dict:
+def verify_sync_source(master: Path, raw_src: Path, edl: dict,
+                       applied_ms: int, certified_ms: int,
+                       final_words: list, workdir: Path) -> dict:
     """HARD GATE 5: the finished master must be in sync with the RAW RECORDING.
 
-    verify_sync compares the master against the cut, and both inherit whatever
-    the correction stage did, so it reported 0.0ms on ten renders that were
-    visibly wrong. This gate uses the one reference that cannot lie. At probe
-    points outside every overlay window: match 1.2s of master AUDIO into the
-    raw recording by cross-correlation (sample-accurate, survives loudnorm at
-    0.99+), then find which raw-timeline FRAME the master shows at that moment.
-    Video time minus audio time = true desync, measured end to end.
-    Median must sit within 60ms of the intended correction, spread within 100ms\n    (two frame-grid quantizations alone can account for ~66ms of spread)."""
+    Review-hardened (2026-07-28). The first version had two holes named by an
+    external review: it compared the measurement against the value the
+    pipeline itself applied (so a wrong --av-offset validated itself), and it
+    matched frames against the CFR intermediate, which inherits the same
+    defects as the master. Now:
+      * the oracle is CERTIFIED truth: the offset a human ladder stored in a
+        sidecar next to the source (default 0). applied != certified fails.
+      * frames are matched against the RAW file itself, replaying only the
+        spatial deletterbox chain, selected by original presentation time.
+      * per-probe tolerance (a median hides staircases), forced probes near
+        both ends, a max gap between usable probes, audio-match uniqueness
+        margin, 3-frame temporal video matching with a runner-up margin, a
+        speech requirement from the transcript instead of waveform variance,
+        and monotonic master->raw time mapping (cuts only remove, so raw
+        positions must strictly increase)."""
     import numpy as np
     SR, FPS = 16000, 30.0
+    out = {"ok": False, "probes": [], "median_ms": None, "spread_ms": None,
+           "applied_ms": applied_ms, "certified_ms": certified_ms, "note": ""}
+    if applied_ms != certified_ms:
+        out["note"] = (f"applied offset {applied_ms:+d}ms is not the certified "
+                       f"source offset {certified_ms:+d}ms - refuse to certify")
+        log(f"sync-to-source: {out['note']} - BLOCKED")
+        return out
 
     def pcm(path):
         pr = run([FFMPEG, "-v", "quiet", "-i", path, "-vn", "-ac", "1",
@@ -225,8 +243,6 @@ def verify_sync_source(master: Path, cfr_video: Path, raw_src: Path,
         return np.frombuffer(pr.stdout, dtype=np.float32).astype(np.float64)
 
     raw_a, mas_a = pcm(raw_src), pcm(master)
-    out = {"ok": False, "probes": [], "median_ms": None, "spread_ms": None,
-           "expected_ms": av_offset_ms, "note": ""}
     if len(raw_a) < SR * 5 or len(mas_a) < SR * 5:
         out["note"] = "audio too short to verify"
         log("sync-to-source: cannot verify (audio too short) - BLOCKED")
@@ -245,63 +261,99 @@ def verify_sync_source(master: Path, cfr_video: Path, raw_src: Path,
         denom = np.sqrt(win_e * (needle ** 2).sum()) + 1e-9
         m = min(len(c), len(denom))
         sc = c[:m] / denom[:m]
-        i = int(np.argmax(sc))
-        return i / SR, float(sc[i])
+        i1 = int(np.argmax(sc))
+        best = float(sc[i1])
+        lo, hi = max(0, i1 - SR // 2), min(m, i1 + SR // 2)
+        sc2 = sc.copy(); sc2[lo:hi] = -1
+        second = float(sc2.max()) if m else -1.0
+        return i1 / SR, best, second
 
-    def band(path, t):
-        pr = run([FFMPEG, "-v", "quiet", "-ss", f"{t:.4f}", "-i", path,
-                  "-frames:v", "1", "-vf",
-                  "crop=iw:ih*0.45:0:ih*0.20,scale=160:44,format=gray",
+    spatial = (DELETTERBOX_VF + ",") if DELETTERBOX_VF else ""
+
+    def band(path, t, raw):
+        vf = ((spatial if raw else "")
+              + "crop=iw:ih*0.45:0:ih*0.20,scale=160:44,format=gray")
+        pr = run([FFMPEG, "-v", "quiet", "-ss", f"{max(0.0, t):.4f}",
+                  "-i", path, "-frames:v", "1", "-vf", vf,
                   "-f", "rawvideo", "-"], check=False)
         a = np.frombuffer(pr.stdout, dtype=np.uint8)
         return a[:160 * 44].reshape(44, 160).astype(np.float32) \
             if len(a) >= 160 * 44 else None
 
+    def band3(path, t, raw):
+        fs = [band(path, t + d, raw) for d in (-1 / 15, 0.0, 1 / 15)]
+        return None if any(f is None for f in fs) else np.stack(fs)
+
+    word_mids = [(w["s"] + w["e"]) / 2 for w in (final_words or [])]
+
     avoid = [(float(e["s"]) - 1.0, float(e["e"]) + 1.0)
              for k in ("broll", "graphics", "punch_ins")
              for e in (edl or {}).get(k, [])]
     dur = len(mas_a) / SR
-    step = max(10.0, (dur - 12) / 10)
-    probes = [t for t in np.arange(6.0, dur - 4, step)
-              if all(not (a0 <= t <= b0) for a0, b0 in avoid)][:10]
+    cands = sorted(set(
+        [5.0, max(5.0, dur - 6.0)]
+        + list(np.arange(6.0, dur - 4, max(8.0, (dur - 12) / 14)))))
+    cands = [t for t in cands
+             if all(not (a0 <= t <= b0) for a0, b0 in avoid)]
 
-    offs = []
-    for Tm in probes:
-        needle = mas_a[int(Tm * SR):int(Tm * SR) + n]
-        if len(needle) < n or needle.std() < 1e-4:
+    results = []
+    for Tm in cands:
+        i0 = int(Tm * SR)
+        needle = mas_a[i0:i0 + n]
+        if len(needle) < n:
             continue
-        Tr, sc = locate(needle - needle.mean())
-        if sc < 0.6:
+        # speech requirement: at least 2 transcript words inside the needle
+        if sum(1 for m0 in word_mids if Tm <= m0 <= Tm + 1.2) < 2:
             continue
-        fm = band(master, Tm)
+        Tr, sc, sc2 = locate(needle - needle.mean())
+        if sc < 0.6 or (sc - sc2) < 0.08:      # weak or not unique
+            continue
+        fm = band3(master, Tm, raw=False)
         if fm is None:
             continue
-        best_k, best_mae = None, 1e18
+        maes = {}
         for k in range(-9, 10):
-            fr = band(cfr_video, Tr + k / FPS)
-            if fr is None:
-                continue
-            mae = float(np.abs(fr - fm).mean())
-            if mae < best_mae:
-                best_k, best_mae = k, mae
-        if best_k is None or best_mae > 30:
+            fr = band3(raw_src, Tr + k / FPS, raw=True)
+            if fr is not None:
+                maes[k] = float(np.abs(fr - fm).mean())
+        if not maes:
             continue
-        ms = best_k * 1000.0 / FPS
-        offs.append(ms)
-        out["probes"].append({"t": round(float(Tm), 1),
-                              "raw_t": round(Tr, 2), "corr": round(sc, 3),
-                              "desync_ms": round(ms), "mae": round(best_mae, 1)})
+        bk = min(maes, key=maes.get)
+        rest = [v for k2, v in maes.items() if abs(k2 - bk) > 1]
+        if maes[bk] > 30 or (rest and min(rest) - maes[bk] < 1.0):
+            continue                            # ambiguous frame match
+        results.append((float(Tm), Tr, sc, bk * 1000.0 / FPS, maes[bk]))
+
+    # monotonicity: cuts only remove material, so Tr must increase with Tm
+    results.sort()
+    mono, last_tr = [], -1e9
+    for r in results:
+        if r[1] > last_tr - 0.2:
+            mono.append(r); last_tr = r[1]
+    results = mono
+
+    for Tm, Tr, sc, ms, mae in results:
+        out["probes"].append({"t": round(Tm, 1), "raw_t": round(Tr, 2),
+                              "corr": round(sc, 3), "desync_ms": round(ms),
+                              "mae": round(mae, 1)})
+    offs = [ms for _, _, _, ms, _ in results]
     if len(offs) < 4:
         out["note"] = f"only {len(offs)} usable probe(s), cannot verify"
         log(f"sync-to-source: {out['note']} - BLOCKED")
         return out
+    gaps = [b[0] - a[0] for a, b in zip(results, results[1:])]
     med = float(np.median(offs))
     spread = float(max(offs) - min(offs))
+    worst = max(abs(o - certified_ms) for o in offs)
     out["median_ms"] = round(med)
     out["spread_ms"] = round(spread)
-    out["ok"] = abs(med - av_offset_ms) <= 60 and spread <= 100
+    out["worst_ms"] = round(worst)
+    out["max_gap_s"] = round(max(gaps), 1) if gaps else 0.0
+    out["ok"] = (abs(med - certified_ms) <= 60 and worst <= 67
+                 and spread <= 100 and (not gaps or max(gaps) <= 75))
     log(f"sync-to-source: {len(offs)} probes vs RAW, median {med:+.0f}ms "
-        f"(intended {av_offset_ms:+d}ms), spread {spread:.0f}ms - "
+        f"worst {worst:.0f}ms spread {spread:.0f}ms max-gap "
+        f"{out['max_gap_s']}s (certified {certified_ms:+d}ms) - "
         f"{'PASS' if out['ok'] else 'FAIL - DELIVERY BLOCKED'}")
     (workdir / "sync_to_source.json").write_text(json.dumps(out, indent=2))
     return out
@@ -321,7 +373,8 @@ def verify_no_retakes(final_words: list, script_path: Path | None = None,
     duplicate found HERE means a flub shipped. Repeats that also appear twice
     in the script are deliberate writing and are ignored, same shield the
     cutter uses."""
-    survivors = detect_retakes(final_words, script_path=script_path)
+    survivors = (detect_retakes(final_words, script_path=script_path)
+                 + detect_false_starts(final_words, script_path))
     out = {"survivors": [], "ok": True}
     for c in survivors:
         said = " ".join(w["w"] for w in final_words
@@ -605,7 +658,12 @@ def detect_retakes(words: list, max_gap: float = 14.0,
             j, k = best
             if script_norm:
                 phrase = " " + " ".join(norm[i:i + k]) + " "
-                if script_norm.count(phrase) >= 2:
+                spoken_all = " " + " ".join(norm) + " "
+                # deliberate only if the script repeats it AT LEAST as often
+                # as it was delivered; a third delivered occurrence of a
+                # twice-scripted phrase is still a flub
+                if 2 <= script_norm.count(phrase) and \
+                        spoken_all.count(phrase) <= script_norm.count(phrase):
                     log(f"retake SKIPPED [{words[i]['s']:.1f}]: "
                         f"'{' '.join(w['w'] for w in words[i:i + k])[:45]}' "
                         "repeats in the script too, so it is deliberate")
@@ -842,56 +900,66 @@ def detect_anomaly_cuts(src: Path, words: list,
 def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
     """Director-mode retake removal: delete [s,e) ranges (flubbed takes,
     trailing 'um's) with frame-accurate AV re-encode + concat. Caller must
-    re-transcribe afterwards, all downstream times are post-cut."""
+    re-transcribe afterwards — all downstream times are post-cut."""
     if not cuts:
         return src
     total = _dur(src)
-    # GRID SNAP: video trims quantize to the 30fps frame grid while audio
-    # trims cut at sample precision, so every unsnapped boundary contributes
-    # up to 33ms of AV mismatch and ~30 boundaries random-walk it past 100ms.
-    # Snapping both streams to the same grid keeps segment durations equal.
-    G = 30.0
-    drops = sorted((max(0.0, round(float(c["s"]) * G) / G),
-                    min(total, round(float(c["e"]) * G) / G))
+    # INTEGER TRIMS (2026-07-28, review finding): snapping to the grid and
+    # then serializing with :.3f re-broke the boundaries. 0.0666666 becomes
+    # 0.067, trim's end is exclusive, and a rounded value flips whether the
+    # boundary frame is admitted while atrim cuts at the printed decimal. A
+    # three-range repro measured 65ms of A/V mismatch. Frames and samples are
+    # integers, so the graph is now built from integers only: video by
+    # start_frame/end_frame, audio by start_sample/end_sample at exactly
+    # 1600 samples per frame (48000Hz / 30fps, both enforced by cfr_normalize).
+    G, SPF = 30.0, 1600
+    pr = run([FFPROBE, "-v", "quiet", "-select_streams", "v:0",
+              "-show_entries", "stream=nb_frames", "-of", "csv=p=0", src],
+             check=False)
+    try:
+        total_f = int(pr.stdout.decode().strip())
+    except ValueError:
+        total_f = int(round(total * G))
+    dropf = sorted((max(0, int(round(float(c["s"]) * G))),
+                    min(total_f, int(round(float(c["e"]) * G))))
                    for c in cuts)
-    drops = [(a0, b0) for a0, b0 in drops if b0 - a0 > 1.0 / G]
-    keeps, t = [], 0.0
-    for s, e in drops:
-        if s > t:
-            keeps.append((t, s))
-        t = max(t, e)
-    if t < total - 0.05:
-        keeps.append((t, total))
-    # SINGLE-PASS trim/concat (2026-07-24 lip-sync fix #2): per-segment files
-    # + concat demuxer accumulate AAC-frame rounding (~20-40ms per boundary)
-    # and lips drift. The concat FILTER joins video frames and audio samples
-    # exactly, in one encode - no container rounding, no priming gaps.
+    dropf = [(a0, b0) for a0, b0 in dropf if b0 > a0]
+    keepf, tf = [], 0
+    for sf, ef in dropf:
+        if sf > tf:
+            keepf.append((tf, sf))
+        tf = max(tf, ef)
+    if tf < total_f:
+        keepf.append((tf, total_f))
+    drops = [(sf / G, ef / G) for sf, ef in dropf]      # seconds, for logs/ledger
+    keeps = [(sf / G, ef / G) for sf, ef in keepf]
+
+    # BOUNDARY LEDGER: remember where every splice lands in the OUTPUT
+    # timeline and how much it removed. The script gate uses this to tell
+    # real edit damage from a speech-model mishearing.
+    global CUT_BOUNDARIES
+    kept = []
+    for b, r in CUT_BOUNDARIES:                     # remap old boundaries
+        if any(s0 <= b <= e0 for s0, e0 in drops):
+            continue                                # this splice was cut away
+        kept.append((b - sum(min(e0, b) - s0 for s0, e0 in drops if s0 < b), r))
+    accf = 0
+    for i, (sf, ef) in enumerate(keepf[:-1]):
+        accf += ef - sf
+        removed = (keepf[i + 1][0] - ef) / G
+        kept.append((round(accf / G, 3), round(removed, 3)))
+    CUT_BOUNDARIES = sorted(kept)
+
     vparts, aparts, vl, al = [], [], [], []
-    for i, (s, e) in enumerate(keeps):
-        vparts.append(f"[0:v]trim=start={s:.3f}:end={e:.3f},"
+    for i, (sf, ef) in enumerate(keepf):
+        vparts.append(f"[0:v]trim=start_frame={sf}:end_frame={ef},"
                       f"setpts=PTS-STARTPTS[kv{i}]")
-        aparts.append(f"[0:a]atrim=start={s:.3f}:end={e:.3f},"
+        aparts.append(f"[0:a]atrim=start_sample={sf * SPF}:end_sample={ef * SPF},"
                       f"asetpts=PTS-STARTPTS[ka{i}]")
         vl.append(f"[kv{i}]"); al.append(f"[ka{i}]")
     graph = (";".join(vparts + aparts) + ";"
              + "".join(vl) + f"concat=n={len(keeps)}:v=1:a=0[vout];"
              + "".join(al) + f"concat=n={len(keeps)}:v=0:a=1[aout]")
-    # BOUNDARY LEDGER (2026-07-25): remember where every splice lands in the
-    # OUTPUT timeline. The script gate uses this to tell real edit damage from
-    # a speech-model mishearing: if no splice falls inside a sentence, we did
-    # not damage it, whatever the transcript claims to have heard.
-    global CUT_BOUNDARIES
-    kept = []
-    for b in CUT_BOUNDARIES:                       # remap old boundaries
-        if any(s <= b <= e for s, e in drops):
-            continue                               # this splice was cut away
-        kept.append(b - sum(min(e, b) - s for s, e in drops if s < b))
-    acc = 0.0
-    for s, e in keeps[:-1]:                        # add this pass's splices
-        acc += e - s
-        kept.append(round(acc, 3))
-    CUT_BOUNDARIES = sorted(kept)
-
     # unique per call: apply_cuts now runs twice (word-guarded pause cut, then
     # anomaly cut) and reusing one name made input==output (ffmpeg exit 234).
     n = len(list(workdir.glob("retakes_cut*.mp4")))
@@ -901,6 +969,19 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
          "-c:v", "libx264", "-preset", "fast", "-crf", "18",
          "-c:a", "aac", "-b:a", "192k", out], timeout=3600)
     removed = sum(e - s for s, e in drops)
+    pr2 = run([FFPROBE, "-v", "quiet", "-show_entries",
+               "stream=codec_type,duration", "-of", "json", out], check=False)
+    try:
+        streams = json.loads(pr2.stdout.decode())["streams"]
+        vd = next(float(x["duration"]) for x in streams
+                  if x["codec_type"] == "video")
+        ad = next(float(x["duration"]) for x in streams
+                  if x["codec_type"] == "audio")
+        if abs(vd - ad) > 0.034:
+            log(f"apply_cuts WARNING: A/V stream durations differ by "
+                f"{(vd - ad) * 1000:+.0f}ms after cutting - investigate")
+    except (StopIteration, KeyError, ValueError):
+        pass
     log(f"director cuts: removed {len(drops)} range(s), {removed:.1f}s "
         f"(flubs/retakes/coughs) -> {_dur(out):.1f}s")
     return out
@@ -968,12 +1049,30 @@ def script_correct(words: list[dict], script_path: Path) -> list[dict]:
     return words
 
 
+def _gap_has_big_cut(sents, si, sent_of, span, final_words) -> bool:
+    """A script sentence with almost no delivered words is an intentional skip
+    ONLY if no large cut sits in the gap where it should have been. A cut of
+    2s or more there means the edit may have deleted the whole sentence."""
+    prev_t = 0.0
+    for sj in range(si - 1, -1, -1):
+        if sj in span:
+            prev_t = final_words[min(len(final_words) - 1, span[sj][1])]["e"]
+            break
+    next_t = final_words[-1]["e"] if final_words else 0.0
+    for sj in range(si + 1, len(sents)):
+        if sj in span:
+            next_t = final_words[max(0, span[sj][0])]["s"]
+            break
+    return any(prev_t - 0.3 <= b <= next_t + 0.3 and r >= 2.0
+               for b, r in CUT_BOUNDARIES)
+
+
 def script_integrity(final_words: list[dict], script_path: Path,
                      workdir: Path) -> dict:
-    """HARD GATE 3 : compare the DELIVERED speech to the
+    """HARD GATE 3 (Omar 2026-07-24): compare the DELIVERED speech to the
     teleprompter script SEMANTICALLY.
 
-    you law: "I paraphrase, I add elaboration, I skip sentences, that is
+    Omar's law: "I paraphrase, I add elaboration, I skip sentences — that is
     NOT a loss of integrity. The idea was still said, in my own wording."
     So only real DAMAGE fails: a sentence the edit chopped mid-thought
     (the 2026-07-24 incident: 'assigning status for around five hundred
@@ -1009,10 +1108,18 @@ def script_integrity(final_words: list[dict], script_path: Path,
         if not idx:
             continue
         frac = sum(hit[i] for i in idx) / len(idx)
-        if frac >= 0.80:
+        big_cut_near = False
+        lo_, hi_ = span.get(si, (None, None))
+        if lo_ is not None:
+            t0_ = final_words[max(0, lo_)]["s"]
+            t1_ = final_words[min(len(final_words) - 1, hi_)]["e"]
+            big_cut_near = any(t0_ - 0.6 <= b <= t1_ + 0.6 and r >= 2.0
+                               for b, r in CUT_BOUNDARIES)
+        if frac >= 0.93 or (frac >= 0.80 and not big_cut_near):
             delivered += 1
-        elif frac < 0.15:
-            skipped += 1          # you skipped it on purpose, allowed
+        elif frac < 0.15 and not _gap_has_big_cut(sents, si, sent_of, span,
+                                                  final_words):
+            skipped += 1          # skipped by choice, no large cut nearby
         else:
             lo, hi = span.get(si, (0, -1))
             heard = " ".join(w["w"] for w in final_words[max(0, lo - 2):hi + 3])
@@ -1023,18 +1130,18 @@ def script_integrity(final_words: list[dict], script_path: Path,
                              "t0": round(t0, 2), "t1": round(t1, 2)})
 
     result = {"script_sentences": len(sents), "delivered": delivered,
-              "skipped_by_speaker": skipped, "suspects": len(suspects),
+              "skipped_by_omar": skipped, "suspects": len(suspects),
               "damaged": [], "ok": True}
     if not suspects:
         log(f"script integrity: {delivered} delivered, {skipped} skipped "
-            f"by choice, 0 suspect. PASS")
+            f"by choice, 0 suspect — PASS")
         return result
 
     # --- DeepSeek judges: paraphrase/skip = fine, mid-sentence damage = fail
     payload = json.dumps([{"i": i, "script": s["script"], "heard": s["heard"]}
                           for i, s in enumerate(suspects)], indent=0)
     prompt = (
-        "You are QA for a video editor. you reads a teleprompter script but "
+        "You are QA for a video editor. Omar reads a teleprompter script but "
         "PARAPHRASES freely, ADDS his own elaboration, and sometimes SKIPS "
         "sentences on purpose. All of that is perfectly fine.\n"
         "The ONLY failure is DAMAGE: the editor's cut destroyed his speech, so "
@@ -1050,18 +1157,39 @@ def script_integrity(final_words: list[dict], script_path: Path,
         'year figure, sentence ends in nonsense"}]}\n'
         'verdict is one of: FINE, DAMAGED.\n\nITEMS:\n' + payload)
     try:
-        reply = providers.llm_json(
-            prompt, require=("verdicts",),
-            timeout=min(600, 180 + len(payload) // 15))
-        if reply is None:
-            raise RuntimeError("no judge configured or call failed")
-        verdicts = reply.get("verdicts", [])
+        hermes = str(Path.home() / ".hermes/hermes-agent/venv/bin/hermes")
+        p = run([hermes, "chat", "-q", prompt, "-Q", "--provider", "deepseek",
+                 "-m", "deepseek-v4-flash", "--max-turns", "1"],
+                timeout=min(600, 180 + len(payload) // 15), check=False)
+        raw = p.stdout.decode(errors="replace")
+        sid = re.search(r"session_id:\s*(\S+)",
+                        raw + p.stderr.decode(errors="replace"))
+        if sid:
+            run([hermes, "sessions", "delete", sid.group(1), "--yes"],
+                timeout=30, check=False)
+        m = re.search(r"\{.*\}", raw, re.S)
+        verdicts = json.loads(m.group(0))["verdicts"] if m else []
+        answered = {int(v.get("i", -1)) for v in verdicts
+                    if str(v.get("verdict", "")).strip()}
+        missing_idx = set(range(len(suspects))) - answered
+        if missing_idx:
+            log(f"script integrity: judge left {len(missing_idx)} suspect(s) "
+                "unanswered - judging them mechanically (fail-closed)")
+            for mi in sorted(missing_idx):
+                sus = suspects[mi]
+                spliced = any(sus["t0"] - 0.35 <= b <= sus["t1"] + 0.35
+                              for b, _r in CUT_BOUNDARIES) \
+                    if "t0" in sus else True
+                if spliced and sus.get("matched", 1.0) < 0.8:
+                    result["damaged"].append(
+                        {**sus, "why": "unanswered by judge; a splice lands "
+                                       "in this sentence"})
         for v in verdicts:
             if not str(v.get("verdict", "")).upper().startswith("DAM"):
                 continue
             sus = suspects[int(v["i"])]
             spliced = any(sus["t0"] - 0.35 <= b <= sus["t1"] + 0.35
-                          for b in CUT_BOUNDARIES)
+                          for b, _r in CUT_BOUNDARIES)
             if not spliced:
                 # No cut landed here, so the edit did not damage this line.
                 # The speech model simply misheard it (low-confidence words
@@ -1075,9 +1203,9 @@ def script_integrity(final_words: list[dict], script_path: Path,
             result["damaged"].append({**sus, "why": v.get("why", "")})
         result["judge"] = "deepseek"
     except Exception as e:
-        # judge unavailable: mechanical fallback, damage = an interior run of
+        # judge unavailable: mechanical fallback — damage = an interior run of
         # >=3 script words missing while BOTH flanks of the sentence matched
-        log(f"script integrity: judge unavailable ({type(e).__name__}), "
+        log(f"script integrity: judge unavailable ({type(e).__name__}) — "
             "mechanical fallback")
         result["judge"] = "mechanical"
         for si, s in enumerate(sents):
@@ -1095,9 +1223,11 @@ def script_integrity(final_words: list[dict], script_path: Path,
                             "an otherwise-matching sentence"})
     result["ok"] = not result["damaged"]
     (workdir / "script_integrity.json").write_text(json.dumps(result, indent=2))
+    mis = len(result.get("misheard", []))
     log(f"script integrity: {delivered} delivered, {skipped} skipped by "
-        f"choice, {len(suspects)} reviewed -> {len(result['damaged'])} "
-        f"DAMAGED, {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
+        f"choice, {len(suspects)} reviewed -> {len(result['damaged'])} DAMAGED"
+        + (f", {mis} transcription artifact(s)" if mis else "")
+        + f" — {'PASS' if result['ok'] else 'FAIL - DELIVERY BLOCKED'}")
     for d in result["damaged"]:
         log(f"  ✗ script: {d['script'][:80]!r}")
         log(f"    heard : {d['heard'][:80]!r}  ({d.get('why','')[:60]})")
@@ -1403,13 +1533,14 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                 "silence-cut removed too much, likely quiet audio; "
                 "re-record closer to mic or re-run (guardrail should have "
                 "shipped source uncut)"}
-    p = run([FFMPEG, "-i", outs["16x9"], "-af",
+    primary = next(iter(outs.values()))
+    p = run([FFMPEG, "-i", primary, "-af",
              "loudnorm=I=-14:TP=-1:print_format=json", "-f", "null", "-"], check=False)
     m = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", p.stderr.decode(errors="replace"))
     li = float(json.loads(m.group(0))["input_i"]) if m else None
     qa["checks"]["loudness_-14LUFS"] = {"measured": li,
                                         "ok": li is not None and -15.5 <= li <= -12.5}
-    bd = run([FFMPEG, "-i", outs["16x9"], "-vf", "blackdetect=d=0.5:pix_th=0.10",
+    bd = run([FFMPEG, "-i", primary, "-vf", "blackdetect=d=0.5:pix_th=0.10",
               "-an", "-f", "null", "-"], check=False)
     runs = [(float(m.group(1)), float(m.group(2))) for m in re.finditer(
         r"black_start:([\d.]+) black_end:([\d.]+)",
@@ -1493,13 +1624,22 @@ def main():
     fixed = deletterbox(src, work)
     if fixed != src:
         src = fixed
-    # Constants come from human calibration (brand.yaml / --av-offset) ONLY.
-    # The mouth-motion auto-measure mis-measured twice and each "correction"
-    # CREATED the desync it claimed to fix. The authority on whether a render
-    # is in sync is verify_sync_source: master vs the raw recording itself.
-    offset = a.av_offset
+    # CERTIFIED OFFSET: the only trusted source of a nonzero correction is a
+    # human calibration stored in a sidecar next to the recording
+    # ("<video>.avoffset", integer ms). A bare --av-offset still renders, but
+    # gate 5 refuses to certify a correction that no human certified.
+    cert_file = Path(str(orig_src) + ".avoffset")
+    certified = 0
+    if cert_file.exists():
+        try:
+            certified = int(cert_file.read_text().strip())
+            log(f"av-offset: certified {certified:+d}ms from {cert_file.name}")
+        except ValueError:
+            log(f"av-offset: unreadable sidecar {cert_file.name}, treating as 0")
+    offset = a.av_offset if a.av_offset else certified
     if offset:
-        log(f"av-offset: applying configured {offset:+d}ms")
+        log(f"av-offset: applying {offset:+d}ms"
+            + ("" if offset == certified else " (NOT CERTIFIED)"))
     src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
@@ -1658,9 +1798,9 @@ def main():
     qa["checks"]["retake_residue"] = residue
     qa["pass"] = qa["pass"] and residue["ok"]
     # GATE 5: true end-to-end sync, master vs the raw recording.
-    ssync = verify_sync_source(main_out_v, src, orig_src,
+    ssync = verify_sync_source(main_out_v, orig_src,
                                edl if (not a.no_premium and words) else {},
-                               offset, work)
+                               offset, certified, final_words, work)
     qa["checks"]["sync_to_source"] = ssync
     qa["pass"] = qa["pass"] and ssync["ok"]
     qa["pass"] = qa["pass"] and sync["ok"]
@@ -1680,7 +1820,8 @@ def main():
     # 0.92, not 0.97: this compares whisper against whisper on the SAME audio,
     # and its own run-to-run variance is ~1-3% (v6 read 96.3% on a master the
     # semantic judge passed clean). Real damage is nothing like marginal, # the 2026-07-24 incident scored 75%. script_integrity is the sharp gate.
-    wi_ok = word_ratio >= 0.92
+    missing = len(words) - _kept
+    wi_ok = word_ratio >= 0.96 and missing <= 40
     qa["checks"]["word_integrity"] = {
         "expected_words": len(words), "found_in_master": _kept,
         "ratio": round(word_ratio, 3), "ok": wi_ok,
@@ -1701,13 +1842,28 @@ def main():
                         work / "script_integrity.json").exists() else None
     (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
     log(f"lip-sync verification: {'PASS' if sync['ok'] else 'FAIL - DELIVERY BLOCKED'}")
+    if not qa["pass"]:
+        # a failed master must not sit on disk under a final-looking name
+        demoted = {}
+        for k, v in list(outs.items()):
+            q = v.with_name(v.stem + ".UNVERIFIED" + v.suffix)
+            try:
+                v.rename(q)
+                demoted[k] = q
+                qa["release"][k]["file"] = str(q)
+            except OSError:
+                pass
+        if demoted:
+            outs.update(demoted)
+            (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
+            log("QA failed: master(s) renamed *.UNVERIFIED - not for upload")
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
     # One Telegram ping per COMPLETED render (full pipeline: master + all
     # variants + QA + hash-lock). Previews/partials never reach this line.
     try:
-        mins = int(_dur(outs["16x9"]) // 60)
-        secs = int(_dur(outs["16x9"]) % 60)
+        mins = int(_dur(next(iter(outs.values()))) // 60)
+        secs = int(_dur(next(iter(outs.values()))) % 60)
         verdict = "QA PASS ✅" if qa["pass"] else "QA NEEDS REVIEW ❌"
         providers.notify(f"Render complete: {src.stem}\n"
                          f"{mins}:{secs:02d} - {verdict}\n-> {outdir}")
@@ -1740,6 +1896,10 @@ def main():
                  "-b:v", f"{vbit}k", "-maxrate", f"{vbit+300}k",
                  "-bufsize", f"{vbit*2}k", "-c:a", "aac", "-b:a", "128k",
                  "-movflags", "+faststart", tg_file], check=False)
+        if tg_file != main_out and tg_file.exists():
+            if abs((_dur(tg_file) or 0) - (_dur(main_out) or 0)) > 0.05:
+                raise RuntimeError("watch copy duration differs from the "
+                                   "gated master - not sending it")
         if tg_file.exists():
             caption = (f"{src.stem} - watch copy"
                        + ("" if tg_file == main_out else

@@ -51,30 +51,21 @@ What covers the blind spot now is gate 5 below: measuring the finished master ag
 
 Blocks delivery.
 
-At probe points chosen outside every overlay window, take 1.2 seconds of the master's audio and find where it sits in the raw recording by cross-correlation. That match is sample-accurate and survives loudness normalization at 0.99+ correlation. Then find which raw-timeline frame the master is showing at that same moment, by comparing a mid-frame band against the raw frames around the audio position. Video time minus audio time is the true end-to-end desync, measured with no model, no mouth heuristics, and no opinion.
+At probe points chosen outside every overlay window, take 1.2 seconds of the master's audio and find where it sits in the raw recording by cross-correlation. Then find which raw frame the master is showing at that moment, matching a three-frame temporal band against spatially normalized RAW frames. Video time minus audio time is the true end-to-end desync, measured with no model and no opinion.
 
-The median across probes must sit within 60ms of the intended correction and the spread within 100ms, since two frame-grid quantizations alone account for about 66ms of spread.
+An external review of the first version found two holes, both fixed:
 
-Validated against the render a viewer had rejected by eye: the gate blocked it and reported the desync at -233ms, which matched the bogus -200ms "correction" that had been applied, plus one frame of CFR bias. The measurement found not just that the render was wrong but exactly what had made it wrong.
+The applied offset was also the oracle. The gate compared its measurement against the correction the pipeline had just applied, so a wrong `--av-offset -200` would measure -200, match -200, and pass. Now the oracle is independent: the only trusted nonzero correction is one a human calibration stored in a sidecar file next to the recording, and an applied value that does not match the certified value fails the gate outright.
 
-One structural fix rides along with this gate. Video trims quantize to the frame grid while audio trims cut at sample precision, so every cut boundary used to contribute up to 33ms of mismatch, and thirty boundaries random-walk that past 100ms. Cut boundaries are now snapped to the frame grid before cutting, which makes each segment's audio and video durations exactly equal.
+The frame reference was the CFR intermediate, which inherits the same defects as the master. Frames are now matched against the raw file itself, replaying only the spatial deletterbox chain.
 
-## Gate 4, retake residue
+The review also hardened the acceptance rules: every probe must individually sit within 67ms, since a median hides staircase drift; probes are forced near both ends; usable probes may not be more than 75 seconds apart; audio matches need a uniqueness margin over the second-best peak so a repeated sentence cannot match the wrong take; frame matches need a margin over the runner-up so a static shot cannot match ambiguously; probes require transcript words inside the needle, not just waveform energy; and the master-to-raw time mapping must be monotonic, because cuts only remove material.
 
-Blocks delivery.
+Validated against a render a viewer had rejected by eye: blocked at median -233ms, which named the bogus -200ms correction plus one frame of CFR bias.
 
-Re-transcribes the delivered master and runs the same repeated-phrase detection the cutter uses. Anything it finds is a flubbed take that survived into the finished video.
+### The cut-boundary fix that rides along
 
-Every other guarantee in this pipeline checks the artifact rather than the plan. Retake removal was the one job still trusted to simply run correctly, and it failed in a way that was invisible from the inside: the detector removed a spoken self-correction and the bad take following it, but its walk-back to catch the aborted fragment in front stopped at the fragment's own sentence boundary. The stumble stayed in the video while everything around it was cleaned up, and no check was looking at the output for repeats, so it shipped.
-
-Repeats that appear twice in the script are ignored, the same shield the cutter uses, since a phrase written twice is deliberate.
-
-Run against the render that shipped wrong, it blocks and names each survivor:
-
-```
-retake residue: 4 flubbed take(s) SURVIVED - DELIVERY BLOCKED
-  x [139.6-155.2] "A man with in or woman. Alright, let's make that clear..."
-```
+Video trims quantize to the frame grid while audio trims cut at sample precision. The first fix snapped boundaries to the grid but then serialized them as three-decimal strings, and a rounded value flips whether the boundary frame is admitted: a three-range repro measured 65ms of A/V mismatch. Trims are now built from integers only, video by frame index and audio by sample index at exactly 1600 samples per frame, and the same repro measures 0.3ms. After every cut the stream durations are compared and a mismatch above one frame is logged.
 
 ## The non-blocking checks
 
