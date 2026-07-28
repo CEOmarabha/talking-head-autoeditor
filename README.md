@@ -38,13 +38,15 @@ and reported 0.0ms.
 
 ### Watch the v2 walkthrough
 
-[![Watch the v2 walkthrough on Mainframe](https://img.shields.io/badge/watch_the_v2_walkthrough-Mainframe-111111?style=for-the-badge)](https://mainframe.app/v/0e49f2ee64c35514238070afcbe68f5e)
+[![Watch the narrated v2 walkthrough](docs/media/mainframe-v2-walkthrough.jpg)](https://github.com/CEOmarabha/talking-head-autoeditor/releases/download/v2.0.0/mainframe-v2-walkthrough.mp4)
 
-Mainframe generated the walkthrough from the v2 pull request just after the
-release went live. GitHub preserved the
+[Watch or download the 1:06 MP4](https://github.com/CEOmarabha/talking-head-autoeditor/releases/download/v2.0.0/mainframe-v2-walkthrough.mp4).
+It is hosted on GitHub and does not require a Mainframe account.
+
+Mainframe narrated the walkthrough from the v2 pull request just after the
+release went live. GitHub also preserved the
 [successful video check](https://github.com/CEOmarabha/talking-head-autoeditor/runs/90422810538)
-that produced it. Playback is hosted by Mainframe and currently uses Mainframe
-sign-in.
+that produced it.
 
 The correction estimator is retired from production decisions. Source sync is
 measured from the finished master back to the RAW recording, nonzero offsets
