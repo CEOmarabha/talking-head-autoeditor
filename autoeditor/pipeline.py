@@ -1,9 +1,9 @@
 """Verified talking-head auto-editor.
 
-Raw camera file in, upload-ready cut out, with no human in the loop -- and
-three mechanical gates that BLOCK delivery if the edit damaged your words or
-your lip sync. See README.md for the architecture and docs/VERIFICATION.md for
-why the gates exist.
+Raw camera file in, upload-ready cut out, with fail-closed artifact gates that
+BLOCK delivery if the edit damaged your words, retakes, or lip sync. See
+README.md for the architecture and docs/VERIFICATION.md for why the gates
+exist.
 """
 from __future__ import annotations
 import argparse, json, hashlib, os, re, shutil, subprocess, sys, tempfile, time
@@ -90,11 +90,10 @@ def deletterbox(src: Path, workdir: Path) -> Path:
 
 CUT_BOUNDARIES: list = []   # (position_s, removed_s) splices in the output timeline
 DELETTERBOX_VF = ""          # spatial chain deletterbox applied; gate 5 replays it on RAW frames
-AV_OFFSET_MS = CFG.rules.av_offset_ms
-# Many phone apps record USB-microphone audio out of sync with the camera --
-# typically 80-200ms -- and the file is already wrong before any editing.
-# Measure yours once with `make calibrate`, then set rules.av_offset_ms.
-# Positive delays the audio (use when audio LEADS the video).
+AV_OFFSET_MS = 0
+SUPPORTED_ASPECTS = ("auto", "16x9", "9x16")
+# Automatic measurement is retired from decisions. A nonzero value may only
+# come from a human ladder sidecar bound to the exact RAW file.
 
 
 def measure_av_offset(src: Path, start: float = 15.0,
@@ -207,6 +206,72 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
     return out
 
 
+def certified_av_offset(raw_src: Path) -> tuple[int, str]:
+    """Load a human calibration cryptographically bound to the RAW file.
+
+    ``<recording>.avoffset`` must be JSON containing ``offset_ms`` and
+    ``source_sha256``. A stale sidecar must not certify a replacement file
+    that happens to reuse the same filename.
+    """
+    cert_file = Path(str(raw_src) + ".avoffset")
+    if not cert_file.exists():
+        return 0, "no calibration sidecar; certified default is 0ms"
+    try:
+        payload = json.loads(cert_file.read_text())
+        offset = int(payload["offset_ms"])
+        expected_hash = str(payload["source_sha256"]).lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise ValueError("source_sha256 must be 64 lowercase hex characters")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        return 0, f"invalid calibration sidecar: {e}"
+    h = hashlib.sha256()
+    with raw_src.open("rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    if h.hexdigest() != expected_hash:
+        return 0, "calibration sidecar source hash does not match RAW"
+    return offset, f"certified {offset:+d}ms from {cert_file.name}"
+
+
+def resolve_av_offset(raw_src: Path, requested_offset: int | None) -> tuple[int, int, str]:
+    """Resolve the applied offset and reject values not certified for this RAW."""
+    certified, note = certified_av_offset(raw_src)
+    applied = certified if requested_offset is None else requested_offset
+    if applied != certified:
+        raise ValueError(
+            f"requested {applied:+d}ms but this source certifies "
+            f"{certified:+d}ms ({note})"
+        )
+    return applied, certified, note
+
+
+def _nonmonotonic_matches(results: list[tuple]) -> list[dict]:
+    """Return every adjacent master-to-RAW mapping that moves backward."""
+    return [
+        {"from_master_t": round(a[0], 2), "to_master_t": round(b[0], 2),
+         "from_raw_t": round(a[1], 2), "to_raw_t": round(b[1], 2)}
+        for a, b in zip(results, results[1:]) if b[1] <= a[1]
+    ]
+
+
+def _stream_start_delta(path: Path) -> float:
+    """Return audio-start minus video-start on the container timeline."""
+    probe = run([
+        FFPROBE, "-v", "quiet", "-show_entries",
+        "stream=codec_type,start_time", "-of", "json", path
+    ], check=False)
+    try:
+        streams = json.loads(probe.stdout.decode()).get("streams", [])
+        starts = {
+            stream["codec_type"]: float(stream.get("start_time", 0.0))
+            for stream in streams
+            if stream.get("codec_type") in {"audio", "video"}
+        }
+        return starts.get("audio", 0.0) - starts.get("video", 0.0)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return 0.0
+
+
 def verify_sync_source(master: Path, raw_src: Path, edl: dict,
                        applied_ms: int, certified_ms: int,
                        final_words: list, workdir: Path) -> dict:
@@ -243,6 +308,10 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
         return np.frombuffer(pr.stdout, dtype=np.float32).astype(np.float64)
 
     raw_a, mas_a = pcm(raw_src), pcm(master)
+    raw_start_delta = _stream_start_delta(raw_src)
+    master_start_delta = _stream_start_delta(master)
+    out["raw_stream_start_delta_ms"] = round(raw_start_delta * 1000)
+    out["master_stream_start_delta_ms"] = round(master_start_delta * 1000)
     if len(raw_a) < SR * 5 or len(mas_a) < SR * 5:
         out["note"] = "audio too short to verify"
         log("sync-to-source: cannot verify (audio too short) - BLOCKED")
@@ -284,14 +353,30 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
         fs = [band(path, t + d, raw) for d in (-1 / 15, 0.0, 1 / 15)]
         return None if any(f is None for f in fs) else np.stack(fs)
 
+    def frame_score(reference, candidate):
+        # Weight pixels that actually change across the three-frame master
+        # sample. This keeps the mouth and other facial motion from being
+        # drowned out by a large static wall in the full-width safety band.
+        motion = np.abs(reference[2] - reference[0])
+        weight = 1.0 + 4.0 * np.minimum(motion / 24.0, 1.0)
+        return float(
+            (np.abs(candidate - reference) * weight[None, :, :]).mean()
+            / weight.mean()
+        )
+
     word_mids = [(w["s"] + w["e"]) / 2 for w in (final_words or [])]
 
     avoid = [(float(e["s"]) - 1.0, float(e["e"]) + 1.0)
              for k in ("broll", "graphics", "punch_ins")
              for e in (edl or {}).get(k, [])]
     dur = len(mas_a) / SR
+    speech_start = min(word_mids) if word_mids else 0.0
+    speech_end = max(word_mids) if word_mids else dur
+    first_speech_probe = max(0.0, speech_start - 0.1)
+    last_speech_probe = max(0.0, speech_end - 1.1)
     cands = sorted(set(
-        [5.0, max(5.0, dur - 6.0)]
+        [first_speech_probe, last_speech_probe,
+         5.0, max(5.0, dur - 6.0)]
         + list(np.arange(6.0, dur - 4, max(8.0, (dur - 12) / 14)))))
     cands = [t for t in cands
              if all(not (a0 <= t <= b0) for a0, b0 in avoid)]
@@ -306,51 +391,67 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
         if sum(1 for m0 in word_mids if Tm <= m0 <= Tm + 1.2) < 2:
             continue
         Tr, sc, sc2 = locate(needle - needle.mean())
+        Tr += raw_start_delta
         if sc < 0.6 or (sc - sc2) < 0.08:      # weak or not unique
             continue
-        fm = band3(master, Tm, raw=False)
+        fm = band3(master, Tm + master_start_delta, raw=False)
         if fm is None:
             continue
+        motion_fraction = float(np.mean(np.abs(fm[2] - fm[0]) >= 4.0))
+        if motion_fraction < 0.005:
+            continue                            # no visual timing evidence
         maes = {}
         for k in range(-9, 10):
             fr = band3(raw_src, Tr + k / FPS, raw=True)
             if fr is not None:
-                maes[k] = float(np.abs(fr - fm).mean())
+                maes[k] = frame_score(fm, fr)
         if not maes:
             continue
         bk = min(maes, key=maes.get)
         rest = [v for k2, v in maes.items() if abs(k2 - bk) > 1]
         if maes[bk] > 30 or (rest and min(rest) - maes[bk] < 1.0):
             continue                            # ambiguous frame match
-        results.append((float(Tm), Tr, sc, bk * 1000.0 / FPS, maes[bk]))
+        results.append((float(Tm), Tr, sc, bk * 1000.0 / FPS, maes[bk],
+                        motion_fraction))
 
-    # monotonicity: cuts only remove material, so Tr must increase with Tm
+    # Monotonicity is a hard invariant. Silently dropping a backward match can
+    # cherry-pick four plausible probes from an invalid mapping.
     results.sort()
-    mono, last_tr = [], -1e9
-    for r in results:
-        if r[1] > last_tr - 0.2:
-            mono.append(r); last_tr = r[1]
-    results = mono
-
-    for Tm, Tr, sc, ms, mae in results:
+    backwards = _nonmonotonic_matches(results)
+    for Tm, Tr, sc, ms, mae, motion_fraction in results:
         out["probes"].append({"t": round(Tm, 1), "raw_t": round(Tr, 2),
                               "corr": round(sc, 3), "desync_ms": round(ms),
-                              "mae": round(mae, 1)})
-    offs = [ms for _, _, _, ms, _ in results]
+                              "mae": round(mae, 1),
+                              "motion_fraction": round(motion_fraction, 3)})
+    if backwards:
+        out["nonmonotonic"] = backwards
+        out["note"] = "master-to-RAW matches move backward in time"
+        (workdir / "sync_to_source.json").write_text(json.dumps(out, indent=2))
+        log(f"sync-to-source: {out['note']} - BLOCKED")
+        return out
+    offs = [ms for _, _, _, ms, _, _ in results]
     if len(offs) < 4:
         out["note"] = f"only {len(offs)} usable probe(s), cannot verify"
         log(f"sync-to-source: {out['note']} - BLOCKED")
         return out
-    gaps = [b[0] - a[0] for a, b in zip(results, results[1:])]
+    internal_gaps = [b[0] - a[0] for a, b in zip(results, results[1:])]
+    coverage_gaps = ([max(0.0, results[0][0] - speech_start)]
+                     + internal_gaps
+                     + [max(0.0, speech_end - results[-1][0])])
+    start_covered = results[0][0] <= speech_start + 10.0
+    end_covered = results[-1][0] >= speech_end - 10.0
     med = float(np.median(offs))
     spread = float(max(offs) - min(offs))
     worst = max(abs(o - certified_ms) for o in offs)
     out["median_ms"] = round(med)
     out["spread_ms"] = round(spread)
     out["worst_ms"] = round(worst)
-    out["max_gap_s"] = round(max(gaps), 1) if gaps else 0.0
+    out["max_gap_s"] = round(max(coverage_gaps), 1)
+    out["start_covered"] = start_covered
+    out["end_covered"] = end_covered
     out["ok"] = (abs(med - certified_ms) <= 60 and worst <= 67
-                 and spread <= 100 and (not gaps or max(gaps) <= 75))
+                 and spread <= 100 and max(coverage_gaps) <= 75
+                 and start_covered and end_covered)
     log(f"sync-to-source: {len(offs)} probes vs RAW, median {med:+.0f}ms "
         f"worst {worst:.0f}ms spread {spread:.0f}ms max-gap "
         f"{out['max_gap_s']}s (certified {certified_ms:+d}ms) - "
@@ -978,8 +1079,11 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
         ad = next(float(x["duration"]) for x in streams
                   if x["codec_type"] == "audio")
         if abs(vd - ad) > 0.034:
-            log(f"apply_cuts WARNING: A/V stream durations differ by "
-                f"{(vd - ad) * 1000:+.0f}ms after cutting - investigate")
+            delta_ms = (vd - ad) * 1000
+            log(f"apply_cuts BLOCKED: A/V stream durations differ by "
+                f"{delta_ms:+.0f}ms after cutting")
+            raise RuntimeError(
+                f"apply_cuts produced {delta_ms:+.0f}ms A/V duration mismatch")
     except (StopIteration, KeyError, ValueError):
         pass
     log(f"director cuts: removed {len(drops)} range(s), {removed:.1f}s "
@@ -1108,17 +1212,20 @@ def script_integrity(final_words: list[dict], script_path: Path,
         if not idx:
             continue
         frac = sum(hit[i] for i in idx) / len(idx)
-        big_cut_near = False
+        cut_near = False
         lo_, hi_ = span.get(si, (None, None))
         if lo_ is not None:
             t0_ = final_words[max(0, lo_)]["s"]
             t1_ = final_words[min(len(final_words) - 1, hi_)]["e"]
-            big_cut_near = any(t0_ - 0.6 <= b <= t1_ + 0.6 and r >= 2.0
-                               for b, r in CUT_BOUNDARIES)
-        if frac >= 0.93 or (frac >= 0.80 and not big_cut_near):
+            cut_near = any(t0_ - 0.6 <= b <= t1_ + 0.6
+                           for b, _r in CUT_BOUNDARIES)
+        gap_has_big_cut = (frac < 0.15
+                           and _gap_has_big_cut(
+                               sents, si, sent_of, span, final_words))
+        cut_implicated = cut_near or gap_has_big_cut
+        if frac >= 0.93 or (frac >= 0.80 and not cut_near):
             delivered += 1
-        elif frac < 0.15 and not _gap_has_big_cut(sents, si, sent_of, span,
-                                                  final_words):
+        elif frac < 0.15 and not gap_has_big_cut:
             skipped += 1          # skipped by choice, no large cut nearby
         else:
             lo, hi = span.get(si, (0, -1))
@@ -1127,7 +1234,8 @@ def script_integrity(final_words: list[dict], script_path: Path,
             t1 = final_words[min(len(final_words) - 1, hi)]["e"] if lo <= hi else 0.0
             suspects.append({"script": s, "heard": heard,
                              "matched": round(frac, 2),
-                             "t0": round(t0, 2), "t1": round(t1, 2)})
+                             "t0": round(t0, 2), "t1": round(t1, 2),
+                             "cut_implicated": cut_implicated})
 
     result = {"script_sentences": len(sents), "delivered": delivered,
               "skipped_by_omar": skipped, "suspects": len(suspects),
@@ -1169,28 +1277,22 @@ def script_integrity(final_words: list[dict], script_path: Path,
                 timeout=30, check=False)
         m = re.search(r"\{.*\}", raw, re.S)
         verdicts = json.loads(m.group(0))["verdicts"] if m else []
-        answered = {int(v.get("i", -1)) for v in verdicts
-                    if str(v.get("verdict", "")).strip()}
-        missing_idx = set(range(len(suspects))) - answered
-        if missing_idx:
-            log(f"script integrity: judge left {len(missing_idx)} suspect(s) "
-                "unanswered - judging them mechanically (fail-closed)")
-            for mi in sorted(missing_idx):
-                sus = suspects[mi]
-                spliced = any(sus["t0"] - 0.35 <= b <= sus["t1"] + 0.35
-                              for b, _r in CUT_BOUNDARIES) \
-                    if "t0" in sus else True
-                if spliced and sus.get("matched", 1.0) < 0.8:
-                    result["damaged"].append(
-                        {**sus, "why": "unanswered by judge; a splice lands "
-                                       "in this sentence"})
+        validated = {}
+        for v in verdicts:
+            vi = int(v.get("i", -1))
+            verdict = str(v.get("verdict", "")).upper()
+            if (vi not in range(len(suspects))
+                    or verdict not in {"FINE", "DAMAGED"}
+                    or vi in validated):
+                raise ValueError("judge returned invalid or duplicate verdict")
+            validated[vi] = verdict
+        if set(validated) != set(range(len(suspects))):
+            raise ValueError("judge did not answer every suspect")
         for v in verdicts:
             if not str(v.get("verdict", "")).upper().startswith("DAM"):
                 continue
             sus = suspects[int(v["i"])]
-            spliced = any(sus["t0"] - 0.35 <= b <= sus["t1"] + 0.35
-                          for b, _r in CUT_BOUNDARIES)
-            if not spliced:
+            if not sus["cut_implicated"]:
                 # No cut landed here, so the edit did not damage this line.
                 # The speech model simply misheard it (low-confidence words
                 # like 'having' -> 'head is'). Report, never block.
@@ -1208,19 +1310,11 @@ def script_integrity(final_words: list[dict], script_path: Path,
         log(f"script integrity: judge unavailable ({type(e).__name__}) — "
             "mechanical fallback")
         result["judge"] = "mechanical"
-        for si, s in enumerate(sents):
-            idx = [i for i, x in enumerate(sent_of) if x == si]
-            if not idx or not (0.15 <= sum(hit[i] for i in idx) / len(idx) < 0.80):
-                continue
-            runs, cur = [], 0
-            for i in idx:
-                cur = cur + 1 if not hit[i] else 0
-                runs.append(cur)
-            if hit[idx[0]] and hit[idx[-1]] and max(runs) >= 3:
+        for sus in suspects:
+            if sus["cut_implicated"]:
                 result["damaged"].append(
-                    {"script": s, "heard": "", "matched": 0.0,
-                     "why": f"{max(runs)} consecutive words missing inside "
-                            "an otherwise-matching sentence"})
+                    {**sus, "why": "semantic judge unavailable or incomplete; "
+                                    "a cut is implicated in this sentence"})
     result["ok"] = not result["damaged"]
     (workdir / "script_integrity.json").write_text(json.dumps(result, indent=2))
     mis = len(result.get("misheard", []))
@@ -1577,6 +1671,41 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
     return qa
 
+
+def quarantine_outputs(outs: dict[str, Path]) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Move completed renders out of final-looking names until QA passes."""
+    final_paths = dict(outs)
+    quarantined = {}
+    stamp = f"{int(time.time())}.{os.getpid()}"
+    for key, final_path in final_paths.items():
+        candidate = final_path.with_name(
+            final_path.stem + ".UNVERIFIED" + final_path.suffix
+        )
+        if candidate.exists():
+            candidate = final_path.with_name(
+                final_path.stem + f".UNVERIFIED.{stamp}" + final_path.suffix
+            )
+        final_path.rename(candidate)
+        quarantined[key] = candidate
+    return quarantined, final_paths
+
+
+def promote_outputs(quarantined: dict[str, Path],
+                    final_paths: dict[str, Path]) -> dict[str, Path]:
+    """Promote only gate-passing renders to delivery names."""
+    collisions = [path for path in final_paths.values() if path.exists()]
+    if collisions:
+        raise FileExistsError(
+            "refusing to overwrite a delivery path during promotion: "
+            + ", ".join(str(path) for path in collisions)
+        )
+    promoted = {}
+    for key, quarantined_path in quarantined.items():
+        final_path = final_paths[key]
+        quarantined_path.rename(final_path)
+        promoted[key] = final_path
+    return promoted
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(prog="autoedit")
@@ -1593,11 +1722,11 @@ def main():
                     help="skip punch-ins / b-roll / graphics (baseline edit)")
     ap.add_argument("--no-llm", action="store_true",
                     help="premium EDL via heuristic only (skip DeepSeek call)")
-    ap.add_argument("--aspects", choices=["auto", "16x9", "9x16", "all"],
+    ap.add_argument("--aspects", choices=SUPPORTED_ASPECTS,
                     default="auto",
                     help="long-form ships ONE 16:9 file, shorts ship ONE 9:16 "
                          "file. 'auto' picks by --style; "
-                         "explicit values override; 'all' renders everything")
+                         "explicit values override")
     ap.add_argument("--edl", type=Path, default=None,
                     help="use a hand-authored EDL json (director mode); "
                          "skips DeepSeek/heuristic")
@@ -1607,10 +1736,10 @@ def main():
     ap.add_argument("--script", type=Path, default=None,
                     help="the teleprompter script you read (md/txt): ground "
                          "truth for caption text + word-integrity QA")
-    ap.add_argument("--av-offset", type=int, default=AV_OFFSET_MS,
+    ap.add_argument("--av-offset", type=int, default=None,
                     help="source AV offset correction in ms; positive = delay "
-                         "audio (audio leads video). Default comes from brand.yaml "
-                         f"(currently {AV_OFFSET_MS}ms; run `make calibrate`)")
+                         "audio (audio leads video). Omit to use a valid "
+                         "source-bound calibration sidecar, otherwise 0")
     a = ap.parse_args()
     src = a.video.expanduser().resolve()
     if not src.exists():
@@ -1626,20 +1755,15 @@ def main():
         src = fixed
     # CERTIFIED OFFSET: the only trusted source of a nonzero correction is a
     # human calibration stored in a sidecar next to the recording
-    # ("<video>.avoffset", integer ms). A bare --av-offset still renders, but
-    # gate 5 refuses to certify a correction that no human certified.
-    cert_file = Path(str(orig_src) + ".avoffset")
-    certified = 0
-    if cert_file.exists():
-        try:
-            certified = int(cert_file.read_text().strip())
-            log(f"av-offset: certified {certified:+d}ms from {cert_file.name}")
-        except ValueError:
-            log(f"av-offset: unreadable sidecar {cert_file.name}, treating as 0")
-    offset = a.av_offset if a.av_offset else certified
+    # ("<video>.avoffset", source-bound JSON). An uncertified explicit value
+    # is rejected before normalization or rendering; gate 5 checks again.
+    try:
+        offset, certified, cert_note = resolve_av_offset(orig_src, a.av_offset)
+    except ValueError as e:
+        sys.exit(f"FATAL: refusing uncertified A/V correction: {e}")
+    log(f"av-offset: {cert_note}")
     if offset:
-        log(f"av-offset: applying {offset:+d}ms"
-            + ("" if offset == certified else " (NOT CERTIFIED)"))
+        log(f"av-offset: applying certified {offset:+d}ms")
     src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
@@ -1669,24 +1793,33 @@ def main():
     # ---- cleanup pass: flubbed retakes + dead air the raw pass missed.
     # Runs in AUTO mode only; in director mode (--edl) you owns every cut.
     if not (a.edl and a.edl.exists()):
-        cleanup = (detect_retakes(words, script_path=a.script)
-                   + detect_false_starts(words, a.script)
-                   + detect_lead_noise(words)
-                   + detect_head_noise_audio(cut)
-                   + detect_dead_air(words, _dur(cut),
-                                     min_pause=(0.55 if style == "short" else 0.9)))
-        merged = []
-        for c in sorted(cleanup, key=lambda x: x["s"]):
-            if merged and c["s"] <= merged[-1]["e"] + 0.05:
-                merged[-1]["e"] = max(merged[-1]["e"], c["e"])
-            else:
-                merged.append(dict(c))
-        merged = [c for c in merged if c["e"] - c["s"] > 0.15]
-        if merged:
+        converged = False
+        for round_no in range(1, 6):
+            cleanup = (detect_retakes(words, script_path=a.script)
+                       + detect_false_starts(words, a.script)
+                       + detect_lead_noise(words)
+                       + detect_head_noise_audio(cut)
+                       + detect_dead_air(words, _dur(cut),
+                                         min_pause=(0.55 if style == "short" else 0.9)))
+            merged = []
+            for c in sorted(cleanup, key=lambda x: x["s"]):
+                if merged and c["s"] <= merged[-1]["e"] + 0.05:
+                    merged[-1]["e"] = max(merged[-1]["e"], c["e"])
+                else:
+                    merged.append(dict(c))
+            merged = [c for c in merged if c["e"] - c["s"] > 0.15]
+            if not merged:
+                converged = True
+                if round_no > 1:
+                    log(f"phase 2B: clean after {round_no - 1} pass(es)")
+                break
             cut = apply_cuts(cut, merged, work)
             info["duration"] = _dur(cut)
-            log("phase 2B: re-transcribing after retake/dead-air cleanup")
+            log(f"phase 2B (pass {round_no}): re-transcribing after cleanup")
             words = transcribe(cut, work)
+        if not converged:
+            log("phase 2B WARNING: cleanup did not converge in 5 passes; "
+                "gate 4 will judge the survivors")
     if a.script and a.script.exists():
         words = script_correct(words, a.script)
     # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
@@ -1760,9 +1893,7 @@ def main():
     if aspects == "auto":
         # Standing law 2026-07-23: long-form -> 16:9 only, shorts -> 9:16 only
         aspects = "9x16" if style == "short" else "16x9"
-    if aspects == "all":
-        outs = variants(master, outdir, info["width"], info["height"])
-    elif aspects == "9x16":
+    if aspects == "9x16":
         only = outdir / "PSE_SHORT_9x16.mp4"
         if info["width"] > info["height"]:
             run([FFMPEG, "-y", "-i", master, "-vf",
@@ -1783,6 +1914,9 @@ def main():
         else:
             shutil.copy(master, only)
         outs = {"16x9": only}
+    # Completed is not verified. Quarantine before any gate can raise so an
+    # exception cannot strand an ungated artifact under a delivery name.
+    outs, final_paths = quarantine_outputs(outs)
     qa = qa_and_release(outs, font_ok, words, outdir, retention=retention,
                         edl=(edl if (not a.no_premium and words) else None))
     # HARD GATE : mechanical lip-sync verification. The
@@ -1793,17 +1927,19 @@ def main():
                        _dur(main_out_v))
     qa["checks"]["lip_sync_verified"] = {"ok": sync["ok"],
                                          "probes": sync["probes"]}
+    qa["pass"] = qa["pass"] and sync["ok"]
+    # Every remaining delivery gate consumes the delivered artifact's own
+    # transcript, never an intermediate transcript.
+    final_words = transcribe(main_out_v, work)
     # GATE 4: no flubbed take may survive into the delivered file.
     residue = verify_no_retakes(final_words, a.script, work)
     qa["checks"]["retake_residue"] = residue
     qa["pass"] = qa["pass"] and residue["ok"]
-    qa["pass"] = qa["pass"] and sync["ok"]
     # HARD GATE 2 : the delivered
     # master must still CONTAIN the speech. Transcribe the final master and
     # sequence-align against the post-cut transcript; if >3% of words went
     # missing anywhere in the chain, delivery is blocked.
     import difflib as _dl
-    final_words = transcribe(main_out_v, work)
     _n = lambda t: re.sub(r"[^a-z0-9']", "", t.lower())
     _sm = _dl.SequenceMatcher(a=[_n(w["w"]) for w in words],
                               b=[_n(w["w"]) for w in final_words],
@@ -1811,11 +1947,11 @@ def main():
     _kept = sum(i2 - i1 for op, i1, i2, _, _ in _sm.get_opcodes()
                 if op == "equal")
     word_ratio = _kept / max(1, len(words))
-    # 0.92, not 0.97: this compares whisper against whisper on the SAME audio,
-    # and its own run-to-run variance is ~1-3% (v6 read 96.3% on a master the
-    # semantic judge passed clean). Real damage is nothing like marginal, # the 2026-07-24 incident scored 75%. script_integrity is the sharp gate.
+    # The ratio allows measured Whisper run-to-run variance, while the
+    # absolute cap prevents long videos from losing many words behind a high
+    # percentage.
     missing = len(words) - _kept
-    wi_ok = word_ratio >= 0.96 and missing <= 40
+    wi_ok = word_ratio >= CFG.rules.word_integrity_min and missing <= 40
     qa["checks"]["word_integrity"] = {
         "expected_words": len(words), "found_in_master": _kept,
         "ratio": round(word_ratio, 3), "ok": wi_ok,
@@ -1824,7 +1960,7 @@ def main():
     qa["pass"] = qa["pass"] and wi_ok
     log(f"word integrity: {_kept}/{len(words)} words in master "
         f"({word_ratio:.1%}), {'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}")
-        # GATE 5: true end-to-end sync, master vs the raw recording.
+    # GATE 5: true end-to-end sync, master vs the raw recording.
     ssync = verify_sync_source(main_out_v, orig_src,
                                edl if (not a.no_premium and words) else {},
                                offset, certified, final_words, work)
@@ -1842,21 +1978,14 @@ def main():
                         work / "script_integrity.json").exists() else None
     (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
     log(f"lip-sync verification: {'PASS' if sync['ok'] else 'FAIL - DELIVERY BLOCKED'}")
-    if not qa["pass"]:
-        # a failed master must not sit on disk under a final-looking name
-        demoted = {}
-        for k, v in list(outs.items()):
-            q = v.with_name(v.stem + ".UNVERIFIED" + v.suffix)
-            try:
-                v.rename(q)
-                demoted[k] = q
-                qa["release"][k]["file"] = str(q)
-            except OSError:
-                pass
-        if demoted:
-            outs.update(demoted)
-            (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
-            log("QA failed: master(s) renamed *.UNVERIFIED - not for upload")
+    if qa["pass"]:
+        outs = promote_outputs(outs, final_paths)
+        for key, promoted_path in outs.items():
+            qa["release"][key]["file"] = str(promoted_path)
+        (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
+        log("QA passed: master(s) promoted from quarantine")
+    else:
+        log("QA failed: master(s) remain *.UNVERIFIED - not for upload")
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
     # One Telegram ping per COMPLETED render (full pipeline: master + all
@@ -1867,8 +1996,11 @@ def main():
         verdict = "QA PASS ✅" if qa["pass"] else "QA NEEDS REVIEW ❌"
         providers.notify(f"Render complete: {src.stem}\n"
                          f"{mins}:{secs:02d} - {verdict}\n-> {outdir}")
-        # deliver the video itself ONLY when lip-sync verification passed
-        # .
+        # Never send a quarantined artifact. This also covers foundational
+        # loudness, black-frame, caption, and output-integrity checks.
+        if not qa["pass"]:
+            raise RuntimeError("QA failed - video delivery blocked")
+        # Defense in depth: name each artifact gate explicitly.
         if not qa["checks"].get("lip_sync_verified", {}).get("ok"):
             raise RuntimeError("sync unverified - video delivery blocked")
         if not qa["checks"].get("word_integrity", {}).get("ok"):
@@ -1900,6 +2032,12 @@ def main():
             if abs((_dur(tg_file) or 0) - (_dur(main_out) or 0)) > 0.05:
                 raise RuntimeError("watch copy duration differs from the "
                                    "gated master - not sending it")
+            watch_sync = verify_sync(tg_file, main_out, {}, _dur(tg_file))
+            if not watch_sync["ok"]:
+                raise RuntimeError(
+                    "watch copy A/V does not match the gated master - "
+                    "not sending it"
+                )
         if tg_file.exists():
             caption = (f"{src.stem} - watch copy"
                        + ("" if tg_file == main_out else

@@ -36,7 +36,7 @@ That is a real run of this repo, not a mockup. The [v1.0.0 release](https://gith
 
 Automatic editors are easy to build and easy to trust wrongly. The failure mode is not a crash. It is a video that looks fine, runs the right length, and quietly has your words missing from it.
 
-This one was built by shipping exactly that, repeatedly, and then engineering it out. Three of those failures now have permanent detectors:
+This one was built by shipping exactly that, repeatedly, and then engineering it out. These failures now have permanent detectors:
 
 A run once deleted 152 of 623 words mid-sentence. "Assigning status for around five hundred million years" came out as "around Philly." The cutter was classifying speech by loudness, and soft word-endings fell under the threshold. Duration retained was 55 percent, which cleared the guardrail on a technicality. Cutting is now driven by the transcript instead of the waveform, so silence can only be removed between padded word spans.
 
@@ -48,19 +48,19 @@ The pattern connecting all three: every signal the editor trusts is a proxy, and
 
 ## The five gates
 
-After rendering, the pipeline re-analyses its own output file. Four of these gates can stop delivery outright.
+After rendering, the pipeline re-analyses its own output file. Every release gate can stop delivery outright. The completed render stays under an `*.UNVERIFIED.mp4` quarantine name until all gates pass, then it is promoted to the final delivery name.
 
 ### Lip-sync verification
 
 Five probe points spread across the finished master, each shifted so it lands outside every punch-in, b-roll and graphic window recorded in the EDL, since the speaker's face is not on screen during those. At each point it compares the master against the pre-overlay cut in both streams: image match on the frame band below the captions, and normalized cross-correlation on the audio.
 
-Timeline drift accumulates monotonically, so alignment at spread points proves the whole timeline. Fails if any probe drifts more than 25ms.
+Fails if any local render-equivalence probe drifts more than 25ms. The independent source gate also requires four usable probes, endpoint and gap coverage, a unique audio match, an unambiguous motion-weighted frame match, a strictly increasing RAW mapping, and a per-probe error no greater than 67ms.
 
 This check has one blind spot: it compares the master against the cut, and both inherit whatever the correction stage did, so it passes happily on a wrong correction. A separate gate covers it by measuring the finished master directly against the raw recording, matching audio by cross-correlation and video by frame comparison. That gate blocked a render at -233ms and named the exact bad correction that caused it. Details in the verification doc.
 
 ### Word integrity
 
-Re-transcribes the delivered master and sequence-aligns it against the transcript from the cut stage. This catches damage introduced after cutting, by compositing or re-encoding or a bad filter graph. Fails when more than 3 percent of words vanished along the way.
+Re-transcribes the delivered master and sequence-aligns it against the transcript from the cut stage. This catches damage introduced after cutting, by compositing or re-encoding or a bad filter graph. Fails below 96 percent retention or above 40 missing words.
 
 ### Script integrity
 
@@ -142,8 +142,11 @@ DeepSeek V4 Flash alone runs the entire creative layer. Transcription, cutting, 
 ## Use it
 
 ```bash
-# once, ever: measure your camera rig's audio offset
-make calibrate VIDEO=~/Movies/any-take.mov
+# build the ladder for this recording
+make calibrate VIDEO=~/Movies/lesson1.mov
+
+# certify the human-selected result for this exact RAW
+make certify VIDEO=~/Movies/lesson1.mov OFFSET=0
 
 # then edit
 make edit VIDEO=~/Movies/lesson1.mov SCRIPT=lesson1.txt

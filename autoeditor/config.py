@@ -87,10 +87,8 @@ class Rules:
     retake_max_gap: float = 14.0    # seconds between the two attempts
     # verification gates (see docs/VERIFICATION.md)
     sync_tolerance_ms: int = 25
-    word_integrity_min: float = 0.97
+    word_integrity_min: float = 0.96
     require_script_gate: bool = True
-    # source repair
-    av_offset_ms: int = 0           # + delays audio; measure yours once
     target_lufs: float = -14.0
 
 

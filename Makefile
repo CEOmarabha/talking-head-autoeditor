@@ -1,4 +1,4 @@
-.PHONY: help install edit calibrate check clean
+.PHONY: help install edit calibrate certify check test clean
 .DEFAULT_GOAL := help
 
 PY := .venv/bin/python
@@ -25,12 +25,20 @@ calibrate:  ## Measure your camera's audio/video offset.  VIDEO=take.mov
 	@test -n "$(VIDEO)" || { echo "usage: make calibrate VIDEO=/path/to/take.mov"; exit 1; }
 	$(PY) -m autoeditor.calibrate "$(VIDEO)"
 
+certify:  ## Bind a human-selected offset to one RAW. VIDEO=take.mov OFFSET=0
+	@test -n "$(VIDEO)" || { echo "usage: make certify VIDEO=/path/to/take.mov OFFSET=0"; exit 1; }
+	@test -n "$(OFFSET)" || { echo "usage: make certify VIDEO=/path/to/take.mov OFFSET=0"; exit 1; }
+	$(PY) -m autoeditor.calibrate "$(VIDEO)" --certify "$(OFFSET)"
+
 check:  ## Verify the install is working
 	@$(PY) -c "import faster_whisper, PIL, numpy; print('python deps  ok')"
 	@ffmpeg -version >/dev/null && echo "ffmpeg       ok"
 	@$(PY) -c "from autoeditor import providers; \
 	  providers.load_dotenv(); \
 	  print('llm          ' + ('ok' if providers.llm_available() else 'not configured (heuristic fallback will be used)'))"
+
+test:  ## Run safety regression tests
+	$(PY) -m unittest discover -s tests -v
 
 clean:  ## Remove cached b-roll and generated assets
 	rm -rf $(HOME)/.autoeditor/broll_cache/*

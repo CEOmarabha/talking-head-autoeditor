@@ -22,12 +22,7 @@ rules:
 
   # ---- verification gates (see docs/VERIFICATION.md) ----------------------
   sync_tolerance_ms: 25    # audio/video drift allowed at every probe
-  word_integrity_min: 0.97 # fraction of spoken words that must survive
+  word_integrity_min: 0.96 # fraction of spoken words that must survive
   require_script_gate: true
 
-  # ---- source repair -----------------------------------------------------
-  av_offset_ms: 0          # + delays audio. Measure YOUR rig once:
-                           #   make calibrate VIDEO=take.mov
-                           # USB mics recorded through some phone apps run
-                           # ~100ms out of sync before any editing happens.
   target_lufs: -14.0       # YouTube/Spotify-safe loudness

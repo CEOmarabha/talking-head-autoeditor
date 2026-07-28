@@ -72,8 +72,9 @@ ${GREEN}Setup complete.${RESET}
        DEEPSEEK_API_KEY=xxx  (the creative brain, about 1c per video)
        PEXELS_API_KEY=xxx    (free stock b-roll)
   2. Set your colours and font in  ${ROOT}/brand.yaml
-  3. Measure your camera's audio offset ONCE:
-       make calibrate VIDEO=/path/to/a/take.mov
+  3. If RAW sync needs correction, calibrate and certify that recording:
+       make calibrate VIDEO=/path/to/raw.mov
+       make certify VIDEO=/path/to/raw.mov OFFSET=0
   4. Edit a video:
        make edit VIDEO=/path/to/raw.mov
 

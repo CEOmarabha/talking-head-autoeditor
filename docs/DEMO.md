@@ -59,16 +59,17 @@ PEXELS_API_KEY=...        # free, gives you stock b-roll
 
 ---
 
-## 2 · Calibrate your camera, once ever
+## 2 · Calibrate the RAW recording when needed
 
-Do not skip this. Many phone apps record USB-microphone audio out of sync with the video, and no editor can detect it from the inside. Five minutes here prevents every video you ever make from feeling subtly wrong.
+Run this when the control clip does not look synchronized. The decision is
+stored for this exact RAW file, not reused as a camera-rig constant.
 
 ```bash
-make calibrate VIDEO=~/Movies/any-take.mov
+make calibrate VIDEO=~/Movies/lesson1.mov
 ```
 
 ```
-Building sync ladder from any-take.mov
+Building sync ladder from lesson1.mov
 
   wrote sync_CONTROL.mp4   (untouched original)
   wrote sync_E200.mp4      (audio -200ms)
@@ -77,11 +78,11 @@ Building sync ladder from any-take.mov
   wrote sync_L200.mp4      (audio +200ms)
 ```
 
-Watch all five. Pick the one where the lips look right. Put it in `brand.yaml`:
+Watch all five. Pick the one where the lips look right, then certify that
+decision against this exact RAW:
 
-```yaml
-rules:
-  av_offset_ms: 100     # L100 won
+```bash
+make certify VIDEO=~/Movies/lesson1.mov OFFSET=100
 ```
 
 > If two look acceptable, choose the **smaller** correction. Late audio is perceptually forgiving (~125ms of tolerance versus ~45ms for early audio), so an overshoot can masquerade as correct.
@@ -192,7 +193,7 @@ The file is still on disk, nothing is deleted, but it is **not delivered**, and 
 | Symptom | Cause |
 |---|---|
 | `llm not configured` | No key in `.env`, or `.env` wasn't copied from `.env.example` |
-| Video feels out of sync, gates all pass | Source offset, run `make calibrate` |
+| Video feels out of sync | Run `make calibrate`, then `make certify` for that RAW |
 | Only 1 b-roll clip appeared | The model call failed; check `PEXELS_API_KEY` and rerun. Retries make this rare. |
 | `brand_font` flagged in QA | Your `font_pattern` font isn't installed; a system font was substituted |
 | Diagrams missing | Node 18+ wasn't present at install time, install Node, re-run `make install` |

@@ -1,4 +1,4 @@
-"""Measure your camera rig's baked-in audio/video offset -- once.
+"""Measure and certify a source recording's audio/video offset.
 
 WHY THIS EXISTS
 ---------------
@@ -18,14 +18,14 @@ HOW TO USE
 
 This writes five 25-second clips: an untouched control, plus audio shifted
 earlier and later by 100ms and 200ms. Watch all five, pick the letter where the
-lips look right, and put that number in brand.yaml as `av_offset_ms`
-(L100 -> 100, E100 -> -100). Then every future edit is corrected on ingest.
+lips look right, then run ``make certify`` with that value. Certification
+writes a sidecar bound to the exact RAW file hash, so it cannot silently apply
+to another recording that later reuses the filename.
 
 Two notes from building this:
   * Automated mouth-motion cross-correlation was tried first and proved
-    unreliable on bearded faces and soft consonants -- it failed its own
-    calibration check against a known 300ms shift. The ladder below is slower
-    but it is *correct*, and you only run it once per recording setup.
+    unreliable on bearded faces and soft consonants. The ladder below is
+    slower, but it is tied to the actual recording being delivered.
   * Audio-late is far more forgiving to the ear than audio-early (~125ms vs
     ~45ms before it registers). So an overshoot in the "late" direction can
     still *feel* fine. If two options both look acceptable, pick the smaller
@@ -33,6 +33,9 @@ Two notes from building this:
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -41,6 +44,21 @@ from pathlib import Path
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 LADDER = [("CONTROL", None), ("E200", -200), ("E100", -100),
           ("L100", 100), ("L200", 200)]
+
+
+def write_certification(src: Path, offset_ms: int) -> Path:
+    """Write the human decision with the exact RAW file hash."""
+    h = hashlib.sha256()
+    with src.open("rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    out = Path(str(src) + ".avoffset")
+    out.write_text(json.dumps({
+        "offset_ms": int(offset_ms),
+        "source_sha256": h.hexdigest(),
+        "method": "human_calibration_ladder",
+    }, indent=2) + "\n")
+    return out
 
 
 def build(src: Path, outdir: Path, start: float = 5.0,
@@ -68,11 +86,20 @@ def build(src: Path, outdir: Path, start: float = 5.0,
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        sys.exit("usage: python -m autoeditor.calibrate /path/to/take.mov")
-    src = Path(sys.argv[1]).expanduser().resolve()
+    ap = argparse.ArgumentParser(
+        description="Build a human AV ladder or certify the chosen offset")
+    ap.add_argument("video", type=Path)
+    ap.add_argument("--certify", type=int, metavar="MS",
+                    help="write a source-hash-bound calibration sidecar")
+    args = ap.parse_args()
+    src = args.video.expanduser().resolve()
     if not src.exists():
         sys.exit(f"no such file: {src}")
+    if args.certify is not None:
+        sidecar = write_certification(src, args.certify)
+        print(f"Certified {args.certify:+d}ms for {src.name}")
+        print(f"Wrote {sidecar}")
+        return
     outdir = src.parent / "sync_calibration"
     print(f"Building sync ladder from {src.name}\n")
     made = build(src, outdir)
@@ -85,10 +112,11 @@ Now watch these five clips and judge with your EYES, not a meter:
   E200/E100  audio moved EARLIER by 200ms / 100ms
   L100/L200  audio moved LATER by 100ms / 200ms
 
-Pick the one where the lips match. Then set it in brand.yaml:
+Pick the one where the lips match. Then bind that decision to this exact RAW:
 
-    rules:
-      av_offset_ms: 100     # for L100   (negative for E100, 0 for CONTROL)
+    make certify VIDEO="{src}" OFFSET=100
+
+Use -100 for E100, +100 for L100, or 0 for CONTROL.
 
 If two look right, choose the SMALLER correction. Late audio is perceptually
 forgiving, so an overshoot can masquerade as correct.
