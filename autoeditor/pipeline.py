@@ -916,7 +916,7 @@ def render_master(cut: Path, cards: list[dict], music: Path | None,
                      f"enable='between(t,{b['s']:.3f},{b['e']:.3f})'[{nxt}]")
         cur = nxt
     # 2) animated branded graphics (alpha frame-sequences; motion + fades
-    #    are baked into the frames by pse_premium.build_graphics)
+    #    are baked into the frames by premium.build_graphics)
     for g in gfx:
         inputs += ["-framerate", "30", "-i", f"{g['seq']}/f_%04d.png"]
         idx += 1
@@ -1190,8 +1190,7 @@ def main():
     # ---- premium layer: DeepSeek EDL -> punch-ins, b-roll, graphic cards
     gfx_layers, broll_lyrs, edl_src = [], [], "off"
     if not a.no_premium and words:
-        sys.path.insert(0, str(Path(__file__).parent))
-        import pse_premium as prem
+        from . import premium as prem
         if a.background and a.background.exists():
             cut = prem.apply_background(cut, a.background, work, FFMPEG,
                                         info["width"], info["height"])

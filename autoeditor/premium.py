@@ -19,7 +19,7 @@ model. Renderers are pure ffmpeg/Pillow:
                  ffmpeg fade (restrained enterprise motion, no slideshow)
 """
 from __future__ import annotations
-import csv, json, re, shutil, subprocess, tempfile, time
+import csv, json, os, re, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 from . import providers
@@ -35,9 +35,15 @@ PIXABAY_KEY_FILE = CFGH / "pixabay.key"
 BROLL_CACHE = CACHE
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
        "AppleWebKit/537.36 autoeditor/1.0")
-KLING_CATALOGS = [
+CLIP_CATALOGS = [
     *[Path(x) for x in os.environ.get("CLIP_CATALOGS", "").split(":") if x],
 ]
+
+
+def _api_key(env_var: str, key_file: Path) -> str:
+    """Env var first (what .env and the docs use), then a key file on disk."""
+    return (os.environ.get(env_var, "").strip()
+            or (key_file.read_text().strip() if key_file.exists() else ""))
 
 
 def _run(cmd, **kw):
@@ -55,7 +61,7 @@ def log(msg):
 def load_kling(limit: int = 200) -> list[dict]:
     """Usable (non-REJECT, on-disk) clips from the clip catalogs."""
     clips, seen = [], set()
-    for cat in KLING_CATALOGS:
+    for cat in CLIP_CATALOGS:
         if not cat.exists():
             continue
         try:
@@ -373,10 +379,11 @@ def _resolve_sfx(name: str) -> Path:
     eleven = SFX_DIR / f"eleven_{name}.wav"
     if eleven.exists():
         return eleven
-    if ELEVEN_KEY_FILE.exists():
+    _ek = _api_key("ELEVENLABS_API_KEY", ELEVEN_KEY_FILE)
+    if _ek:
         try:
             import urllib.request, tempfile
-            key = ELEVEN_KEY_FILE.read_text().strip()
+            key = _ek
             prompt, dur = _ELEVEN_PROMPTS[name]
             req = urllib.request.Request(
                 "https://api.elevenlabs.io/v1/sound-generation",
@@ -811,9 +818,7 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
 def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
     """Fetch one license-clean stock clip from Pexels (free commercial use,
     no attribution). Cached by query so repeat topics cost zero calls."""
-    key = None
-    if PEXELS_KEY_FILE.exists():
-        key = PEXELS_KEY_FILE.read_text().strip()
+    key = _api_key("PEXELS_API_KEY", PEXELS_KEY_FILE)
     if not key:
         return None
     BROLL_CACHE.mkdir(parents=True, exist_ok=True)
@@ -850,16 +855,14 @@ def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
             log(f"pexels: '{query}' -> {dst.name}")
             return str(dst)
     except Exception as e:
-        log(f"pexels '{query}' failed ({type(e).__name__}), kling fallback")
+        log(f"pexels '{query}' failed ({type(e).__name__}), trying next source")
     return None
 
 
 def _pixabay_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
     """Second free source (Pixabay license: free commercial use, no
     attribution). Same cache dir; tried when Pexels has no key/match."""
-    key = None
-    if PIXABAY_KEY_FILE.exists():
-        key = PIXABAY_KEY_FILE.read_text().strip()
+    key = _api_key("PIXABAY_API_KEY", PIXABAY_KEY_FILE)
     if not key:
         return None
     BROLL_CACHE.mkdir(parents=True, exist_ok=True)
