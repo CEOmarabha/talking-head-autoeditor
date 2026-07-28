@@ -90,7 +90,7 @@ Full detail in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 Four cutting detectors run in sequence. All of them work from the transcript, so a cut can never land inside a word.
 
-`word_guarded_cut` removes silence between words, padded on both sides. `detect_retakes` finds lines you said twice, keeps the last read, and swallows the self-correction you muttered in between ("let me say that again"). `detect_false_starts` catches restarts that change the ending, like "You never hesitate" becoming "You never compromise," where the repeat is too short for the run matcher to see. `detect_head_noise_audio` removes the cough on the opening frame, which speech models transcribe as a low-confidence word and ordinary cough detectors therefore miss.
+`word_guarded_cut` removes silence between words, padded on both sides. `detect_retakes` finds lines you said twice, keeps the last read, and swallows the self-correction you muttered in between ("let me say that again"). It checks your script first, since a phrase that repeats there is deliberate writing rather than a flub. `detect_false_starts` catches restarts that change the ending, like "You never hesitate" becoming "You never compromise," where the repeat is too short for the run matcher to see. `detect_head_noise_audio` removes the cough on the opening frame, which speech models transcribe as a low-confidence word and ordinary cough detectors therefore miss.
 
 One model call then authors the edit decision list: punch-ins on emphasis, b-roll queries matched to what is being said, animated diagrams for frameworks and lists, stat cards for numbers. A deterministic heuristic produces the same shape when no model is configured, so nothing blocks on an API.
 

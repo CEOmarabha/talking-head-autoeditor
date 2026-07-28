@@ -328,7 +328,7 @@ def _cut_edge(words: list, i: int) -> float:
 
 
 def detect_retakes(words: list, max_gap: float = 14.0,
-                   min_n: int = 3) -> list:
+                   min_n: int = 3, script_path: Path | None = None) -> list:
     """Retake removal (2026-07-25, Omar: 'how did you not notice I messed up
     the first time and didn't cut to where I repeat it correctly').
 
@@ -339,6 +339,15 @@ def detect_retakes(words: list, max_gap: float = 14.0,
     ('a stranger cuts in front of you / a stranger cuts in front of you and
     nobody...') collapse correctly."""
     norm = [re.sub(r"[^a-z0-9']", "", w["w"].lower()) for w in words]
+    # SCRIPT SHIELD: some phrases repeat because the SCRIPT repeats them
+    # ("it sounds like having all the answers, and nobody has all the
+    # answers"). Deleting the second one is not retake removal, it is
+    # deleting the line. If the script says it twice, the speaker meant it.
+    script_norm = ""
+    if script_path and script_path.exists():
+        script_norm = " " + " ".join(
+            re.sub(r"[^a-z0-9']", "", t.lower())
+            for t in re.findall(r"[A-Za-z0-9']+", script_path.read_text())) + " "
     cuts, n, skip_to = [], len(words), 0
     for i in range(n):
         if i < skip_to:
@@ -355,6 +364,14 @@ def detect_retakes(words: list, max_gap: float = 14.0,
                 best = (j, k)
         if best:
             j, k = best
+            if script_norm:
+                phrase = " " + " ".join(norm[i:i + k]) + " "
+                if script_norm.count(phrase) >= 2:
+                    log(f"retake SKIPPED [{words[i]['s']:.1f}]: "
+                        f"'{' '.join(w['w'] for w in words[i:i + k])[:45]}' "
+                        "repeats in the script too, so it is deliberate")
+                    skip_to = j
+                    continue
             start_i, why = i, f"retake ({k}-word repeat)"
             # absorb the wind-up: a self-correction aside Omar says out loud
             # ("alright, let's make that clear") and any short aborted
@@ -1254,7 +1271,7 @@ def main():
     # ---- cleanup pass: flubbed retakes + dead air the raw pass missed.
     # Runs in AUTO mode only; in director mode (--edl) you owns every cut.
     if not (a.edl and a.edl.exists()):
-        cleanup = (detect_retakes(words)
+        cleanup = (detect_retakes(words, script_path=a.script)
                    + detect_false_starts(words, a.script)
                    + detect_lead_noise(words)
                    + detect_head_noise_audio(cut)
