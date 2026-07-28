@@ -72,6 +72,16 @@ install -m 0644 \
   "$HERMES_SKILL_DIR/SKILL.md"
 ok "Hermes skill points to the canonical fail-closed workflow"
 
+step "Hermes command wrapper"
+HERMES_TOOLS_DIR="$HOME/cinematic-autopilot/tools"
+mkdir -p "$HERMES_TOOLS_DIR"
+install -m 0755 \
+  "$ROOT/integrations/hermes/hermes_pse_edit.py" \
+  "$HERMES_TOOLS_DIR/hermes_pse_edit.py"
+printf '%s\n' "$ROOT" \
+  > "$HERMES_TOOLS_DIR/.talking-head-autoeditor-root"
+ok "Hermes command points to this repository checkout"
+
 cat <<EOF
 
 ${GREEN}Setup complete.${RESET}

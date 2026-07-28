@@ -741,12 +741,29 @@ class SafetyContracts(unittest.TestCase):
         ))
 
     def test_live_command_imports_the_canonical_pipeline(self):
-        live = Path(
-            "/Users/ceomarabha/cinematic-autopilot/tools/"
-            "hermes_pse_edit.py"
-        ).read_text()
-        self.assertIn("from autoeditor.pipeline import main", live)
-        self.assertNotIn("deepseek-v4-flash", live)
+        root = Path(__file__).resolve().parent.parent
+        tracked = (
+            root / "integrations" / "hermes" / "hermes_pse_edit.py"
+        )
+        candidates = [tracked]
+        live = (
+            Path.home() / "cinematic-autopilot" / "tools"
+            / "hermes_pse_edit.py"
+        )
+        if live.exists():
+            candidates.append(live)
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                source = candidate.read_text()
+                self.assertIn(
+                    "from autoeditor.pipeline import main", source
+                )
+                self.assertNotIn("deepseek-v4-flash", source)
+        installer = (root / "install.sh").read_text()
+        self.assertIn(
+            "integrations/hermes/hermes_pse_edit.py", installer
+        )
+        self.assertIn(".talking-head-autoeditor-root", installer)
 
     def test_canonical_runtime_does_not_require_an_uninstalled_legacy_venv(self):
         self.assertEqual(pipeline.VENV_PY, Path(pipeline.sys.executable).resolve())
@@ -763,14 +780,29 @@ class SafetyContracts(unittest.TestCase):
         ))
 
     def test_live_hermes_skill_requires_script_and_v4_pro(self):
-        live_skill = Path(
-            "/Users/ceomarabha/.hermes/skills/media/"
-            "pse-talking-head-autoedit/SKILL.md"
-        ).read_text()
-        self.assertIn("--script", live_skill)
-        self.assertIn("DeepSeek V4 Pro", live_skill)
-        self.assertNotIn("deepseek-v4-flash", live_skill.lower())
-        self.assertIn(".UNVERIFIED", live_skill)
+        root = Path(__file__).resolve().parent.parent
+        tracked = (
+            root / "integrations" / "hermes"
+            / "pse-talking-head-autoedit" / "SKILL.md"
+        )
+        candidates = [tracked]
+        live = (
+            Path.home() / ".hermes" / "skills" / "media"
+            / "pse-talking-head-autoedit" / "SKILL.md"
+        )
+        if live.exists():
+            candidates.append(live)
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                source = candidate.read_text()
+                self.assertIn("--script", source)
+                self.assertIn("DeepSeek V4 Pro", source)
+                self.assertNotIn("deepseek-v4-flash", source.lower())
+                self.assertIn(".UNVERIFIED", source)
+        self.assertIn(
+            "integrations/hermes/pse-talking-head-autoedit/SKILL.md",
+            (root / "install.sh").read_text(),
+        )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
