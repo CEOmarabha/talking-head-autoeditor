@@ -5,6 +5,8 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![license](https://img.shields.io/github/license/CEOmarabha/talking-head-autoeditor)](LICENSE)
 
+Built by [Omar Marabha](https://omarmarabha.com) · [LinkedIn](https://www.linkedin.com/in/ahbaram/) · [The Marabha Method](https://marabhamethod.com)
+
 Point it at a raw camera file. It removes silence, deletes the takes you flubbed and re-read, cuts your coughs, adds punch-ins, pulls topical b-roll, animates diagrams for the frameworks you teach, burns word-synced captions, normalizes loudness, and hands you a finished file.
 
 Then it re-watches its own work and refuses to deliver the video if it broke anything. That second part is the reason this project exists.
@@ -258,8 +260,28 @@ Parse model JSON by scanning for balanced braces. A greedy regex swallows traili
 
 Retry the model call. One dropped request collapsed 12 b-roll clips down to 1, and the video just looked a bit plain.
 
+## About the builder
+
+I'm Omar Marabha. I built this because I wanted the editor to make creative
+decisions without letting a model invent timing, silently degrade the job, or
+grade its own homework.
+
+This repo is one working sample of how I approach AI engineering: give the
+model a precise job, turn its output into a versioned contract, validate every
+claim against measured media, and test the delivered artifact instead of
+trusting the pipeline that produced it.
+
+I'm open to:
+
+- AI and multimodal engineering roles
+- Partnerships with creator tools, media platforms, and model providers
+- Agent reliability and evaluation work
+- Commercial integrations or custom versions of this editor
+
+Find me on [LinkedIn](https://www.linkedin.com/in/ahbaram/), see more of my
+work at [OmarMarabha.com](https://omarmarabha.com), or visit
+[The Marabha Method](https://marabhamethod.com).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Use it commercially, fork it, sell what you make with it.
-
-Built by [Omar](https://github.com/CEOmarabha).
