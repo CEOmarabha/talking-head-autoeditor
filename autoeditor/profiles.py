@@ -16,6 +16,7 @@ Profile selection order:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -64,3 +65,11 @@ def assets_dir(profile_id: str | None) -> Path | None:
         return None
     d = profiles_root() / profile_id / "assets"
     return d if d.exists() else None
+
+
+def profile_sha256(profile_id: str | None) -> str | None:
+    """Hash the exact creator contract bundled with a rendered edit."""
+    if not profile_id:
+        return None
+    profile = profile_dir(profile_id) / "profile.yaml"
+    return hashlib.sha256(profile.read_bytes()).hexdigest()

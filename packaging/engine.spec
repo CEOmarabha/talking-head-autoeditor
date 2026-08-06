@@ -3,7 +3,11 @@
 # Output: dist/autoeditor-engine/
 
 import os
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
+
+spec_dir = Path(SPECPATH).resolve()
+repo_root = spec_dir.parent
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
@@ -15,9 +19,8 @@ for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
         pass  # optional deps may be absent in slim builds
 
 a = Analysis(
-    ["engine_entry.py"],
-    pathex=[os.path.abspath(os.path.join(os.getcwd(), ".."))
-            if os.path.basename(os.getcwd()) == "packaging" else os.getcwd()],
+    [str(spec_dir / "engine_entry.py")],
+    pathex=[str(repo_root)],
     datas=datas,
     binaries=binaries,
     hiddenimports=hiddenimports + ["autoeditor", "autoeditor.pipeline",

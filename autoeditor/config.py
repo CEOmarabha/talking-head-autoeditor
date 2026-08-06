@@ -114,6 +114,10 @@ class Config:
     # per-style caption/pacing overrides from the profile, e.g.
     # style: { default_style: short, short_cap_scale: 0.065, ... }
     style: dict = field(default_factory=dict)
+    # Creator-specific editorial direction passed to the DeepSeek director and
+    # critic. These values describe observable edit choices, not timing data;
+    # deterministic validation still owns every event time and release gate.
+    creative: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None,
@@ -143,7 +147,14 @@ class Config:
                 style[k] = float(v) if "." in str(v) else int(v)
             except (TypeError, ValueError):
                 style[k] = v
-        return cls(brand=b, rules=r, profile_id=profile, style=style)
+        creative = {
+            str(k): str(v)
+            for k, v in (data.get("creative") or {}).items()
+        }
+        return cls(
+            brand=b, rules=r, profile_id=profile,
+            style=style, creative=creative,
+        )
 
 
 def font_file(brand: Brand, profile_id: str | None = None) -> tuple[str, bool]:

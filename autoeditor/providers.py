@@ -111,7 +111,12 @@ def _post(url: str, payload: dict, headers: dict, timeout: int) -> dict | None:
         return {"_transport_error": "http_protocol_error"}
     except json.JSONDecodeError:
         return {"_transport_error": "non_json_response"}
-    except OSError:
+    except OSError as exc:
+        # Some buffered HTTP readers surface an expired socket deadline as
+        # ``OSError("cannot read from timed out object")`` instead of the
+        # TimeoutError subclass. Preserve the wall-clock timeout contract.
+        if "timed out" in str(exc).lower():
+            return {"_transport_error": "timeout"}
         return {"_transport_error": "os_error"}
 
 

@@ -28,3 +28,13 @@ rules:
 
 style:
   default_style: "auto"
+
+creative:
+  mode: "verified talking-head lesson or PSE short"
+  opening: "Open on the strongest spoken hook and establish the lesson immediately."
+  performance: "Keep the speaker authoritative and use visuals to explain concrete claims."
+  punch_ins: "Use punch-ins on verdicts and authentic emphasis."
+  broll: "Use literal or allowed abstract footage that directly matches the spoken idea."
+  graphics: "Use grounded diagrams for frameworks and concise cards for named rules, numbers, or verdicts."
+  sound: "Keep sound design sparse and weighty."
+  avoid: "No unsupported labels, decorative montage, or visuals that compete with the lesson."

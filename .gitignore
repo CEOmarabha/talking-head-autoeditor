@@ -12,6 +12,7 @@ __pycache__/
 # node
 node_modules/
 package-lock.json
+!desktop/package-lock.json
 
 # generated media + caches
 *.mp4

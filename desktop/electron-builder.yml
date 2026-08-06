@@ -6,18 +6,23 @@
 #   mac: CSC_LINK/CSC_KEY_PASSWORD + APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/
 #        APPLE_TEAM_ID  -> signed + notarized dmg
 #   win: WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD -> signed installer
-# Without those, CI still produces unsigned installers for direct sharing.
+# Without those, CI produces ad-hoc or unsigned acceptance installers.
 
-appId: "${env.APP_ID}"
-productName: "${env.PRODUCT_NAME}"
+# Ryan is the safe local default. CI overrides these two fields for PSE with
+# electron-builder's --config.* flags after it resolves the tag/product.
+appId: com.marabha.ryanreels
+productName: Ryan Reels Editor
 directories:
   output: dist
   buildResources: build
+
+artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
 
 files:
   - main.js
   - preload.js
   - product.js
+  - lib/**
   - renderer/**
 
 extraResources:
@@ -27,6 +32,8 @@ extraResources:
     to: engine
   - from: staging/bin
     to: bin
+  - from: staging/lib
+    to: lib
   - from: staging/profiles
     to: profiles
   - from: staging/fonts
@@ -36,13 +43,12 @@ publish:
   provider: github
   owner: CEOmarabha
   repo: talking-head-autoeditor
-  channel: "${env.PRODUCT}"
+  channel: ryan
 
 mac:
   category: public.app-category.video
   target:
     - target: dmg
-      arch: [arm64, x64]
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
@@ -54,7 +60,6 @@ afterSign: scripts/notarize.js
 win:
   target:
     - target: nsis
-      arch: [x64]
 
 nsis:
   oneClick: true

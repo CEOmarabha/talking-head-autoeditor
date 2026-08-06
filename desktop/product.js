@@ -3,9 +3,8 @@
  * PRODUCT=ryan  -> "Ryan Reels Editor"  (ryan_duffy, ryan_humes, shared_skit)
  * PRODUCT=pse   -> "PSE AutoEditor"     (pse)
  *
- * At build time electron-builder reads this via electron-builder.yml env
- * interpolation; at runtime the packaged app reads product.json placed in
- * resources by the build.
+ * CI stamps the resolved identity and architecture-specific update channel
+ * into product.json. The packaged app reads that file from resources.
  */
 const fs = require('fs');
 const path = require('path');

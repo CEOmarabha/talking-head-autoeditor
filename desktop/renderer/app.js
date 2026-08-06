@@ -27,8 +27,12 @@ async function init() {
   s.profiles.forEach((p) => {
     const d = document.createElement('div');
     d.className = 'profile';
-    d.innerHTML = `<b>${p.display_name}</b>` +
-      `<span class="muted">${p.description}</span>`;
+    const name = document.createElement('b');
+    name.textContent = p.display_name;
+    const description = document.createElement('span');
+    description.className = 'muted';
+    description.textContent = p.description;
+    d.append(name, description);
     d.onclick = () => {
       state.profile = p.id;
       [...box.children].forEach((c) => c.classList.remove('sel'));
@@ -61,12 +65,16 @@ function renderClips() {
   ul.innerHTML = '';
   state.clips.forEach((c, i) => {
     const li = document.createElement('li');
-    li.innerHTML = `${c.split(/[\\/]/).pop()}<span data-i="${i}">✕</span>`;
-    li.querySelector('span').onclick = (e) => {
-      state.clips.splice(+e.target.dataset.i, 1);
+    li.appendChild(document.createTextNode(c.split(/[\\/]/).pop()));
+    const remove = document.createElement('span');
+    remove.dataset.i = String(i);
+    remove.textContent = '✕';
+    remove.onclick = (e) => {
+      state.clips.splice(Number(e.target.dataset.i), 1);
       state.joinedInput = null; // joined file is stale now
       renderClips(); refresh();
     };
+    li.appendChild(remove);
     ul.appendChild(li);
   });
   refresh();
@@ -102,7 +110,7 @@ dz.ondrop = (e) => {
   e.preventDefault(); dz.classList.remove('hover');
   const files = [...e.dataTransfer.files]
     .filter((f) => /\.(mp4|mov|m4v|mkv|webm)$/i.test(f.name))
-    .map((f) => f.path);
+    .map((f) => window.api.filePath(f));
   if (files.length) { state.clips.push(...files); state.joinedInput = null; }
   renderClips();
 };
@@ -114,8 +122,14 @@ $('transcribe-btn').onclick = async () => {
   $('transcribe-status').textContent =
     'Listening to your clips… (first run downloads the speech model)';
   $('transcribe-btn').disabled = true;
-  const r = await window.api.transcribe({ clips: state.clips });
-  $('transcribe-btn').disabled = false;
+  let r;
+  try {
+    r = await window.api.transcribe({ clips: state.clips });
+  } catch (err) {
+    r = { ok: false, error: String(err.message || err) };
+  } finally {
+    $('transcribe-btn').disabled = false;
+  }
   if (r.ok) {
     $('script-box').value = r.text;
     state.joinedInput = r.joinedInput;
@@ -163,11 +177,18 @@ $('edit-btn').onclick = async () => {
   $('result').classList.add('hidden');
   $('log').textContent = '';
   $('bar-fill').style.width = '2%';
-  const r = await window.api.edit({
-    clips: state.clips, joinedInput: state.joinedInput,
-    workDir: state.workDir, profile: state.profile,
-    script, music: state.music, broll: state.broll, outDir: state.outDir,
-  });
+  let r;
+  try {
+    r = await window.api.edit({
+      clips: state.clips, joinedInput: state.joinedInput,
+      workDir: state.workDir, profile: state.profile,
+      script, music: state.music, broll: state.broll, outDir: state.outDir,
+    });
+  } catch (err) {
+    r = { ok: false, error: String(err.message || err) };
+  }
+  state.joinedInput = null;
+  state.workDir = null;
   state.running = false; refresh();
   $('progress').classList.add('hidden');
   $('result').classList.remove('hidden');

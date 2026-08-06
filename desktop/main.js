@@ -18,6 +18,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { resolveProduct } = require('./product');
+const { writeClipCatalog } = require('./lib/clip-catalog');
+const { stopProcessTree } = require('./lib/process-tree');
 
 let win = null;
 let engineProc = null;
@@ -55,6 +57,10 @@ function profilesDir() {
 }
 function keyFile() {
   return path.join(app.getPath('userData'), 'deepseek.key.enc');
+}
+function cleanupWork(work) {
+  try { fs.rmSync(work, { recursive: true, force: true }); }
+  catch (_) { /* best effort after engine exit */ }
 }
 
 // ---------------------------------------------------------------- key store
@@ -96,6 +102,7 @@ function spawnEngine(args, onLine, onExit) {
   const proc = spawn(cmd, fullArgs, {
     env: engineEnv(),
     cwd: exe ? undefined : path.join(__dirname, '..'),
+    windowsHide: true,
   });
   let buf = '';
   proc.stdout.on('data', (d) => {
@@ -107,6 +114,10 @@ function spawnEngine(args, onLine, onExit) {
     }
   });
   proc.stderr.on('data', (d) => onLine(d.toString().trimEnd()));
+  proc.on('error', (err) => {
+    onLine(`Engine could not start: ${err.message || err}`);
+    onExit(-1);
+  });
   proc.on('close', (code) => onExit(code));
   return proc;
 }
@@ -138,11 +149,16 @@ async function concatClips(clips, workDir) {
     const p = spawn(ffmpegPath(), ['-y', ...inputs,
       '-filter_complex', filt, '-map', '[v]', '-map', '[a]',
       '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
-      '-c:a', 'aac', '-b:a', '192k', joined]);
+      '-c:a', 'aac', '-b:a', '192k', joined], { windowsHide: true });
+    engineProc = p;
     let err = '';
     p.stderr.on('data', (d) => { err += d.toString(); });
-    p.on('close', (c) => c === 0 ? resolve()
-      : reject(new Error('clip join failed: ' + err.slice(-400))));
+    p.on('error', (failure) => reject(failure));
+    p.on('close', (c) => {
+      if (engineProc === p) engineProc = null;
+      if (c === 0) resolve();
+      else reject(new Error('clip join failed: ' + err.slice(-400)));
+    });
   });
   fs.rmSync(listFile, { force: true });
   return joined;
@@ -202,28 +218,40 @@ function setupIpc() {
 
   ipcMain.handle('transcribe', async (_e, { clips }) => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'reels-'));
-    const input = await concatClips(clips, work);
-    return await new Promise((resolve) => {
-      let transcript = null;
-      engineProc = spawnEngine(
-        [input, '--transcribe-only', '--out', path.join(work, 'tr')],
-        (line) => {
-          const ev = parseEvent(line);
-          if (ev && ev.event === 'transcript') transcript = ev;
-          else if (!line.startsWith('{')) send('engine-log', line);
-        },
-        (code) => {
-          engineProc = null;
-          if (code === 0 && transcript) {
-            const text = fs.readFileSync(transcript.txt, 'utf8');
-            resolve({ ok: true, text, words: transcript.words,
-              joinedInput: input, workDir: work });
-          } else {
-            resolve({ ok: false,
-              error: 'Transcription failed (see log).' });
-          }
-        });
-    });
+    try {
+      const input = await concatClips(clips, work);
+      const response = await new Promise((resolve) => {
+        let transcript = null;
+        let settled = false;
+        const finish = (value) => {
+          if (!settled) { settled = true; resolve(value); }
+        };
+        engineProc = spawnEngine(
+          [input, '--transcribe-only', '--out', path.join(work, 'tr')],
+          (line) => {
+            const ev = parseEvent(line);
+            if (ev && ev.event === 'transcript') transcript = ev;
+            else if (!line.startsWith('{')) send('engine-log', line);
+          },
+          (code) => {
+            engineProc = null;
+            if (code === 0 && transcript) {
+              const text = fs.readFileSync(transcript.txt, 'utf8');
+              finish({ ok: true, text, words: transcript.words,
+                joinedInput: input, workDir: work });
+            } else {
+              finish({ ok: false,
+                error: 'Transcription failed or was canceled.' });
+            }
+          });
+      });
+      if (!response.ok) cleanupWork(work);
+      return response;
+    } catch (err) {
+      cleanupWork(work);
+      return { ok: false,
+        error: `Could not prepare the clips: ${err.message || err}` };
+    }
   });
 
   ipcMain.handle('edit', async (_e, job) => {
@@ -231,7 +259,13 @@ function setupIpc() {
     const work = job.workDir ||
       fs.mkdtempSync(path.join(os.tmpdir(), 'reels-'));
     let input = job.joinedInput;
-    if (!input) input = await concatClips(job.clips, work);
+    try {
+      if (!input) input = await concatClips(job.clips, work);
+    } catch (err) {
+      cleanupWork(work);
+      return { ok: false,
+        error: `Could not prepare the clips: ${err.message || err}` };
+    }
     const outDir = job.outDir ||
       path.join(app.getPath('videos') || app.getPath('documents'),
         PRODUCT.name, new Date().toISOString().slice(0, 10) +
@@ -244,15 +278,20 @@ function setupIpc() {
     if (job.music) args.push('--music', job.music);
     const env = {};
     if (job.broll && job.broll.length) {
-      env.CLIP_CATALOGS = job.broll.join(':');
+      env.CLIP_CATALOGS = writeClipCatalog(job.broll, work);
     }
-    return await new Promise((resolve) => {
+    const response = await new Promise((resolve) => {
       let result = null;
+      let settled = false;
+      const finish = (value) => {
+        if (!settled) { settled = true; resolve(value); }
+      };
       const saveEnv = engineEnv();
       const proc = spawn(enginePath() || 'python3',
         enginePath() ? args : ['-m', 'autoeditor', ...args], {
           env: { ...saveEnv, ...env },
           cwd: enginePath() ? undefined : path.join(__dirname, '..'),
+          windowsHide: true,
         });
       engineProc = proc;
       let buf = '';
@@ -269,21 +308,29 @@ function setupIpc() {
       });
       proc.stderr.on('data', (d) => send('engine-log',
         d.toString().trimEnd()));
+      proc.on('error', (err) => finish({ ok: false, exitCode: -1,
+        error: `Engine could not start: ${err.message || err}` }));
       proc.on('close', (code) => {
         engineProc = null;
         if (result) {
-          resolve({ ok: true, ...result, exitCode: code });
+          finish({ ok: true, ...result, exitCode: code });
         } else {
-          resolve({ ok: false, exitCode: code,
+          finish({ ok: false, exitCode: code,
             error: code === 0 ? 'Engine ended without a result event.'
               : 'The edit failed before quality checks (see log).' });
         }
       });
     });
+    cleanupWork(work);
+    return response;
   });
 
-  ipcMain.handle('cancel', () => {
-    if (engineProc) { engineProc.kill('SIGTERM'); engineProc = null; }
+  ipcMain.handle('cancel', async () => {
+    if (engineProc) {
+      const active = engineProc;
+      engineProc = null;
+      await stopProcessTree(active);
+    }
     return true;
   });
 
@@ -292,6 +339,26 @@ function setupIpc() {
 }
 
 function send(ch, payload) { if (win) win.webContents.send(ch, payload); }
+
+function packagedSmokeTest() {
+  const secret = 'autoeditor-smoke-secret';
+  let keystore = false;
+  try {
+    keystore = safeStorage.isEncryptionAvailable() &&
+      safeStorage.decryptString(safeStorage.encryptString(secret)) === secret;
+  } catch (_) { keystore = false; }
+  const checks = {
+    packaged: PACKAGED,
+    keystore,
+    engine: !!enginePath() && fs.existsSync(enginePath()),
+    ffmpeg: fs.existsSync(ffmpegPath()),
+    ffprobe: fs.existsSync(ffprobePath()),
+    profiles: PRODUCT.profiles.every((id) => fs.existsSync(
+      path.join(profilesDir(), id, 'profile.yaml'))),
+  };
+  console.log(JSON.stringify({ event: 'desktop-smoke', checks }));
+  return Object.values(checks).every(Boolean);
+}
 
 // ---------------------------------------------------------------- window
 function createWindow() {
@@ -309,6 +376,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.env.AUTOEDITOR_SMOKE_TEST === '1') {
+    app.exit(packagedSmokeTest() ? 0 : 1);
+    return;
+  }
   setupIpc();
   createWindow();
   // auto-update: per-product channel on the shared GitHub Releases feed

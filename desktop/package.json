@@ -7,15 +7,17 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "test": "node tests/clip-catalog.test.js && node tests/process-tree.test.js && node tests/platform-contracts.test.js",
     "dist": "electron-builder --config electron-builder.yml",
     "dist:mac": "electron-builder --config electron-builder.yml --mac",
     "dist:win": "electron-builder --config electron-builder.yml --win"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.0"
+    "@electron/notarize": "3.1.1",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3"
   },
   "dependencies": {
-    "electron-updater": "^6.2.0"
+    "electron-updater": "6.8.9"
   }
 }
