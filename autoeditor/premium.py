@@ -39,7 +39,7 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
        "AppleWebKit/537.36 autoeditor/1.0")
 _configured_catalogs = [
     Path(value)
-    for value in os.environ.get("CLIP_CATALOGS", "").split(":")
+    for value in os.environ.get("CLIP_CATALOGS", "").split(os.pathsep)
     if value
 ]
 CLIP_CATALOGS = _configured_catalogs or [
@@ -72,7 +72,19 @@ def _run(cmd, **kw):
     kw.setdefault("check", True)
     kw.setdefault("stdout", subprocess.PIPE)
     kw.setdefault("stderr", subprocess.PIPE)
+    if os.name == "nt":
+        kw.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     return subprocess.run([str(c) for c in cmd], **kw)
+
+
+def _ffmpeg_path() -> str:
+    return (os.environ.get("AUTOEDITOR_FFMPEG", "").strip()
+            or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg")
+
+
+def _ffprobe_path() -> str:
+    return (os.environ.get("AUTOEDITOR_FFPROBE", "").strip()
+            or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe")
 
 
 def log(msg):
@@ -90,7 +102,7 @@ def _file_sha256(path: str | Path) -> str:
 def _video_info(path: str | Path) -> tuple[float, int, int]:
     """Measure duration and geometry instead of trusting catalog metadata."""
     probe = _run([
-        shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe",
+        _ffprobe_path(),
         "-v", "error", "-select_streams", "v:0",
         "-show_entries", "format=duration:stream=width,height",
         "-of", "json", path,
@@ -115,7 +127,7 @@ def _video_duration(path: str | Path) -> float:
 def _video_decodes(path: str | Path) -> bool:
     """Decode every video frame so valid-looking truncated files fail."""
     decode = _run([
-        shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg",
+        _ffmpeg_path(),
         "-v", "error", "-i", path, "-map", "0:v:0",
         "-f", "null", "-",
     ], check=False)
@@ -290,8 +302,23 @@ def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
     return edl
 
 
+def _creator_direction_text(profile_id: str | None,
+                            creative: dict | None) -> str:
+    """Render a trusted profile package as a bounded director contract."""
+    if not profile_id or not creative:
+        return "No creator-specific direction. Apply the base style contract."
+    lines = [f"Creator profile: {profile_id}"]
+    for key in sorted(creative):
+        value = str(creative[key]).strip()
+        if value:
+            lines.append(f"{key.replace('_', ' ').upper()}: {value}")
+    return "\n".join(lines)
+
+
 def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
-                 style: str = "long") -> dict | None:
+                 style: str = "long", *, profile_id: str | None = None,
+                 creative: dict | None = None,
+                 profile_sha256_value: str | None = None) -> dict | None:
     """Run a V4 Pro director pass and an independent V4 Pro critic pass."""
     sp_punch, sp_broll, sp_gfx = _STYLE_SPACING.get(style, _STYLE_SPACING["long"])
     style_rules = (
@@ -308,6 +335,7 @@ def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
         f"graphics one per {sp_gfx} seconds."
     )
     transcript = creative_contract.transcript_payload(words)
+    creator_direction = _creator_direction_text(profile_id, creative)
     families = sorted({c["family"] for c in clips if c.get("family")})[:80]
     schema = {
         "protocol_version": creative_contract.PROTOCOL_VERSION,
@@ -365,7 +393,13 @@ concrete reason for every event.
 on each layer must be at least that layer's stated interval apart.
 9. If the transcript teaches numbered steps, signals, parts, pillars, stages,
 rules, principles, or ways, include at least one viz.
-10. Return JSON with all five top-level keys even when a list is empty.
+10. Apply the creator direction below. It may narrow the allowed visual grammar,
+but it cannot override transcript grounding, timing validation, collision rules,
+or any release gate.
+11. Return JSON with all five top-level keys even when a list is empty.
+
+CREATOR SHORT-FORM DIRECTION:
+{creator_direction}
 
 Local clip families, use only an exact value from this list or an empty string.
 An empty string means stock-only resolution and never selects an arbitrary
@@ -489,6 +523,8 @@ CURRENT CANDIDATE JSON:
             "transcript_sha256": creative_contract.transcript_sha256(words),
             "transcript_words": len(words),
             "transcript_complete": True,
+            "profile_id": profile_id,
+            "profile_sha256": profile_sha256_value,
         }
         return edl
     except Exception as e:
@@ -586,7 +622,9 @@ def align_edl_to_speech(edl: dict, words: list[dict], duration: float) -> dict:
 
 
 def make_edl(words, clips, duration, use_llm=True,
-             style: str = "long") -> tuple[dict, str]:
+             style: str = "long", *, profile_id: str | None = None,
+             creative: dict | None = None,
+             profile_sha256_value: str | None = None) -> tuple[dict, str]:
     if use_llm:
         if not words:
             raise RuntimeError(
@@ -599,7 +637,11 @@ def make_edl(words, clips, duration, use_llm=True,
                 "DeepSeek creative mode was requested but no DeepSeek key is "
                 "available. Configure DEEPSEEK_API_KEY or use --no-llm."
             )
-        edl = deepseek_edl(words, clips, duration, style=style)
+        edl = deepseek_edl(
+            words, clips, duration, style=style,
+            profile_id=profile_id, creative=creative,
+            profile_sha256_value=profile_sha256_value,
+        )
         if edl and edl.get("production_receipt", {}).get(
                 "critic_contract_passed"):
             return edl, providers.DEFAULT_DEEPSEEK_MODEL
@@ -617,6 +659,8 @@ def make_edl(words, clips, duration, use_llm=True,
         "operator_opt_out": True,
         "transcript_sha256": creative_contract.transcript_sha256(words),
         "transcript_words": len(words),
+        "profile_id": profile_id,
+        "profile_sha256": profile_sha256_value,
     }
     return edl, "heuristic-explicit"
 
@@ -692,7 +736,7 @@ def _resolve_sfx(name: str) -> Path:
             audio = urllib.request.urlopen(req, timeout=120).read()
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio); tmp = f.name
-            _run(["/opt/homebrew/bin/ffmpeg", "-y", "-i", tmp,
+            _run([_ffmpeg_path(), "-y", "-i", tmp,
                   "-ar", "48000", eleven])
             log(f"sfx: generated '{name}' via ElevenLabs (cached)")
             return eleven

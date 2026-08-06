@@ -1,0 +1,44 @@
+# Ryan Humes: shared friendship skits + list formats
+# ("Top 5 Sweetest Cities in Chicago Suburbs").
+# Reference draft from public-reel analysis. Same approval path as ryan_duffy.
+
+meta:
+  display_name: "Ryan Humes"
+  status: "reference-draft"
+  description: "Friendship skits and countdown/list formats"
+
+brand:
+  accent: "#4FC3F7"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.058
+  caption_words: 3
+
+rules:
+  min_pause_long: 0.80
+  min_pause_short: 0.50
+  pad_head: 0.25
+  pad_tail: 0.30
+  retake_min_words: 3
+  retake_max_gap: 12.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.062
+  short_cap_words: 3
+  short_cap_margin: 0.26
+
+creative:
+  mode: "friendship skit or ranked list short"
+  opening: "Identify whether the clip is a skit or list. Open on the spoken premise, rank, or strongest immediate reaction."
+  performance: "For skits, keep dialogue and reactions primary. For lists, keep the speaker visible between literal examples."
+  punch_ins: "Use restrained punch-ins on rank reveals, punchlines, and clear reaction peaks."
+  broll: "Use supplied literal footage for named places or examples. Avoid unrelated stock and abstract filler."
+  graphics: "For list videos, show only spoken rank numbers and short place or item names. For skits, use one premise or punchline callout at most."
+  sound: "Keep speech clear and use sparse cues on rank changes or punchlines."
+  avoid: "No invented rankings, unsupported labels, corporate diagrams, or wall-to-wall overlays."

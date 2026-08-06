@@ -1,0 +1,40 @@
+# PSE AutoEditor: Omar's private profile. Mirrors the repo-root brand.yaml
+# so existing behaviour is unchanged when --profile pse is used.
+
+meta:
+  display_name: "PSE AutoEditor"
+  status: "approved"
+  description: "Omar's talking-head lesson + shorts workflow"
+
+brand:
+  accent: "#E8C7A7"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans"
+  caption_scale: 0.045
+  caption_words: 4
+
+rules:
+  min_pause_long: 0.90
+  min_pause_short: 0.55
+  pad_head: 0.30
+  pad_tail: 0.35
+  retake_min_words: 3
+  retake_max_gap: 14.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "auto"
+
+creative:
+  mode: "verified talking-head lesson or PSE short"
+  opening: "Open on the strongest spoken hook and establish the lesson immediately."
+  performance: "Keep the speaker authoritative and use visuals to explain concrete claims."
+  punch_ins: "Use punch-ins on verdicts and authentic emphasis."
+  broll: "Use literal or allowed abstract footage that directly matches the spoken idea."
+  graphics: "Use grounded diagrams for frameworks and concise cards for named rules, numbers, or verdicts."
+  sound: "Keep sound design sparse and weighty."
+  avoid: "No unsupported labels, decorative montage, or visuals that compete with the lesson."

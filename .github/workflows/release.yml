@@ -1,0 +1,315 @@
+name: Build desktop installers
+
+# Two release channels off one codebase:
+#   tag ryan-v1.2.3 -> Ryan Reels Editor (ryan_duffy, ryan_humes, shared_skit)
+#   tag pse-v1.2.3  -> PSE AutoEditor    (pse)
+# Or run manually with the product input.
+#
+# Signing is env-gated on repo secrets. Without secrets the workflow still
+# produces UNSIGNED installers for acceptance testing; add
+# CSC_LINK/WIN_CSC_LINK + Apple creds later to remove the Gatekeeper /
+# SmartScreen friction).
+
+on:
+  push:
+    branches: [friend-ready-app]
+    tags: ["ryan-v*", "pse-v*"]
+  workflow_dispatch:
+    inputs:
+      product:
+        description: "Which product to build"
+        required: true
+        default: "ryan"
+        type: choice
+        options: [ryan, pse]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: mac
+            arch: arm64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+          - os: windows-2022
+            platform: win
+            arch: x64
+            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve product
+        id: product
+        shell: bash
+        run: |
+          REF="${GITHUB_REF_NAME:-}"
+          PRODUCT="${{ github.event.inputs.product }}"
+          if [[ -z "$PRODUCT" ]]; then
+            case "$REF" in
+              ryan-v*) PRODUCT=ryan ;;
+              pse-v*)  PRODUCT=pse ;;
+              *)       PRODUCT=ryan ;;
+            esac
+          fi
+          VERSION="0.1.0"
+          if [[ "$REF" == *-v* ]]; then
+            VERSION="${REF#*-v}"
+          fi
+          if [[ "$PRODUCT" == "ryan" ]]; then
+            echo "name=Ryan Reels Editor" >> "$GITHUB_OUTPUT"
+            echo "appid=com.marabha.ryanreels" >> "$GITHUB_OUTPUT"
+            echo "profiles=ryan_duffy ryan_humes shared_skit" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=PSE AutoEditor" >> "$GITHUB_OUTPUT"
+            echo "appid=com.marabha.pseautoeditor" >> "$GITHUB_OUTPUT"
+            echo "profiles=pse" >> "$GITHUB_OUTPUT"
+          fi
+          echo "product=$PRODUCT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$PRODUCT-${{ matrix.platform }}-${{ matrix.arch }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build frozen engine
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          python -m unittest tests.test_safety
+          pyinstaller packaging/engine.spec --distpath packaging/dist
+          ls packaging/dist/autoeditor-engine | head
+          ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
+          [[ "${{ runner.os }}" == "Windows" ]] && ENGINE="${ENGINE}.exe"
+          "$ENGINE" --help >/dev/null
+
+      - name: Stage resources
+        shell: bash
+        run: |
+          mkdir -p desktop/staging/bin desktop/staging/lib \
+            desktop/staging/profiles desktop/staging/fonts
+          cp -r packaging/dist/autoeditor-engine desktop/staging/engine
+          for p in ${{ steps.product.outputs.profiles }}; do
+            cp -r "profiles/$p" "desktop/staging/profiles/$p"
+          done
+          cat > desktop/staging/product.json << EOF
+          {"id":"${{ steps.product.outputs.product }}",
+           "name":"${{ steps.product.outputs.name }}",
+           "appId":"${{ steps.product.outputs.appid }}",
+           "profiles":$(python -c "import json;print(json.dumps('${{ steps.product.outputs.profiles }}'.split()))"),
+           "channel":"${{ steps.product.outputs.channel }}",
+           "tagline":"Drop clips. Get a finished reel."}
+          EOF
+
+      - name: Bundle native ffmpeg and ffprobe (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install ffmpeg
+          python packaging/bundle_macos_ffmpeg.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --bin-dir desktop/staging/bin \
+            --lib-dir desktop/staging/lib
+          file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe
+          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+            file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe | \
+              grep -q 'arm64'
+          else
+            file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe | \
+              grep -q 'x86_64'
+          fi
+          if otool -L desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe \
+              desktop/staging/lib/*.dylib | \
+              grep -E '/opt/homebrew|/usr/local/(Cellar|opt)'; then
+            echo "Homebrew path escaped the portable FFmpeg bundle" >&2
+            exit 1
+          fi
+          desktop/staging/bin/ffmpeg -version >/dev/null
+          desktop/staging/bin/ffprobe -version >/dev/null
+
+      - name: Fetch ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -L "${{ matrix.ffmpeg_url }}" -o ff.zip
+          unzip -o ff.zip -d fftmp
+          cp fftmp/*/bin/ffmpeg.exe fftmp/*/bin/ffprobe.exe desktop/staging/bin/
+          desktop/staging/bin/ffmpeg.exe -version >/dev/null
+          desktop/staging/bin/ffprobe.exe -version >/dev/null
+
+      - name: Fetch open-license fonts
+        shell: bash
+        run: |
+          curl -L "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" \
+            -o desktop/staging/fonts/Montserrat-Bold.ttf
+          test -s desktop/staging/fonts/Montserrat-Bold.ttf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build installer
+        shell: bash
+        working-directory: desktop
+        env:
+          PRODUCT: ${{ steps.product.outputs.product }}
+          PRODUCT_NAME: ${{ steps.product.outputs.name }}
+          APP_ID: ${{ steps.product.outputs.appid }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm ci
+          npm version "${{ steps.product.outputs.version }}" \
+            --no-git-tag-version --allow-same-version
+          node --check main.js
+          node --check preload.js
+          node --check product.js
+          node --check renderer/app.js
+          node --check scripts/notarize.js
+          npm test
+          TARGET="--${{ matrix.platform }}"
+          ARCH="--${{ matrix.arch }}"
+          npx electron-builder --config electron-builder.yml \
+            --config.appId="$APP_ID" \
+            --config.productName="$PRODUCT_NAME" \
+            --config.publish.channel="${{ steps.product.outputs.channel }}" \
+            "$TARGET" "$ARCH" \
+            --publish never
+
+      - name: Smoke-test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ steps.product.outputs.name }}
+          EXPECT_SIGNED: ${{ secrets.WIN_CSC_LINK != '' }}
+        run: |
+          $installer = Get-ChildItem "desktop/dist/*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Windows installer was not created" }
+          $install = Start-Process -FilePath $installer.FullName `
+            -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Windows installer exited $($install.ExitCode)"
+          }
+          $root = Join-Path $env:LOCALAPPDATA "Programs/$env:PRODUCT_NAME"
+          $app = Join-Path $root "$env:PRODUCT_NAME.exe"
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          $ffmpeg = Join-Path $root "resources/bin/ffmpeg.exe"
+          if (-not (Test-Path $app)) { throw "Installed app is missing" }
+          if (-not (Test-Path $engine)) { throw "Installed engine is missing" }
+          if (-not (Test-Path $ffmpeg)) { throw "Installed FFmpeg is missing" }
+          $expectedProfiles = @("ryan_duffy", "ryan_humes", "shared_skit")
+          if ($env:PRODUCT_NAME -eq "PSE AutoEditor") { $expectedProfiles = @("pse") }
+          $profileRoot = Join-Path $root "resources/profiles"
+          $actualProfiles = @(Get-ChildItem $profileRoot -Directory |
+            ForEach-Object Name | Sort-Object)
+          if (Compare-Object ($expectedProfiles | Sort-Object) $actualProfiles) {
+            throw "Installed creator profiles do not match the product"
+          }
+          & $engine --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installed engine smoke test failed" }
+          & $ffmpeg -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installed FFmpeg smoke test failed" }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $desktopSmoke = Start-Process -FilePath $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($desktopSmoke.ExitCode -ne 0) {
+            throw "Installed app or Windows DPAPI smoke test failed"
+          }
+          if ($env:EXPECT_SIGNED -eq "true") {
+            $signature = Get-AuthenticodeSignature $app
+            if ($signature.Status -ne "Valid") {
+              throw "Windows app signature is not valid: $($signature.Status)"
+            }
+          }
+          $uninstaller = Join-Path $root "Uninstall $env:PRODUCT_NAME.exe"
+          if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
+          $uninstall = Start-Process -FilePath $uninstaller `
+            -ArgumentList "/S" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path $app)) {
+            throw "Windows silent uninstall failed"
+          }
+
+      - name: Smoke-test macOS app and DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ steps.product.outputs.name }}
+          EXPECT_SIGNED: ${{ secrets.CSC_LINK != '' }}
+        run: |
+          APP=$(find desktop/dist -maxdepth 2 -type d \
+            -name "$PRODUCT_NAME.app" -print -quit)
+          DMG=$(find desktop/dist -maxdepth 1 -type f \
+            -name '*.dmg' -print -quit)
+          test -n "$APP" && test -d "$APP"
+          test -n "$DMG" && test -f "$DMG"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          "$APP/Contents/Resources/engine/autoeditor-engine" --help >/dev/null
+          "$APP/Contents/Resources/bin/ffmpeg" -version >/dev/null
+          "$APP/Contents/Resources/bin/ffprobe" -version >/dev/null
+          AUTOEDITOR_SMOKE_TEST=1 \
+            "$APP/Contents/MacOS/$PRODUCT_NAME"
+          EXPECTED="${{ steps.product.outputs.profiles }}"
+          ACTUAL=$(find "$APP/Contents/Resources/profiles" \
+            -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | \
+            sort | tr '\n' ' ' | sed 's/ $//')
+          test "$ACTUAL" = "$(printf '%s\n' $EXPECTED | sort | tr '\n' ' ' | sed 's/ $//')"
+          hdiutil verify "$DMG"
+          if [[ "$EXPECT_SIGNED" == "true" ]]; then
+            codesign -dv --verbose=4 "$APP" 2>&1 | \
+              grep -q 'Authority=Developer ID Application'
+            spctl --assess --type execute --verbose=2 "$APP"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.product.outputs.product }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.yml
+            desktop/dist/*.blockmap
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish only after every platform passes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" \
+              --notes "Desktop installers validated by the release workflow."
+          find release-assets -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.yml' \
+               -o -name '*.blockmap' \) -print0 | \
+            xargs -0 gh release upload "$TAG" --clobber

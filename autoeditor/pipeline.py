@@ -15,8 +15,12 @@ from .config import Config, font_file as _font_file
 CFG = Config.load()
 providers.load_dotenv()
 
-FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
-FFPROBE = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+# Packaged desktop builds ship their own ffmpeg and point these env vars at
+# it; a PATH install and the Homebrew location remain the dev fallbacks.
+FFMPEG = (os.environ.get("AUTOEDITOR_FFMPEG")
+          or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg")
+FFPROBE = (os.environ.get("AUTOEDITOR_FFPROBE")
+           or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe")
 RUNTIME_BIN = Path(sys.executable).resolve().parent
 LEGACY_EDIT_BIN = Path.home() / "cinematic-autopilot" / "venv" / "bin"
 AUTO_EDITOR = Path(
@@ -37,10 +41,21 @@ def run(cmd, **kw):
     kw.setdefault("check", True)
     kw.setdefault("stdout", subprocess.PIPE)
     kw.setdefault("stderr", subprocess.PIPE)
+    if os.name == "nt":
+        kw.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     return subprocess.run([str(c) for c in cmd], **kw)
 
 def log(msg):
     print(f"[pse-edit {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
+        # machine-readable mirror for the desktop shell; one JSON per line
+        print(json.dumps({"event": "log", "msg": str(msg)}), flush=True)
+
+
+def emit(event: dict):
+    """Structured event for the desktop shell (no-op otherwise)."""
+    if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
+        print(json.dumps(event), flush=True)
 
 # ---------------------------------------------------------------- phase 1
 def preflight(src: Path) -> dict:
@@ -1364,7 +1379,10 @@ def transcribe(video: Path, workdir: Path) -> list[dict]:
         "       for s in segs for w in (s.words or [])]\n"
         "json.dump(words,open(sys.argv[2],'w'))\n")
     wj = workdir / "words.json"
-    run([VENV_PY, script, video, wj], timeout=1800)
+    command = ([VENV_PY, "--asr-words", video, wj]
+               if getattr(sys, "frozen", False)
+               else [VENV_PY, script, video, wj])
+    run(command, timeout=1800)
     return json.loads(wj.read_text())
 
 def script_correct(words: list[dict], script_path: Path) -> list[dict]:
@@ -1500,7 +1518,10 @@ def _secondary_asr_text(master: Path, start: float, end: float,
         "json.dump({'text':' '.join(x.text.strip() for x in s)},"
         "open(sys.argv[2],'w'))\n"
     )
-    run([VENV_PY, script_file, clip, result_file], timeout=900)
+    command = ([VENV_PY, "--asr-secondary", clip, result_file]
+               if getattr(sys, "frozen", False)
+               else [VENV_PY, script_file, clip, result_file])
+    run(command, timeout=900)
     return str(json.loads(result_file.read_text()).get("text", ""))
 
 
@@ -2193,6 +2214,18 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     if edl is not None:
         receipt = edl.get("production_receipt") or {}
         source = receipt.get("source")
+        expected_profile_sha256 = None
+        if CFG.profile_id:
+            from .profiles import profile_sha256
+            expected_profile_sha256 = profile_sha256(CFG.profile_id)
+        profile_bound = (
+            not CFG.profile_id
+            or (
+                receipt.get("profile_id") == CFG.profile_id
+                and receipt.get("profile_sha256")
+                    == expected_profile_sha256
+            )
+        )
         plan_ok = (
             (
                 source == "deepseek"
@@ -2237,6 +2270,13 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
             "protocol_version": receipt.get("protocol_version"),
             "note": "" if plan_ok else
                     "creative plan lacks a complete trusted production receipt",
+        }
+        qa["checks"]["creator_profile_bound"] = {
+            "ok": profile_bound,
+            "profile_id": CFG.profile_id,
+            "profile_sha256": receipt.get("profile_sha256"),
+            "note": "" if profile_bound else
+                    "creative plan was produced with a different creator profile",
         }
         resolution = edl.get("resolution") or {
             "planned_broll": len(edl.get("broll", [])),
@@ -2347,6 +2387,34 @@ def _option_conflicts(args: argparse.Namespace) -> list[str]:
     return conflicts
 
 
+def _resolve_style(requested: str, config: Config, info: dict) -> str:
+    """Resolve CLI intent, then the creator default, then media geometry."""
+    if requested != "auto":
+        return requested
+    profile_default = str(config.style.get("default_style", "auto"))
+    if profile_default in {"short", "long"}:
+        return profile_default
+    return (
+        "short"
+        if info["height"] > info["width"] and info["duration"] <= 95
+        else "long"
+    )
+
+
+def _cut_settings(style: str, config: Config) -> dict:
+    """Creator pacing values used by every speech-cleanup pass."""
+    return {
+        "min_pause": (
+            config.rules.min_pause_short
+            if style == "short" else config.rules.min_pause_long
+        ),
+        "head": config.rules.pad_head,
+        "tail": config.rules.pad_tail,
+        "retake_min_words": config.rules.retake_min_words,
+        "retake_max_gap": config.rules.retake_max_gap,
+    }
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(prog="autoedit")
@@ -2381,10 +2449,45 @@ def main():
                     help="source AV offset correction in ms; positive = delay "
                          "audio (audio leads video). Omit to use a valid "
                          "source-bound calibration sidecar, otherwise 0")
+    ap.add_argument("--profile", type=str, default=None,
+                    help="creator profile package id (see profiles/); "
+                         "overrides $AUTOEDITOR_PROFILE and brand.yaml")
+    ap.add_argument("--transcribe-only", action="store_true",
+                    help="transcribe the input and write TRANSCRIPT.txt / "
+                         ".json to --out, then exit (no editing). Used by "
+                         "the desktop app for the review step")
     a = ap.parse_args()
+    global CFG
+    active_profile = a.profile or os.environ.get("AUTOEDITOR_PROFILE") or None
+    if active_profile:
+        # premium.py reads the same environment during its delayed import.
+        # Keeping one profile id here prevents the shell, renderer and QA
+        # receipt from silently using different creator contracts.
+        os.environ["AUTOEDITOR_PROFILE"] = active_profile
+        CFG = Config.load(profile=active_profile)
+        log(f"profile: {CFG.profile_id}")
+        emit({"event": "profile", "id": CFG.profile_id})
     src = a.video.expanduser().resolve()
     if not src.exists():
         sys.exit(f"no such file: {src}")
+    if a.transcribe_only:
+        outdir = (a.out or src.parent / f"{src.stem}_TRANSCRIPT").resolve()
+        outdir.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="pse-transcribe-"))
+        try:
+            preflight(src)
+            words = transcribe(src, work)
+            (outdir / "TRANSCRIPT.json").write_text(
+                json.dumps(words, indent=2))
+            text = " ".join(w["w"] for w in words)
+            (outdir / "TRANSCRIPT.txt").write_text(text + "\n")
+            log(f"transcribe-only: {len(words)} words -> {outdir}")
+            emit({"event": "transcript", "words": len(words),
+                  "txt": str(outdir / "TRANSCRIPT.txt"),
+                  "json": str(outdir / "TRANSCRIPT.json")})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        sys.exit(0)
     try:
         for attr in ("script", "edl", "music", "background"):
             setattr(
@@ -2425,10 +2528,8 @@ def main():
     src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
-    style = a.style
-    if style == "auto":
-        style = ("short" if info["height"] > info["width"]
-                 and info["duration"] <= 95 else "long")
+    style = _resolve_style(a.style, CFG, info)
+    cut_settings = _cut_settings(style, CFG)
     PROFILE = {
         # margin: silence padding | caption scale/words/margin: bigger cards,
         # fewer words, lifted clear of the platform UI on shorts
@@ -2437,10 +2538,19 @@ def main():
         "short": {"margin": "0.06s", "cap_scale": 0.062, "cap_words": 3,
                   "cap_margin": 0.24},
     }[style]
+    # creator profile overrides for this style, e.g. short_cap_scale: 0.065
+    for k in ("cap_scale", "cap_words", "cap_margin"):
+        ov = CFG.style.get(f"{style}_{k}")
+        if ov is not None:
+            PROFILE[k] = int(ov) if k == "cap_words" else float(ov)
     log(f"phase 1: {info['width']}x{info['height']} {info['duration']:.1f}s "
         f"ok, style={style}")
     cut, retention, raw_words = word_guarded_cut(
-        src, work, min_pause=(0.55 if style == "short" else 0.9))
+        src, work,
+        min_pause=cut_settings["min_pause"],
+        head=cut_settings["head"],
+        tail=cut_settings["tail"],
+    )
     # every downstream layer (caption band length above all) is built against
     # info["duration"], leaving the PRE-cut value stretched the master ~21s
     # past the end of speech with a dead tail (2026-07-24).
@@ -2453,12 +2563,18 @@ def main():
     if not (a.edl and a.edl.exists()):
         converged = False
         for round_no in range(1, 6):
-            cleanup = (detect_retakes(words, script_path=a.script)
+            cleanup = (detect_retakes(
+                           words,
+                           max_gap=cut_settings["retake_max_gap"],
+                           min_n=cut_settings["retake_min_words"],
+                           script_path=a.script)
                        + detect_false_starts(words, a.script)
                        + detect_lead_noise(words)
                        + detect_head_noise_audio(cut)
                        + detect_dead_air(words, _dur(cut),
-                                         min_pause=(0.55 if style == "short" else 0.9)))
+                                         min_pause=cut_settings["min_pause"],
+                                         head=cut_settings["head"],
+                                         tail=cut_settings["tail"]))
             merged = []
             for c in sorted(cleanup, key=lambda x: x["s"]):
                 if merged and c["s"] <= merged[-1]["e"] + 0.05:
@@ -2489,11 +2605,13 @@ def main():
             log("phase 3A: re-transcribing post-anomaly timeline")
             words = _retranscribe_post_cut(cut, work, a.script)
             info["duration"] = _dur(cut)
-    font_file, font_ok = _font_file(CFG.brand)
+    font_file, font_ok = _font_file(CFG.brand, CFG.profile_id)
     # ---- premium layer: DeepSeek EDL -> punch-ins, b-roll, graphic cards
     gfx_layers, broll_lyrs, edl_src = [], [], "off"
     if not a.no_premium and words:
         from . import premium as prem
+        from .profiles import profile_sha256
+        active_profile_sha256 = profile_sha256(CFG.profile_id)
         if a.background and a.background.exists():
             cut = prem.apply_background(cut, a.background, work, FFMPEG,
                                         info["width"], info["height"])
@@ -2505,6 +2623,8 @@ def main():
             edl["production_receipt"] = {
                 "source": "human_director",
                 "operator_supplied": True,
+                "profile_id": CFG.profile_id,
+                "profile_sha256": active_profile_sha256,
                 "edl_sha256": hashlib.sha256(
                     a.edl.read_bytes()
                 ).hexdigest(),
@@ -2516,7 +2636,11 @@ def main():
                 info["duration"] = _dur(cut)
         else:
             edl, edl_src = prem.make_edl(words, clips, info["duration"],
-                                         use_llm=not a.no_llm, style=style)
+                                         use_llm=not a.no_llm, style=style,
+                                         profile_id=CFG.profile_id,
+                                         creative=CFG.creative,
+                                         profile_sha256_value=(
+                                             active_profile_sha256))
         log(f"phase 4p: EDL via {edl_src}, {len(edl['punch_ins'])} punch-ins, "
             f"{len(edl['broll'])} b-roll ({len(clips)} clips avail), "
             f"{len(edl['graphics'])} graphics")
@@ -2677,6 +2801,13 @@ def main():
         log("QA failed: master(s) remain *.UNVERIFIED - not for upload")
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
+    emit({"event": "result",
+          "qa_pass": bool(qa["pass"]),
+          "status": "delivered" if qa["pass"] else "needs_review",
+          "outputs": {k: str(v) for k, v in outs.items()},
+          "outdir": str(outdir),
+          "qa_report": str(outdir / "QA_REPORT.json"),
+          "seconds": round(time.time() - t0)})
     # One Telegram ping per COMPLETED render (full pipeline: master + all
     # variants + QA + hash-lock). Previews/partials never reach this line.
     try:

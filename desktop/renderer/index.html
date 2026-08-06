@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Reels Editor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="app-name">Reels Editor</h1>
+      <p id="tagline" class="muted"></p>
+    </div>
+    <button id="settings-btn" class="ghost">Settings</button>
+  </header>
+
+  <!-- settings / first-run -->
+  <section id="settings" class="card hidden">
+    <h2>Settings</h2>
+    <label>DeepSeek API key
+      <input id="key-input" type="password"
+             placeholder="sk-... (stored in your system keychain)">
+    </label>
+    <p class="muted">The key is encrypted with your operating system's
+      keychain and never written to files or logs.</p>
+    <label>Output folder
+      <div class="row">
+        <input id="outdir-input" type="text" readonly
+               placeholder="Default: Movies folder">
+        <button id="outdir-btn" class="ghost">Choose</button>
+      </div>
+    </label>
+    <div class="row end">
+      <button id="settings-save" class="primary">Save</button>
+    </div>
+    <p id="settings-msg" class="muted"></p>
+  </section>
+
+  <!-- step 1: profile -->
+  <section id="main" class="hidden">
+    <div class="card">
+      <h2><span class="step">1</span> Whose style?</h2>
+      <div id="profiles" class="profiles"></div>
+    </div>
+
+    <!-- step 2: clips -->
+    <div class="card">
+      <h2><span class="step">2</span> Raw clips</h2>
+      <div id="dropzone" class="dropzone">
+        Drop clips here or click to choose.<br>
+        <span class="muted">Multiple clips are joined in order.</span>
+      </div>
+      <ul id="clip-list" class="filelist"></ul>
+    </div>
+
+    <!-- step 3: script -->
+    <div class="card">
+      <h2><span class="step">3</span> Script</h2>
+      <p class="muted">Paste the script you performed, or generate the
+        transcript from your clips and fix anything it misheard. The final
+        video is quality-checked against this text.</p>
+      <div class="row">
+        <button id="transcribe-btn" class="ghost">
+          Generate transcript from clips</button>
+        <span id="transcribe-status" class="muted"></span>
+      </div>
+      <textarea id="script-box" rows="7"
+        placeholder="Your script or reviewed transcript..."></textarea>
+    </div>
+
+    <!-- step 4: extras -->
+    <div class="card">
+      <h2><span class="step">4</span> Extras <span class="muted">
+        (optional)</span></h2>
+      <div class="row">
+        <button id="music-btn" class="ghost">Add music</button>
+        <span id="music-name" class="muted"></span>
+      </div>
+      <div class="row">
+        <button id="broll-btn" class="ghost">Add extra footage</button>
+        <span id="broll-name" class="muted"></span>
+      </div>
+    </div>
+
+    <!-- step 5-7: run -->
+    <div class="card">
+      <button id="edit-btn" class="primary big" disabled>Edit Reel</button>
+      <div id="progress" class="hidden">
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="phase-label" class="muted">Starting…</p>
+        <pre id="log" class="log"></pre>
+        <button id="cancel-btn" class="ghost">Cancel</button>
+      </div>
+      <div id="result" class="hidden">
+        <h2 id="result-title"></h2>
+        <p id="result-detail" class="muted"></p>
+        <div class="row">
+          <button id="reveal-btn" class="primary">Show file</button>
+          <button id="again-btn" class="ghost">Edit another</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

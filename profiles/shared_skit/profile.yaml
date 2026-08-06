@@ -1,0 +1,44 @@
+# Shared Skit: two-hander reels featuring both Ryans. Neutral branding that
+# reads well on either account.
+# Reference draft. Neutral two-person branding for both accounts.
+
+meta:
+  display_name: "Shared Skit"
+  status: "reference-draft"
+  description: "Two-person skits posted to either account"
+
+brand:
+  accent: "#FFFFFF"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.058
+  caption_words: 3
+
+rules:
+  min_pause_long: 0.85
+  min_pause_short: 0.52
+  pad_head: 0.28
+  pad_tail: 0.32
+  retake_min_words: 3
+  retake_max_gap: 12.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.062
+  short_cap_words: 3
+  short_cap_margin: 0.26
+
+creative:
+  mode: "two-person friendship skit short"
+  opening: "Open on the premise or conflict without an intro card that delays the first performance beat."
+  performance: "Preserve the back-and-forth, reaction holds, interruptions, and awkward pauses that make the joke work."
+  punch_ins: "Use quick punch-ins on the strongest reaction or punchline, never on every speaker turn."
+  broll: "Keep both creators and the scene primary. Use only supplied inserts that are part of the joke."
+  graphics: "Use one short premise line or punchline callout only when grounded in the reviewed transcript."
+  sound: "Protect dialogue and comedic silence. Add only sparse reaction or transition cues."
+  avoid: "No generic stock, educational graphics, excessive captions, or edits that erase reaction timing."

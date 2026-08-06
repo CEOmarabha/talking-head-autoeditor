@@ -12,6 +12,7 @@ __pycache__/
 # node
 node_modules/
 package-lock.json
+!desktop/package-lock.json
 
 # generated media + caches
 *.mp4
@@ -28,3 +29,10 @@ out/
 
 # os
 .DS_Store
+
+# desktop build
+desktop/node_modules/
+desktop/dist/
+desktop/staging/
+packaging/build/
+packaging/dist/

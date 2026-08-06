@@ -13,10 +13,104 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from autoeditor import calibrate, creative_contract, pipeline, premium, providers
+from autoeditor import (
+    calibrate, config, creative_contract, pipeline, premium, profiles,
+    providers,
+)
 
 
 class SafetyContracts(unittest.TestCase):
+    def test_premium_media_checks_use_packaged_ffmpeg_paths(self):
+        probe_result = mock.Mock(
+            stdout=json.dumps({
+                "streams": [{"width": 1080, "height": 1920}],
+                "format": {"duration": "4.0"},
+            }).encode(),
+            returncode=0,
+        )
+        with mock.patch.dict(os.environ, {
+            "AUTOEDITOR_FFMPEG": r"C:\\Ryan Editor\\ffmpeg.exe",
+            "AUTOEDITOR_FFPROBE": r"C:\\Ryan Editor\\ffprobe.exe",
+        }), mock.patch.object(
+            premium.shutil, "which", return_value=None
+        ), mock.patch.object(
+            premium, "_run", return_value=probe_result
+        ) as runner:
+            premium._video_info("clip.mp4")
+            self.assertEqual(
+                runner.call_args.args[0][0],
+                r"C:\\Ryan Editor\\ffprobe.exe",
+            )
+            premium._video_decodes("clip.mp4")
+            self.assertEqual(
+                runner.call_args.args[0][0],
+                r"C:\\Ryan Editor\\ffmpeg.exe",
+            )
+
+    def test_ryan_profiles_force_short_form_and_carry_creator_direction(self):
+        landscape_long = {"width": 1920, "height": 1080, "duration": 130}
+        for profile_id in ("ryan_duffy", "ryan_humes", "shared_skit"):
+            with self.subTest(profile=profile_id):
+                creator = config.Config.load(profile=profile_id)
+                self.assertEqual(
+                    pipeline._resolve_style("auto", creator, landscape_long),
+                    "short",
+                )
+                self.assertTrue(creator.creative.get("mode"))
+                self.assertTrue(creator.creative.get("opening"))
+                self.assertEqual(
+                    len(profiles.profile_sha256(profile_id)), 64
+                )
+
+    def test_creator_cut_settings_reach_all_profile_pacing_values(self):
+        creator = config.Config.load(profile="ryan_duffy")
+        settings = pipeline._cut_settings("short", creator)
+        self.assertEqual(settings["min_pause"], 0.50)
+        self.assertEqual(settings["head"], 0.25)
+        self.assertEqual(settings["tail"], 0.30)
+        self.assertEqual(settings["retake_min_words"], 3)
+        self.assertEqual(settings["retake_max_gap"], 12.0)
+
+    def test_deepseek_receipt_binds_creator_short_direction(self):
+        words = [
+            {"w": "funny", "s": 0.0, "e": 0.2},
+            {"w": "opening", "s": 0.3, "e": 0.5},
+            {"w": "premise", "s": 0.6, "e": 0.8},
+            {"w": "lands", "s": 0.9, "e": 1.1},
+            {"w": "here.", "s": 1.2, "e": 1.4},
+        ]
+        candidate = {
+            "protocol_version": creative_contract.PROTOCOL_VERSION,
+            "timeline_space": creative_contract.TIMELINE_SPACE,
+            "punch_ins": [], "broll": [], "graphics": [],
+        }
+        valid = {**candidate, "contract": {"score": 100}}
+        prompts = []
+
+        def fake_llm(prompt, *args, **kwargs):
+            prompts.append(prompt)
+            kwargs["receipt"].update({"ok": True})
+            return dict(candidate)
+
+        with mock.patch.object(
+            providers, "llm_json", side_effect=fake_llm
+        ), mock.patch.object(
+            creative_contract, "validate_edl",
+            return_value=(valid, {"score": 100}),
+        ):
+            result = premium.deepseek_edl(
+                words, [], 5.0, style="short",
+                profile_id="ryan_duffy",
+                creative={"mode": "relatable skit", "avoid": "generic stock"},
+                profile_sha256_value="a" * 64,
+            )
+        self.assertIsNotNone(result)
+        self.assertTrue(all("Creator profile: ryan_duffy" in p for p in prompts))
+        self.assertTrue(all("generic stock" in p for p in prompts))
+        receipt = result["production_receipt"]
+        self.assertEqual(receipt["profile_id"], "ryan_duffy")
+        self.assertEqual(receipt["profile_sha256"], "a" * 64)
+
     def test_json_extractor_requires_every_requested_key(self):
         partial = '{"punch_ins":[]}'
         self.assertIsNone(providers.extract_json(
@@ -771,6 +865,32 @@ class SafetyContracts(unittest.TestCase):
         self.assertNotIn(
             'VENV_PY = EDIT_VENV / "bin" / "python"', source
         )
+
+    def test_frozen_engine_uses_bundled_asr_worker_modes(self):
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            command = [str(value) for value in command]
+            commands.append(command)
+            if "--asr-words" in command:
+                Path(command[-1]).write_text("[]")
+            if "--asr-secondary" in command:
+                Path(command[-1]).write_text('{"text":"verified words"}')
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            pipeline.sys, "frozen", True, create=True
+        ), mock.patch.object(pipeline, "run", side_effect=fake_run):
+            work = Path(td)
+            words = pipeline.transcribe(work / "input.mp4", work)
+            secondary = pipeline._secondary_asr_text(
+                work / "input.mp4", 1.0, 3.0, work
+            )
+
+        self.assertEqual(words, [])
+        self.assertEqual(secondary, "verified words")
+        self.assertTrue(any("--asr-words" in cmd for cmd in commands))
+        self.assertTrue(any("--asr-secondary" in cmd for cmd in commands))
 
     def test_default_catalogs_exist_without_live_bridge_side_effects(self):
         self.assertTrue(premium.CLIP_CATALOGS)

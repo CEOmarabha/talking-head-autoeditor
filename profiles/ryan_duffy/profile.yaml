@@ -1,0 +1,48 @@
+# Ryan Duffy: premise-driven friendship / relatable skits.
+# Reference draft from public-reel analysis. It remains provisional until
+# Ryan approves held-out raw-to-final comparisons;
+# re-run scripts/profile_measure.py on his original exports whenever he
+# sends files, to sharpen accuracy further.
+
+meta:
+  display_name: "Ryan Duffy"
+  status: "reference-draft"
+  description: "Premise-driven friendship skits, relatable POV humor"
+
+brand:
+  accent: "#FFD400"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.060
+  caption_words: 3
+
+rules:
+  # skit pacing: tighter than lessons, but comedic beats need air, so the
+  # short-form pause floor stays higher than pure talking-head shorts
+  min_pause_long: 0.80
+  min_pause_short: 0.50
+  pad_head: 0.25
+  pad_tail: 0.30
+  retake_min_words: 3
+  retake_max_gap: 12.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.065
+  short_cap_words: 3
+  short_cap_margin: 0.26
+
+creative:
+  mode: "relatable skit and POV short"
+  opening: "Start on the spoken premise or immediate action. Establish the joke in the first two seconds."
+  performance: "Keep faces, dialogue, reaction pauses, and physical comedy primary. Let the performance carry the reel."
+  punch_ins: "Use quick restrained punch-ins only for the premise, punchline, or strongest reaction."
+  broll: "Avoid generic stock footage and educational visuals. Use only supplied story footage that belongs to the scene."
+  graphics: "Use short meme-style premise text or a punchline callout only when those words are supported by the transcript."
+  sound: "Keep dialogue forward. Use sparse reaction or transition cues and leave comedic silence intact."
+  avoid: "No corporate cards, framework diagrams, documentary montage, or constant motion."
