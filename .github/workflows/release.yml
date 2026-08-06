@@ -12,6 +12,7 @@ name: Build desktop installers
 
 on:
   push:
+    branches: [friend-ready-app]
     tags: ["ryan-v*", "pse-v*"]
   workflow_dispatch:
     inputs:
