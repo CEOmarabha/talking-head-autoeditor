@@ -15,8 +15,12 @@ from .config import Config, font_file as _font_file
 CFG = Config.load()
 providers.load_dotenv()
 
-FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
-FFPROBE = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+# Packaged desktop builds ship their own ffmpeg and point these env vars at
+# it; a PATH install and the Homebrew location remain the dev fallbacks.
+FFMPEG = (os.environ.get("AUTOEDITOR_FFMPEG")
+          or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg")
+FFPROBE = (os.environ.get("AUTOEDITOR_FFPROBE")
+           or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe")
 RUNTIME_BIN = Path(sys.executable).resolve().parent
 LEGACY_EDIT_BIN = Path.home() / "cinematic-autopilot" / "venv" / "bin"
 AUTO_EDITOR = Path(
@@ -41,6 +45,15 @@ def run(cmd, **kw):
 
 def log(msg):
     print(f"[pse-edit {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
+        # machine-readable mirror for the desktop shell; one JSON per line
+        print(json.dumps({"event": "log", "msg": str(msg)}), flush=True)
+
+
+def emit(event: dict):
+    """Structured event for the desktop shell (no-op otherwise)."""
+    if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
+        print(json.dumps(event), flush=True)
 
 # ---------------------------------------------------------------- phase 1
 def preflight(src: Path) -> dict:
@@ -2381,10 +2394,40 @@ def main():
                     help="source AV offset correction in ms; positive = delay "
                          "audio (audio leads video). Omit to use a valid "
                          "source-bound calibration sidecar, otherwise 0")
+    ap.add_argument("--profile", type=str, default=None,
+                    help="creator profile package id (see profiles/); "
+                         "overrides $AUTOEDITOR_PROFILE and brand.yaml")
+    ap.add_argument("--transcribe-only", action="store_true",
+                    help="transcribe the input and write TRANSCRIPT.txt / "
+                         ".json to --out, then exit (no editing). Used by "
+                         "the desktop app for the review step")
     a = ap.parse_args()
+    global CFG
+    if a.profile or os.environ.get("AUTOEDITOR_PROFILE"):
+        CFG = Config.load(profile=a.profile)
+        log(f"profile: {CFG.profile_id}")
+        emit({"event": "profile", "id": CFG.profile_id})
     src = a.video.expanduser().resolve()
     if not src.exists():
         sys.exit(f"no such file: {src}")
+    if a.transcribe_only:
+        outdir = (a.out or src.parent / f"{src.stem}_TRANSCRIPT").resolve()
+        outdir.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="pse-transcribe-"))
+        try:
+            preflight(src)
+            words = transcribe(src, work)
+            (outdir / "TRANSCRIPT.json").write_text(
+                json.dumps(words, indent=2))
+            text = " ".join(w["w"] for w in words)
+            (outdir / "TRANSCRIPT.txt").write_text(text + "\n")
+            log(f"transcribe-only: {len(words)} words -> {outdir}")
+            emit({"event": "transcript", "words": len(words),
+                  "txt": str(outdir / "TRANSCRIPT.txt"),
+                  "json": str(outdir / "TRANSCRIPT.json")})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        sys.exit(0)
     try:
         for attr in ("script", "edl", "music", "background"):
             setattr(
@@ -2437,6 +2480,11 @@ def main():
         "short": {"margin": "0.06s", "cap_scale": 0.062, "cap_words": 3,
                   "cap_margin": 0.24},
     }[style]
+    # creator profile overrides for this style, e.g. short_cap_scale: 0.065
+    for k in ("cap_scale", "cap_words", "cap_margin"):
+        ov = CFG.style.get(f"{style}_{k}")
+        if ov is not None:
+            PROFILE[k] = int(ov) if k == "cap_words" else float(ov)
     log(f"phase 1: {info['width']}x{info['height']} {info['duration']:.1f}s "
         f"ok, style={style}")
     cut, retention, raw_words = word_guarded_cut(
@@ -2489,7 +2537,7 @@ def main():
             log("phase 3A: re-transcribing post-anomaly timeline")
             words = _retranscribe_post_cut(cut, work, a.script)
             info["duration"] = _dur(cut)
-    font_file, font_ok = _font_file(CFG.brand)
+    font_file, font_ok = _font_file(CFG.brand, CFG.profile_id)
     # ---- premium layer: DeepSeek EDL -> punch-ins, b-roll, graphic cards
     gfx_layers, broll_lyrs, edl_src = [], [], "off"
     if not a.no_premium and words:
@@ -2677,6 +2725,13 @@ def main():
         log("QA failed: master(s) remain *.UNVERIFIED - not for upload")
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
+    emit({"event": "result",
+          "qa_pass": bool(qa["pass"]),
+          "status": "delivered" if qa["pass"] else "needs_review",
+          "outputs": {k: str(v) for k, v in outs.items()},
+          "outdir": str(outdir),
+          "qa_report": str(outdir / "QA_REPORT.json"),
+          "seconds": round(time.time() - t0)})
     # One Telegram ping per COMPLETED render (full pipeline: master + all
     # variants + QA + hash-lock). Previews/partials never reach this line.
     try:

@@ -48,6 +48,11 @@ def load_dotenv(root: Path | None = None) -> None:
     Existing environment variables always win. The Hermes file is limited to
     keys this program owns; unrelated credentials are never imported.
     """
+    if os.environ.get("AUTOEDITOR_PACKAGED"):
+        # Desktop builds receive credentials from the shell's OS keystore via
+        # the child environment ONLY. No dotfiles are read and none are
+        # written, so a key can never end up in .env, logs, or diagnostics.
+        return
     root = root or Path(__file__).resolve().parent.parent
     allowed = {
         "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL",

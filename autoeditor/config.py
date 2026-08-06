@@ -27,9 +27,23 @@ def _parse_yamlish(path: Path) -> dict:
     out: dict = {}
     if not path.exists():
         return out
+
+    def _strip_comment(s: str) -> str:
+        """Remove a trailing # comment without eating quoted '#RRGGBB'."""
+        in_q = None
+        for i, ch in enumerate(s):
+            if in_q:
+                if ch == in_q:
+                    in_q = None
+            elif ch in "'\"":
+                in_q = ch
+            elif ch == "#" and (i == 0 or s[i - 1] in " \t"):
+                return s[:i]
+        return s
+
     section = None
     for raw in path.read_text().splitlines():
-        line = raw.split("#", 1)[0].rstrip()
+        line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue
         indented = line[0] in " \t"
@@ -96,10 +110,22 @@ class Rules:
 class Config:
     brand: Brand = field(default_factory=Brand)
     rules: Rules = field(default_factory=Rules)
+    profile_id: str | None = None
+    # per-style caption/pacing overrides from the profile, e.g.
+    # style: { default_style: short, short_cap_scale: 0.065, ... }
+    style: dict = field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
-        data = _parse_yamlish(path or ROOT / "brand.yaml")
+    def load(cls, path: Path | None = None,
+             profile: str | None = None) -> "Config":
+        """Load config from an explicit path, a profile package, or the
+        legacy repo-root brand.yaml (in that priority order)."""
+        profile = profile or os.environ.get("AUTOEDITOR_PROFILE") or None
+        src = path
+        if src is None and profile:
+            from .profiles import profile_dir
+            src = profile_dir(profile) / "profile.yaml"
+        data = _parse_yamlish(src or ROOT / "brand.yaml")
         b, r = Brand(), Rules()
         for k, v in (data.get("brand") or {}).items():
             if hasattr(b, k):
@@ -111,15 +137,42 @@ class Config:
                 setattr(r, k, type(cur)(v) if isinstance(cur, (int, float, str))
                         and not isinstance(cur, bool)
                         else str(v).lower() in ("1", "true", "yes"))
-        return cls(brand=b, rules=r)
+        style = {}
+        for k, v in (data.get("style") or {}).items():
+            try:
+                style[k] = float(v) if "." in str(v) else int(v)
+            except (TypeError, ValueError):
+                style[k] = v
+        return cls(brand=b, rules=r, profile_id=profile, style=style)
 
 
-def font_file(brand: Brand) -> tuple[str, bool]:
+def font_file(brand: Brand, profile_id: str | None = None) -> tuple[str, bool]:
     """(path, is_brand_font). Captions are rendered as PNGs, so we need a real
-    font FILE, because minimal ffmpeg builds have no libass or drawtext."""
-    for d in (Path.home() / "Library/Fonts", Path("/Library/Fonts"),
-              Path("/usr/share/fonts"), Path.home() / ".fonts"):
-        if not d.exists():
+    font FILE, because minimal ffmpeg builds have no libass or drawtext.
+
+    Search order: profile asset fonts, then user/system font dirs on macOS,
+    Linux AND Windows, then the configured fallbacks, then any bundled font
+    shipped inside a packaged desktop build ($AUTOEDITOR_BUNDLED_FONTS)."""
+    search: list[Path] = []
+    if profile_id:
+        from .profiles import assets_dir
+        ad = assets_dir(profile_id)
+        if ad:
+            search.append(ad / "fonts")
+            search.append(ad)
+    bundled = os.environ.get("AUTOEDITOR_BUNDLED_FONTS")
+    if bundled:
+        search.append(Path(bundled))
+    search += [
+        Path.home() / "Library/Fonts", Path("/Library/Fonts"),
+        Path("/System/Library/Fonts/Supplemental"),
+        Path("/usr/share/fonts"), Path.home() / ".fonts",
+        Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts",
+        Path(os.environ.get("LOCALAPPDATA", "")) /
+        "Microsoft" / "Windows" / "Fonts",
+    ]
+    for d in search:
+        if not d or not d.exists():
             continue
         hits = sorted(d.glob(f"**/{brand.font_pattern}*"))
         if hits:
@@ -127,4 +180,12 @@ def font_file(brand: Brand) -> tuple[str, bool]:
     for fb in brand.font_fallbacks:
         if Path(fb).exists():
             return fb, False
+    # last resort: ship-anything policy inside a packaged build
+    for d in search:
+        if d and d.exists():
+            any_font = sorted(list(d.glob("**/*.ttf")) +
+                              list(d.glob("**/*.otf")) +
+                              list(d.glob("**/*.ttc")))
+            if any_font:
+                return str(any_font[0]), False
     return "", False

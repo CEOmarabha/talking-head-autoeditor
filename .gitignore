@@ -28,3 +28,10 @@ out/
 
 # os
 .DS_Store
+
+# desktop build
+desktop/node_modules/
+desktop/dist/
+desktop/staging/
+packaging/build/
+packaging/dist/

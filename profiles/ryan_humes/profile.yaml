@@ -1,0 +1,34 @@
+# Ryan Humes: shared friendship skits + list formats
+# ("Top 5 Sweetest Cities in Chicago Suburbs").
+# Approved by Ryan Humes. Same accuracy-upgrade path as ryan_duffy.
+
+meta:
+  display_name: "Ryan Humes"
+  status: "approved"
+  description: "Friendship skits and countdown/list formats"
+
+brand:
+  accent: "#4FC3F7"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.058
+  caption_words: 3
+
+rules:
+  min_pause_long: 0.80
+  min_pause_short: 0.50
+  pad_head: 0.25
+  pad_tail: 0.30
+  retake_min_words: 3
+  retake_max_gap: 12.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.062
+  short_cap_words: 3
+  short_cap_margin: 0.26

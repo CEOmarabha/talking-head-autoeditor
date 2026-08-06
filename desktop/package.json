@@ -1,0 +1,21 @@
+{
+  "name": "autoeditor-desktop",
+  "version": "0.1.0",
+  "description": "Desktop shell for the verified AutoEditor engine",
+  "main": "main.js",
+  "author": "Omar Marabha",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --config electron-builder.yml",
+    "dist:mac": "electron-builder --config electron-builder.yml --mac",
+    "dist:win": "electron-builder --config electron-builder.yml --win"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.2.0"
+  }
+}

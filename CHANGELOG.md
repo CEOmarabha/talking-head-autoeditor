@@ -1,3 +1,18 @@
+## v2.2.0-dev (friend-ready desktop build)
+
+- Creator profile packages (`profiles/`, `--profile`): pse, ryan_duffy,
+  ryan_humes, shared_skit. Global brand.yaml stays as legacy fallback.
+- Desktop app (`desktop/`): Ryan Reels Editor / PSE AutoEditor from one
+  codebase; OS-keystore key storage; transcript review; QA-gated delivery
+  with explicit Needs Review; auto-update channels.
+- `--transcribe-only`, JSON progress events (`AUTOEDITOR_PROGRESS_JSON`),
+  `AUTOEDITOR_FFMPEG`/`AUTOEDITOR_FFPROBE`/`AUTOEDITOR_PROFILES_DIR`/
+  `AUTOEDITOR_PACKAGED` for packaged builds; Windows font discovery.
+- Fixed: quoted "#RRGGBB" values in yaml configs were parsed as comments.
+- `scripts/profile_measure.py`: measure a creator's style from finished
+  reels into a profile draft.
+- CI: `release.yml` builds Mac/Windows installers per product tag.
+
 # Changelog
 
 ## 2.0.0 - 2026-07-28

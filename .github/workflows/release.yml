@@ -1,0 +1,156 @@
+name: Build desktop installers
+
+# Two release channels off one codebase:
+#   tag ryan-v1.2.3 -> Ryan Reels Editor (ryan_duffy, ryan_humes, shared_skit)
+#   tag pse-v1.2.3  -> PSE AutoEditor    (pse)
+# Or run manually with the product input.
+#
+# Signing is env-gated on repo secrets. Without secrets the workflow still
+# produces UNSIGNED installers (fine for direct hand-off; add
+# CSC_LINK/WIN_CSC_LINK + Apple creds later to remove the Gatekeeper /
+# SmartScreen friction).
+
+on:
+  push:
+    tags: ["ryan-v*", "pse-v*"]
+  workflow_dispatch:
+    inputs:
+      product:
+        description: "Which product to build"
+        required: true
+        default: "ryan"
+        type: choice
+        options: [ryan, pse]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            ffmpeg_url: https://evermeet.cx/ffmpeg/getrelease/zip
+            ffprobe_url: https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip
+          - os: windows-2022
+            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve product
+        id: product
+        shell: bash
+        run: |
+          REF="${GITHUB_REF_NAME:-}"
+          PRODUCT="${{ github.event.inputs.product }}"
+          if [[ -z "$PRODUCT" ]]; then
+            case "$REF" in
+              ryan-v*) PRODUCT=ryan ;;
+              pse-v*)  PRODUCT=pse ;;
+              *)       PRODUCT=ryan ;;
+            esac
+          fi
+          if [[ "$PRODUCT" == "ryan" ]]; then
+            echo "name=Ryan Reels Editor" >> "$GITHUB_OUTPUT"
+            echo "appid=com.marabha.ryanreels" >> "$GITHUB_OUTPUT"
+            echo "profiles=ryan_duffy ryan_humes shared_skit" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=PSE AutoEditor" >> "$GITHUB_OUTPUT"
+            echo "appid=com.marabha.pseautoeditor" >> "$GITHUB_OUTPUT"
+            echo "profiles=pse" >> "$GITHUB_OUTPUT"
+          fi
+          echo "product=$PRODUCT" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build frozen engine
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller packaging/engine.spec --distpath packaging/dist
+          ls packaging/dist/autoeditor-engine | head
+
+      - name: Stage resources
+        shell: bash
+        run: |
+          mkdir -p desktop/staging/bin desktop/staging/profiles desktop/staging/fonts
+          cp -r packaging/dist/autoeditor-engine desktop/staging/engine
+          for p in ${{ steps.product.outputs.profiles }}; do
+            cp -r "profiles/$p" "desktop/staging/profiles/$p"
+          done
+          cat > desktop/staging/product.json << EOF
+          {"id":"${{ steps.product.outputs.product }}",
+           "name":"${{ steps.product.outputs.name }}",
+           "appId":"${{ steps.product.outputs.appid }}",
+           "profiles":$(python -c "import json;print(json.dumps('${{ steps.product.outputs.profiles }}'.split()))"),
+           "channel":"${{ steps.product.outputs.product }}",
+           "tagline":"Drop clips. Get a finished reel."}
+          EOF
+
+      - name: Fetch ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -L "${{ matrix.ffmpeg_url }}" -o ff.zip && unzip -o ff.zip -d desktop/staging/bin
+          curl -L "${{ matrix.ffprobe_url }}" -o fp.zip && unzip -o fp.zip -d desktop/staging/bin
+          chmod +x desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe
+
+      - name: Fetch ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -L "${{ matrix.ffmpeg_url }}" -o ff.zip
+          unzip -o ff.zip -d fftmp
+          cp fftmp/*/bin/ffmpeg.exe fftmp/*/bin/ffprobe.exe desktop/staging/bin/
+
+      - name: Fetch open-license fonts
+        shell: bash
+        run: |
+          curl -L "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" \
+            -o desktop/staging/fonts/Montserrat-Bold.ttf || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build installer
+        shell: bash
+        working-directory: desktop
+        env:
+          PRODUCT: ${{ steps.product.outputs.product }}
+          PRODUCT_NAME: ${{ steps.product.outputs.name }}
+          APP_ID: ${{ steps.product.outputs.appid }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm ci || npm install
+          if [[ -n "$CSC_LINK" || -n "$WIN_CSC_LINK" ]]; then
+            npm install @electron/notarize --no-save
+          fi
+          PUBLISH=never
+          [[ "${GITHUB_REF}" == refs/tags/* ]] && PUBLISH=always
+          npx electron-builder --config electron-builder.yml \
+            --publish "$PUBLISH"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.product.outputs.product }}-${{ runner.os }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.yml
+          if-no-files-found: warn

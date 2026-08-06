@@ -1,0 +1,62 @@
+# Shared build config for both products. The PRODUCT env var (ryan | pse)
+# selects identity; CI stamps product.json into resources so the runtime
+# knows which product it is.
+#
+# Signing is OPTIONAL and env-gated:
+#   mac: CSC_LINK/CSC_KEY_PASSWORD + APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/
+#        APPLE_TEAM_ID  -> signed + notarized dmg
+#   win: WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD -> signed installer
+# Without those, CI still produces unsigned installers for direct sharing.
+
+appId: "${env.APP_ID}"
+productName: "${env.PRODUCT_NAME}"
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - main.js
+  - preload.js
+  - product.js
+  - renderer/**
+
+extraResources:
+  - from: staging/product.json
+    to: product.json
+  - from: staging/engine
+    to: engine
+  - from: staging/bin
+    to: bin
+  - from: staging/profiles
+    to: profiles
+  - from: staging/fonts
+    to: fonts
+
+publish:
+  provider: github
+  owner: CEOmarabha
+  repo: talking-head-autoeditor
+  channel: "${env.PRODUCT}"
+
+mac:
+  category: public.app-category.video
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false   # handled in afterSign hook only when creds exist
+
+afterSign: scripts/notarize.js
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
