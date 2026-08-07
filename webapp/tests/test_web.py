@@ -103,3 +103,75 @@ def test_no_key_fields_in_job_payload_shape():
     for m in re.finditer(r'api\(f?"/worker/jobs[^)]*\)', src, re.S):
         # the word "key" may appear in human error text; the VARIABLE must not
         assert "{key" not in m.group(0) and ": key" not in m.group(0)
+
+
+def test_personal_worker_routes_recheck_job_and_media_ownership():
+    src = (Path(__file__).resolve().parents[1] /
+           "worker" / "src" / "index.js").read_text()
+    assert "function workerOwnsJob(scope, job)" in src
+    assert src.count("if (!workerOwnsJob(scope, job))") >= 2
+    assert "function jobOwnsMediaKey(job, key)" in src
+    assert "!jobOwnsMediaKey(job, body.output_key)" in src
+    assert "key.startsWith(`u/${scope.userId}/`)" in src
+    assert "WHERE id = ? AND status = 'queued'" in src
+    assert "const checked = validateProposal(body.proposal)" in src
+    assert "safeNeedsApproval = checked.needsApproval" in src
+    assert "body.needs_approval ?" not in src
+    assert "WHERE id = ? AND project_id = ?" in src
+    assert "key_ct: scope.scope === 'global'" in src
+    assert "key_iv: scope.scope === 'global'" in src
+
+
+def test_style_presets_are_user_scoped_on_create_and_worker_read():
+    src = (Path(__file__).resolve().parents[1] /
+           "worker" / "src" / "index.js").read_text()
+    assert src.count(
+        "SELECT name, params_json FROM style_presets WHERE id = ? AND user_id = ?"
+    ) == 1
+    assert "SELECT id FROM style_presets WHERE id = ? AND user_id = ?" in src
+
+
+def test_web_outputs_resume_and_dynamic_text_avoid_inner_html():
+    root = Path(__file__).resolve().parents[1]
+    worker = (root / "worker" / "src" / "index.js").read_text()
+    client = (root / "site" / "app.js").read_text()
+    assert "qa_pass,output_key,output_key IS NOT NULL AS has_output" in worker
+    assert "uploaded_parts: parts, resumed: true" in worker
+    assert "const uploaded = new Set(meta.uploaded_parts || [])" in client
+    assert "operation.human || operation.op" in client
+    assert "${pr.title}" not in client
+
+
+def test_signin_has_server_side_rate_limit_schema_and_gate():
+    root = Path(__file__).resolve().parents[1]
+    worker = (root / "worker" / "src" / "index.js").read_text()
+    schema = (root / "worker" / "schema.sql").read_text()
+    assert "async function withinRateLimit" in worker
+    assert "await withinRateLimit(env, req, 'signin', 15" in worker
+    assert "CREATE TABLE IF NOT EXISTS rate_limits" in schema
+
+
+def test_site_headers_and_installer_downloads_are_private_and_resumable():
+    root = Path(__file__).resolve().parents[1]
+    worker = (root / "worker" / "src" / "index.js").read_text()
+    wrangler = (root / "worker" / "wrangler.toml").read_text()
+    assert "function secureSiteResponse(response)" in worker
+    assert "content-security-policy" in worker
+    assert worker.count("if (!(await auth(req, env))) return bad('sign in first'") == 2
+    assert "'accept-ranges': 'bytes'" in worker
+    assert "headers['content-range']" in worker
+    assert "/download/helper.zip" not in worker
+    assert "run_worker_first = true" in wrangler
+
+
+def test_site_uses_self_hosted_brand_type_and_builder_credit():
+    site = Path(__file__).resolve().parents[1] / "site"
+    html = (site / "index.html").read_text()
+    css = (site / "style.css").read_text()
+    app = (site / "app.js").read_text()
+    assert "Built by Omar Marabha" in html
+    assert "@CEOmarabha" in html
+    assert (site / "WorkSans-Variable.ttf").stat().st_size > 100_000
+    assert "@font-face" in css and "Work Sans AutoEditor" in css
+    assert "d.tabIndex = 0" in app
+    assert "event.key === 'Enter' || event.key === ' '" in app

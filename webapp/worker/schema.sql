@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   content TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket_key TEXT PRIMARY KEY,
+  window_start INTEGER NOT NULL,
+  count INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_uploads_project ON uploads(project_id);

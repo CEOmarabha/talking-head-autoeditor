@@ -19,6 +19,8 @@ Env:
   WORKER_TOKEN            bearer token (matches the Worker secret)
   KEY_WRAP_SECRET         same value as the Worker secret
   ENGINE_CMD              default: "python3 -m autoeditor" from repo root
+  AUTOEDITOR_ENGINE       exact packaged engine executable path (preferred)
+  AUTOEDITOR_INSTALL_ROOT packaged resources root used as the child cwd
   WORK_DIR                scratch dir (default /tmp/autoeditor-web)
 """
 from __future__ import annotations
@@ -27,6 +29,7 @@ import base64
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -41,11 +44,14 @@ from webapp.render_worker_compat import http_json, http_get, http_put  # noqa
 
 HERE = Path(__file__).resolve()
 REPO = HERE.parents[2]
+INSTALL_ROOT = Path(os.environ.get("AUTOEDITOR_INSTALL_ROOT", "")).resolve() \
+    if os.environ.get("AUTOEDITOR_INSTALL_ROOT") else REPO
 API = os.environ.get("AUTOEDITOR_WEB_API", "http://127.0.0.1:8787").rstrip("/")
 TOKEN = os.environ.get("WORKER_TOKEN", "")
 KEK = os.environ.get("KEY_WRAP_SECRET", "")
 WORK = Path(os.environ.get("WORK_DIR", "/tmp/autoeditor-web"))
 ENGINE = os.environ.get("ENGINE_CMD", f"{sys.executable} -m autoeditor")
+ENGINE_PATH = os.environ.get("AUTOEDITOR_ENGINE", "").strip()
 FFMPEG = os.environ.get("AUTOEDITOR_FFMPEG") or shutil.which("ffmpeg") \
     or "/opt/homebrew/bin/ffmpeg"
 
@@ -115,8 +121,9 @@ def run_engine(args: list[str], env_extra: dict, job_id: str,
     """Run the engine, stream phases as progress, return the result event."""
     env = {**os.environ, **env_extra,
            "AUTOEDITOR_PACKAGED": "1", "AUTOEDITOR_PROGRESS_JSON": "1"}
-    cmd = [*ENGINE.split(), *args]
-    proc = subprocess.Popen(cmd, cwd=REPO, env=env,
+    cmd = ([ENGINE_PATH, *args] if ENGINE_PATH
+           else [*shlex.split(ENGINE), *args])
+    proc = subprocess.Popen(cmd, cwd=INSTALL_ROOT, env=env,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     result = None

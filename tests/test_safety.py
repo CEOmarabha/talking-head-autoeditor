@@ -20,6 +20,90 @@ from autoeditor import (
 
 
 class SafetyContracts(unittest.TestCase):
+    def test_release_requirements_are_exact_and_hashed(self):
+        root = Path(__file__).resolve().parent.parent
+        for filename in (
+            "requirements-windows-x64.txt",
+            "requirements-mac-arm64.txt",
+            "requirements-mac-x64.txt",
+        ):
+            lines = (root / "packaging" / filename).read_text().splitlines()
+            requirements = [line for line in lines if line and not line.startswith("#")]
+            self.assertGreaterEqual(len(requirements), 40)
+            self.assertTrue(all("==" in line for line in requirements))
+            self.assertTrue(all(" --hash=sha256:" in line for line in requirements))
+            self.assertFalse(any(">=" in line or "~=" in line for line in requirements))
+
+    def test_release_receipts_credit_builder(self):
+        source = Path(pipeline.__file__).read_text()
+        self.assertIn('"built_by": "Omar Marabha (@CEOmarabha)"', source)
+
+    def test_remotion_render_forwards_selected_license_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            project = root / "remotion"
+            project.mkdir()
+            fonts = root / "fonts"
+            fonts.mkdir()
+            (project / "package.json").write_text("{}")
+            calls = []
+
+            def fake_run(command, **_kwargs):
+                calls.append(command)
+                Path(command[5]).write_bytes(b"video")
+
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_REQUIRE_REMOTION": "1",
+                "AUTOEDITOR_NODE": "/bundle/node",
+                "AUTOEDITOR_REMOTION_CLI": "/bundle/remotion-cli.js",
+                "AUTOEDITOR_BROWSER": "/bundle/chrome",
+                "AUTOEDITOR_BUNDLED_FONTS": str(fonts),
+                "REMOTION_LICENSE_KEY": "free-license",
+            }), mock.patch.object(
+                premium, "REMOTION_PROJ", project
+            ), mock.patch.object(
+                premium, "BROLL_CACHE", root / "cache"
+            ), mock.patch.object(
+                premium, "_run", side_effect=fake_run
+            ), mock.patch.object(
+                premium, "_validated_cached", return_value=None
+            ), mock.patch.object(
+                premium, "_valid_video_asset", return_value=True
+            ):
+                output = premium._remotion_viz(
+                    {"template": "flow", "title": "TEST", "items": ["ONE"]},
+                    2.5, 320, 568,
+                )
+            self.assertTrue(output)
+            self.assertIn("--license-key=free-license", calls[0])
+            self.assertIn(f"--public-dir={fonts}", calls[0])
+
+    def test_creative_renderers_use_bundled_work_sans(self):
+        premium_source = Path(premium.__file__).read_text()
+        remotion_root = (
+            Path(__file__).resolve().parent.parent / "templates" /
+            "remotion-viz" / "src" / "Root.tsx"
+        ).read_text()
+        self.assertIn("WorkSans-Variable.ttf", premium_source)
+        self.assertIn("AUTOEDITOR_BUNDLED_FONTS", premium_source)
+        self.assertIn("staticFile('WorkSans-Variable.ttf')", remotion_root)
+
+    def test_packaged_skip_does_not_read_old_account_key_or_cached_sfx(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old_key = root / "elevenlabs.key"
+            old_key.write_text("old-secret")
+            (root / "eleven_boom.wav").write_bytes(b"old-generated-audio")
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }), mock.patch.object(
+                premium, "ELEVEN_KEY_FILE", old_key
+            ), mock.patch.object(premium, "SFX_DIR", root):
+                self.assertEqual(
+                    premium._api_key("ELEVENLABS_API_KEY", old_key), ""
+                )
+                self.assertEqual(premium._resolve_sfx("boom"), root / "boom.wav")
+
     def test_premium_media_checks_use_packaged_ffmpeg_paths(self):
         probe_result = mock.Mock(
             stdout=json.dumps({

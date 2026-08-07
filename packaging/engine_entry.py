@@ -7,13 +7,19 @@ lets PyInstaller resolve imports cleanly.
 from __future__ import annotations
 
 import json
+import os
 import sys
+
+
+def _model(name: str) -> str:
+    """Use installer-bundled ASR weights when present, never redownload."""
+    return os.environ.get(f"AUTOEDITOR_WHISPER_{name.upper()}", name)
 
 
 def _asr_words(media: str, output: str) -> None:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    model = WhisperModel(_model("small"), device="cpu", compute_type="int8")
     segments, _ = model.transcribe(media, word_timestamps=True)
     words = [
         {
@@ -32,7 +38,7 @@ def _asr_words(media: str, output: str) -> None:
 def _asr_secondary(media: str, output: str) -> None:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel("medium", device="cpu", compute_type="int8")
+    model = WhisperModel(_model("medium"), device="cpu", compute_type="int8")
     segments, _ = model.transcribe(
         media,
         beam_size=5,

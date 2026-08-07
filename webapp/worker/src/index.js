@@ -4,27 +4,44 @@
  *  - invite-only sessions, httpOnly cookies, per-user row scoping on every
  *    query;
  *  - DeepSeek keys AES-GCM wrapped immediately on receipt, ciphertext in
- *    D1, NEVER logged, never in job payloads/URLs, never returned by any
- *    endpoint (only a boolean hasKey);
- *  - the render daemon authenticates with WORKER_TOKEN and receives key
- *    ciphertext only; it decrypts with a KEK that exists only on the
- *    render host;
+ *    D1, NEVER logged, and never stored in job payloads or URLs;
+ *  - each personal Helper authenticates with its own user-scoped token and
+ *    receives only that user's plaintext key over TLS for a claimed job;
+ *    the optional global owner daemon receives ciphertext and holds the KEK;
  *  - media is private in R2; all reads stream through authenticated
  *    routes; nothing is public.
  */
 
 const JSONH = { 'content-type': 'application/json' };
 const enc = new TextEncoder();
+const UPLOAD_PART_SIZE = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024;
 
 // ------------------------------------------------------------- helpers
 const uid = () => crypto.randomUUID().replaceAll('-', '').slice(0, 20);
 const now = () => Date.now();
 function j(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
-    status, headers: { ...JSONH, ...headers },
+    status, headers: { ...JSONH, 'cache-control': 'no-store', ...headers },
   });
 }
 function bad(msg, status = 400) { return j({ error: msg }, status); }
+
+function secureSiteResponse(response) {
+  const headers = new Headers(response.headers);
+  headers.set('content-security-policy', "default-src 'self'; " +
+    "script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  headers.set('x-content-type-options', 'nosniff');
+  headers.set('referrer-policy', 'no-referrer');
+  headers.set('permissions-policy',
+    'camera=(), microphone=(), geolocation=(), payment=()');
+  headers.set('cross-origin-opener-policy', 'same-origin');
+  headers.set('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  return new Response(response.body, { status: response.status,
+    statusText: response.statusText, headers });
+}
 
 async function wrapKey(env, plaintext) {
   const material = await crypto.subtle.importKey(
@@ -76,6 +93,24 @@ async function verifyTotp(secretB32, code) {
     if (await totpAt(secretB32, c + d) === String(code).trim()) return true;
   }
   return false;
+}
+
+async function withinRateLimit(env, req, bucket, limit, windowMs) {
+  const ip = req.headers.get('cf-connecting-ip') || 'unknown';
+  const fingerprint = await crypto.subtle.digest('SHA-256',
+    enc.encode(`${bucket}|${ip}|${env.KEY_WRAP_SECRET}`));
+  const key = [...new Uint8Array(fingerprint)]
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  const timestamp = now();
+  const cutoff = timestamp - windowMs;
+  const row = await env.DB.prepare(
+    'INSERT INTO rate_limits (bucket_key,window_start,count) VALUES (?,?,1) ' +
+    'ON CONFLICT(bucket_key) DO UPDATE SET ' +
+    'count = CASE WHEN window_start < ? THEN 1 ELSE count + 1 END, ' +
+    'window_start = CASE WHEN window_start < ? THEN ? ELSE window_start END ' +
+    'RETURNING count')
+    .bind(key, timestamp, cutoff, cutoff, timestamp).first();
+  return !!row && row.count <= limit;
 }
 
 async function sessionFor(env, userId, name) {
@@ -158,6 +193,15 @@ async function workerAuth(req, env) {
   return row.user_id ? { scope: 'user', userId: row.user_id }
     : { scope: 'global' };
 }
+
+function workerOwnsJob(scope, job) {
+  return !!job && (scope.scope === 'global' || job.user_id === scope.userId);
+}
+
+function jobOwnsMediaKey(job, key) {
+  return !key || key.startsWith(`u/${job.user_id}/${job.project_id}/`);
+}
+
 function adminAuth(req, env) {
   const h = req.headers.get('authorization') || '';
   return h === `Bearer ${env.ADMIN_TOKEN}`;
@@ -265,20 +309,59 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
     try {
-      // public Helper download (from R2 so friends never need the private
-      // repo); contains no secrets, so unauthenticated is fine.
-      if (p === '/download/helper.zip') {
-        const obj = await env.MEDIA.get('dist/helper.zip');
-        if (!obj) return new Response('Helper not uploaded yet', {
-          status: 503 });
-        return new Response(obj.body, { headers: {
-          'content-type': 'application/zip',
-          'content-disposition':
-            'attachment; filename="AutoEditor-Helper.zip"',
-        } });
+      const helperDownloads = {
+        '/download/helper/windows': {
+          key: 'dist/helper/windows/AutoEditor-Helper.exe',
+          type: 'application/vnd.microsoft.portable-executable',
+          name: 'AutoEditor-Helper-Windows.exe',
+        },
+        '/download/helper/mac-arm64': {
+          key: 'dist/helper/mac-arm64/AutoEditor-Helper.dmg',
+          type: 'application/x-apple-diskimage',
+          name: 'AutoEditor-Helper-Mac-Apple-Silicon.dmg',
+        },
+        '/download/helper/mac-x64': {
+          key: 'dist/helper/mac-x64/AutoEditor-Helper.dmg',
+          type: 'application/x-apple-diskimage',
+          name: 'AutoEditor-Helper-Mac-Intel.dmg',
+        },
+      };
+      if (p === '/download/helper/availability') {
+        if (!(await auth(req, env))) return bad('sign in first', 401);
+        const entries = await Promise.all(Object.entries(helperDownloads)
+          .map(async ([route, item]) => [route, !!(await env.MEDIA.head(item.key))]));
+        return new Response(JSON.stringify(Object.fromEntries(entries)), {
+          headers: { 'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'no-store' },
+        });
+      }
+      if (helperDownloads[p]) {
+        if (!(await auth(req, env))) return bad('sign in first', 401);
+        const item = helperDownloads[p];
+        const obj = await env.MEDIA.get(item.key, {
+          range: req.headers,
+        });
+        if (!obj) return new Response('Installer is not uploaded yet', { status: 503 });
+        const headers = {
+          'content-type': item.type,
+          'content-disposition': `attachment; filename="${item.name}"`,
+          'cache-control': 'private, no-store',
+          'accept-ranges': 'bytes',
+          'x-content-type-options': 'nosniff',
+        };
+        if (obj.httpEtag) headers.etag = obj.httpEtag;
+        if (obj.range) {
+          headers['content-range'] =
+            `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}` +
+            `/${obj.size}`;
+          headers['content-length'] = String(obj.range.length);
+          return new Response(obj.body, { status: 206, headers });
+        }
+        headers['content-length'] = String(obj.size);
+        return new Response(obj.body, { headers });
       }
       if (p.startsWith('/api/')) return await api(req, env, url);
-      return env.ASSETS.fetch(req);
+      return secureSiteResponse(await env.ASSETS.fetch(req));
     } catch (e) {
       // never leak internals (or key material) into browser errors
       console.log('unhandled', e.name, e.message.slice(0, 200));
@@ -323,6 +406,9 @@ async function api(req, env, url) {
   // (works forever as the account password) or, if the user set up OTP,
   // the current 6-digit code from their authenticator app.
   if (p === '/auth/signin' && method === 'POST') {
+    if (!(await withinRateLimit(env, req, 'signin', 15, 10 * 60 * 1000))) {
+      return bad('too many sign-in attempts; wait 10 minutes and try again', 429);
+    }
     const { invite_code, name } = await req.json().catch(() => ({}));
     const code = String(invite_code || '').trim();
     const who = String(name || '').trim().slice(0, 60);
@@ -423,7 +509,7 @@ async function api(req, env, url) {
   }
 
   // ---------- help chat: talk to DeepSeek directly (needs a valid key).
-  // This is the always-available lifeline — a friend can ask DeepSeek for
+  // This is the always-available lifeline. A friend can ask DeepSeek for
   // help with setup or anything else the moment their key is in.
   if (p === '/assistant' && method === 'POST') {
     if (!user.hasKey) return bad('add your DeepSeek key first', 428);
@@ -441,11 +527,21 @@ async function api(req, env, url) {
     const sys = { role: 'system', content:
       'You are the friendly built-in helper inside AutoEditor, a website ' +
       'that turns raw footage into finished videos. The person you are ' +
-      'helping may not be technical. Help them with setup (installing the ' +
-      'Helper app, FFmpeg, Python), using the site, understanding error ' +
-      'messages, or anything else. Be concise, warm, and concrete. Give ' +
-      'exact click-by-click or copy-paste steps and say which app to open ' +
-      'on Windows (PowerShell) or Mac (Terminal) when relevant.' };
+      'helping may not be technical. Friends install one signed AutoEditor ' +
+      'Helper EXE on Windows or notarized DMG on Mac. Never tell them to ' +
+      'install Python, Node, FFmpeg, models, HyperFrames, Remotion, repos, ' +
+      'package managers, or to open a terminal. Those are bundled. DeepSeek ' +
+      'is required. Pexels and Pixabay can be connected with their own API ' +
+      'keys or skipped, which removes that stock source. ElevenLabs can be ' +
+      'connected for generated sound effects or skipped, which leaves only ' +
+      'the built-in sound effects. Tell them to restrict an ElevenLabs key ' +
+      'to Sound Effects and set a small credit limit. HyperFrames needs ' +
+      'no account. Remotion is free without signup for individuals and ' +
+      'organizations of up to three people; larger groups need a public ' +
+      'rm_pub_ license key from the Remotion dashboard ' +
+      'or can skip Remotion diagrams. Give exact click-by-click guidance, ' +
+      'explain the consequence of every Skip choice, and never ask them to ' +
+      'paste a secret into chat.' };
     const trimmed = messages
       .filter((m) => m && typeof m.content === 'string' &&
         (m.role === 'user' || m.role === 'assistant'))
@@ -531,6 +627,12 @@ async function api(req, env, url) {
     const { type, title, style_preset_id } =
       await req.json().catch(() => ({}));
     if (!PROJECT_TYPES.has(type)) return bad('unknown project type');
+    if (style_preset_id) {
+      const preset = await env.DB.prepare(
+        'SELECT id FROM style_presets WHERE id = ? AND user_id = ?')
+        .bind(style_preset_id, user.userId).first();
+      if (!preset) return bad('style preset not found', 404);
+    }
     const id = uid();
     await env.DB.prepare(
       'INSERT INTO projects (id,user_id,type,title,style_preset_id,' +
@@ -556,7 +658,7 @@ async function api(req, env, url) {
       .bind(proj.id).all();
     const revisions = await env.DB.prepare(
       'SELECT id,num,request_text,proposal_json,needs_approval,status,' +
-      'qa_pass,output_key IS NOT NULL AS has_output ' +
+      'qa_pass,output_key,output_key IS NOT NULL AS has_output ' +
       'FROM revisions WHERE project_id = ? ORDER BY num')
       .bind(proj.id).all();
     const chat = await env.DB.prepare(
@@ -566,6 +668,46 @@ async function api(req, env, url) {
       uploads: uploads.results || [],
       revisions: revisions.results || [], chat: chat.results || [] });
   }
+  if ((m = p.match(/^\/projects\/(\w+)$/)) && method === 'DELETE') {
+    const proj = await ownedProject(env, user, m[1]);
+    if (!proj) return bad('not found', 404);
+    const active = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM jobs WHERE project_id = ? AND status = 'running'")
+      .bind(proj.id).first();
+    if (active.n) return bad('wait for the current edit to finish before deleting', 409);
+
+    const incomplete = await env.DB.prepare(
+      "SELECT r2_key,mp_upload_id FROM uploads WHERE project_id = ? " +
+      "AND status != 'done'").bind(proj.id).all();
+    for (const upload of (incomplete.results || [])) {
+      if (!upload.mp_upload_id) continue;
+      try {
+        await env.MEDIA.resumeMultipartUpload(
+          upload.r2_key, upload.mp_upload_id).abort();
+      } catch (_) { /* expired or already completed */ }
+    }
+
+    const prefix = `u/${user.userId}/${proj.id}/`;
+    let cursor;
+    let deleted = 0;
+    do {
+      const listed = await env.MEDIA.list({ prefix, cursor, limit: 1000 });
+      const keys = listed.objects.map((object) => object.key);
+      if (keys.length) {
+        await env.MEDIA.delete(keys);
+        deleted += keys.length;
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+
+    for (const table of ['chat_messages', 'revisions', 'jobs', 'uploads']) {
+      await env.DB.prepare(`DELETE FROM ${table} WHERE project_id = ?`)
+        .bind(proj.id).run();
+    }
+    await env.DB.prepare('DELETE FROM projects WHERE id = ? AND user_id = ?')
+      .bind(proj.id, user.userId).run();
+    return j({ ok: true, cloud_files_deleted: deleted });
+  }
 
   // ---------- uploads: R2 multipart through the Worker (documented
   // pattern; parts survive refresh because uploadId+parts live in D1)
@@ -574,17 +716,35 @@ async function api(req, env, url) {
     if (!proj) return bad('not found', 404);
     const { filename, size } = await req.json().catch(() => ({}));
     if (!filename) return bad('filename required');
+    const byteSize = Number(size);
+    if (!Number.isSafeInteger(byteSize) || byteSize <= 0 ||
+        byteSize > MAX_UPLOAD_BYTES) {
+      return bad('video must be between 1 byte and 20 GB');
+    }
+    const prior = await env.DB.prepare(
+      "SELECT id,parts_json FROM uploads WHERE project_id = ? " +
+      "AND filename = ? AND size = ? AND status = 'uploading' " +
+      'AND created_at > ? ORDER BY created_at DESC LIMIT 1')
+      .bind(proj.id, String(filename).slice(0, 240), byteSize,
+        now() - 6 * 24 * 60 * 60 * 1000).first();
+    if (prior) {
+      const parts = JSON.parse(prior.parts_json || '[]')
+        .map((part) => part.partNumber).filter(Number.isInteger);
+      return j({ upload_id: prior.id, part_size: UPLOAD_PART_SIZE,
+        uploaded_parts: parts, resumed: true });
+    }
     const id = uid();
     const key = `u/${user.userId}/${proj.id}/raw/${id}_` +
-      filename.replace(/[^\w.-]/g, '_');
+      String(filename).slice(0, 240).replace(/[^\w.-]/g, '_');
     const mp = await env.MEDIA.createMultipartUpload(key);
     await env.DB.prepare(
       'INSERT INTO uploads (id,project_id,r2_key,filename,size,' +
       'mp_upload_id,status,created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .bind(id, proj.id, key, filename, size || 0, mp.uploadId,
+      .bind(id, proj.id, key, String(filename).slice(0, 240), byteSize, mp.uploadId,
         'uploading', now()).run();
     await setStatus(env, proj.id, 'uploading');
-    return j({ upload_id: id, part_size: 10 * 1024 * 1024 });
+    return j({ upload_id: id, part_size: UPLOAD_PART_SIZE,
+      uploaded_parts: [], resumed: false });
   }
   if ((m = p.match(/^\/uploads\/(\w+)\/part$/)) && method === 'PUT') {
     const up = await env.DB.prepare(
@@ -592,7 +752,18 @@ async function api(req, env, url) {
       'ON p.id = u.project_id WHERE u.id = ?').bind(m[1]).first();
     if (!up || up.user_id !== user.userId) return bad('not found', 404);
     const partNum = parseInt(url.searchParams.get('n'), 10);
-    if (!partNum || partNum < 1) return bad('part number required');
+    const totalParts = Math.ceil(up.size / UPLOAD_PART_SIZE);
+    if (!partNum || partNum < 1 || partNum > totalParts) {
+      return bad('part number out of range');
+    }
+    const expectedBytes = partNum === totalParts
+      ? up.size - ((totalParts - 1) * UPLOAD_PART_SIZE) : UPLOAD_PART_SIZE;
+    const lengthHeader = req.headers.get('content-length');
+    const suppliedBytes = lengthHeader === null ? null : Number(lengthHeader);
+    if (suppliedBytes !== null &&
+        (!Number.isFinite(suppliedBytes) || suppliedBytes !== expectedBytes)) {
+      return bad('upload part has the wrong size');
+    }
     const mp = env.MEDIA.resumeMultipartUpload(up.r2_key, up.mp_upload_id);
     const part = await mp.uploadPart(partNum, req.body);
     const parts = JSON.parse(up.parts_json || '[]')
@@ -609,6 +780,11 @@ async function api(req, env, url) {
     if (!up || up.user_id !== user.userId) return bad('not found', 404);
     const parts = JSON.parse(up.parts_json || '[]')
       .sort((a, b) => a.partNumber - b.partNumber);
+    const totalParts = Math.ceil(up.size / UPLOAD_PART_SIZE);
+    if (parts.length !== totalParts ||
+        parts.some((part, index) => part.partNumber !== index + 1)) {
+      return bad('upload is missing one or more parts', 409);
+    }
     const mp = env.MEDIA.resumeMultipartUpload(up.r2_key, up.mp_upload_id);
     await mp.complete(parts);
     await env.DB.prepare(
@@ -744,7 +920,7 @@ async function api(req, env, url) {
         .bind(jobId, proj.id, user.userId, 'revision_apply',
           JSON.stringify({ revision_id: revId }), now()).run();
       await setStatus(env, proj.id, 'applying revision');
-      return j({ reply: summary + ' Applying it now — keep your Helper ' +
+      return j({ reply: summary + ' Applying it now. Keep your Helper ' +
         'open to render.', proposal: clean, revision_id: revId,
       needs_approval: false });
     }
@@ -789,10 +965,11 @@ async function api(req, env, url) {
     const key = decodeURIComponent(m[1]);
     if (!key.startsWith(`u/${user.userId}/`)) return bad('forbidden', 403);
     const obj = await env.MEDIA.get(key, {
-      range: req.headers.get('range') || undefined });
+      range: req.headers });
     if (!obj) return bad('not found', 404);
     const headers = { 'content-type': 'video/mp4',
-      'accept-ranges': 'bytes' };
+      'accept-ranges': 'bytes', 'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff' };
     if (obj.range) {
       headers['content-range'] =
         `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}` +
@@ -817,9 +994,11 @@ async function workerApi(req, env, p, method, scope) {
         "SELECT * FROM jobs WHERE status = 'queued' " +
         'ORDER BY created_at LIMIT 1').first();
     if (!job) return j({ job: null });
-    await env.DB.prepare(
-      "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?")
+    const claim = await env.DB.prepare(
+      "UPDATE jobs SET status = 'running', started_at = ? " +
+      "WHERE id = ? AND status = 'queued'")
       .bind(now(), job.id).run();
+    if (!claim.meta || claim.meta.changes !== 1) return j({ job: null });
     const proj = await env.DB.prepare(
       'SELECT * FROM projects WHERE id = ?').bind(job.project_id).first();
     const uploads = await env.DB.prepare(
@@ -829,8 +1008,8 @@ async function workerApi(req, env, p, method, scope) {
       'SELECT key_ct, key_iv FROM users WHERE id = ?')
       .bind(job.user_id).first();
     const preset = proj.style_preset_id ? await env.DB.prepare(
-      'SELECT name, params_json FROM style_presets WHERE id = ?')
-      .bind(proj.style_preset_id).first() : null;
+      'SELECT name, params_json FROM style_presets WHERE id = ? AND user_id = ?')
+      .bind(proj.style_preset_id, job.user_id).first() : null;
     // user-scoped helper: hand the user their OWN key over TLS (no KEK
     // distribution). Global daemon: ciphertext only + local KEK.
     let key_plain = null;
@@ -839,7 +1018,8 @@ async function workerApi(req, env, p, method, scope) {
       catch (_) { key_plain = null; }
     }
     return j({ job, project: proj, uploads: uploads.results || [],
-      key_ct: u ? u.key_ct : null, key_iv: u ? u.key_iv : null,
+      key_ct: scope.scope === 'global' && u ? u.key_ct : null,
+      key_iv: scope.scope === 'global' && u ? u.key_iv : null,
       key_plain, preset });
   }
   if ((m = p.match(/^\/worker\/jobs\/(\w+)\/progress$/))
@@ -848,6 +1028,8 @@ async function workerApi(req, env, p, method, scope) {
     const job = await env.DB.prepare('SELECT * FROM jobs WHERE id = ?')
       .bind(m[1]).first();
     if (!job) return bad('no job', 404);
+    if (!workerOwnsJob(scope, job)) return bad('forbidden', 403);
+    if (job.status !== 'running') return bad('job is not running', 409);
     if (line) {
       const prog = JSON.parse(job.progress_json || '[]');
       prog.push(String(line).slice(0, 300));
@@ -855,7 +1037,15 @@ async function workerApi(req, env, p, method, scope) {
         'UPDATE jobs SET progress_json = ? WHERE id = ?')
         .bind(JSON.stringify(prog.slice(-200)), job.id).run();
     }
-    if (status) await setStatus(env, job.project_id, status, detail || '');
+    const allowedStatuses = new Set([
+      'transcribing', 'planning', 'gathering resources', 'rendering preview',
+      'running final qa',
+    ]);
+    if (status && !allowedStatuses.has(status)) return bad('invalid status');
+    if (status) {
+      await setStatus(env, job.project_id, status,
+        String(detail || '').slice(0, 300));
+    }
     return j({ ok: true });
   }
   if ((m = p.match(/^\/worker\/jobs\/(\w+)\/complete$/))
@@ -864,14 +1054,39 @@ async function workerApi(req, env, p, method, scope) {
     const job = await env.DB.prepare('SELECT * FROM jobs WHERE id = ?')
       .bind(m[1]).first();
     if (!job) return bad('no job', 404);
+    if (!workerOwnsJob(scope, job)) return bad('forbidden', 403);
+    if (job.status !== 'running') return bad('job is not running', 409);
+    if (!jobOwnsMediaKey(job, body.output_key) ||
+        !jobOwnsMediaKey(job, body.qa_key)) {
+      return bad('output path does not belong to this job', 403);
+    }
+    let safeProposal = null;
+    let safeNeedsApproval = false;
+    let targetRevisionId = null;
+    if (job.kind === 'chat_proposal' &&
+        body.proposal && (body.proposal.operations || []).length) {
+      const checked = validateProposal(body.proposal);
+      if (!checked.clean) return bad('unsafe edit proposal rejected', 422);
+      safeProposal = checked.clean;
+      safeNeedsApproval = checked.needsApproval;
+    }
+    if (job.kind === 'revision_apply' && body.ok) {
+      let payload = {};
+      try { payload = JSON.parse(job.payload_json || '{}'); } catch (_) { }
+      const revision = await env.DB.prepare(
+        'SELECT id FROM revisions WHERE id = ? AND project_id = ?')
+        .bind(payload.revision_id || '', job.project_id).first();
+      if (!revision) return bad('revision does not belong to this job', 409);
+      targetRevisionId = revision.id;
+    }
     await env.DB.prepare(
       "UPDATE jobs SET status = ?, finished_at = ?, error = ? WHERE id = ?")
       .bind(body.ok ? 'done' : 'failed', now(),
-        body.error || null, job.id).run();
+        body.error ? String(body.error).slice(0, 300) : null, job.id).run();
     if (job.kind === 'transcribe' && body.transcript) {
       await env.DB.prepare(
         'UPDATE projects SET transcript = ? WHERE id = ?')
-        .bind(body.transcript, job.project_id).run();
+        .bind(String(body.transcript).slice(0, 250000), job.project_id).run();
       await setStatus(env, job.project_id, 'transcript needs attention');
     } else if (job.kind === 'chat_proposal'
         && !(body.proposal && (body.proposal.operations || []).length)) {
@@ -882,7 +1097,7 @@ async function workerApi(req, env, p, method, scope) {
         .bind(uid(), job.project_id, 'assistant',
           body.summary || 'No change could be planned.', now()).run();
       await setStatus(env, job.project_id, 'ready');
-    } else if (job.kind === 'chat_proposal' && body.proposal) {
+    } else if (job.kind === 'chat_proposal' && safeProposal) {
       const count = await env.DB.prepare(
         'SELECT COUNT(*) AS n FROM revisions WHERE project_id = ?')
         .bind(job.project_id).first();
@@ -892,15 +1107,15 @@ async function workerApi(req, env, p, method, scope) {
         'proposal_json,needs_approval,status,created_at) ' +
         'VALUES (?,?,?,?,?,?,?,?)')
         .bind(revId, job.project_id, (count.n || 0) + 1,
-          body.request_text || '', JSON.stringify(body.proposal),
-          body.needs_approval ? 1 : 0,
-          body.needs_approval ? 'proposed' : 'approved', now()).run();
+          String(body.request_text || '').slice(0, 2000),
+          JSON.stringify(safeProposal), safeNeedsApproval ? 1 : 0,
+          safeNeedsApproval ? 'proposed' : 'approved', now()).run();
       await env.DB.prepare(
         'INSERT INTO chat_messages (id,project_id,role,content,' +
         'created_at) VALUES (?,?,?,?,?)')
         .bind(uid(), job.project_id, 'assistant',
-          body.summary || 'Proposal ready.', now()).run();
-      if (body.needs_approval) {
+          String(body.summary || 'Proposal ready.').slice(0, 2000), now()).run();
+      if (safeNeedsApproval) {
         await setStatus(env, job.project_id, 'awaiting approval');
       } else {
         // auto-apply visual-only changes: queue the apply job now
@@ -914,8 +1129,10 @@ async function workerApi(req, env, p, method, scope) {
       }
     } else if ((job.kind === 'make' || job.kind === 'revision_apply')
         && body.ok) {
-      const revId = body.revision_id || uid();
-      if (!body.revision_id) {
+      let revId = uid();
+      if (job.kind === 'revision_apply') {
+        revId = targetRevisionId;
+      } else {
         const count = await env.DB.prepare(
           'SELECT COUNT(*) AS n FROM revisions WHERE project_id = ?')
           .bind(job.project_id).first();
@@ -947,7 +1164,10 @@ async function workerApi(req, env, p, method, scope) {
     if (method === 'GET') {
       const obj = await env.MEDIA.get(key);
       if (!obj) return bad('not found', 404);
-      return new Response(obj.body);
+      return new Response(obj.body, { headers: {
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      } });
     }
     if (method === 'PUT') {
       await env.MEDIA.put(key, req.body);

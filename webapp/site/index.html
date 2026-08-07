@@ -8,10 +8,15 @@
 </head>
 <body>
 <header>
-  <h1>AutoEditor</h1>
-  <div><span id="who" class="muted"></span>
+  <a class="brand-lockup" href="/" aria-label="AutoEditor home">
+    <span class="brand-mark" aria-hidden="true">OM</span>
+    <span><b>AutoEditor</b><small>Private editing system</small></span>
+  </a>
+  <div class="account"><span id="who" class="muted"></span>
     <button id="signout" class="ghost hidden">Sign out</button></div>
 </header>
+
+<main>
 
 <!-- sign in -->
 <section id="signin" class="card narrow hidden">
@@ -31,8 +36,8 @@
 <section id="keysetup" class="card narrow hidden">
   <h2>Step 1: connect DeepSeek</h2>
   <p class="muted">AutoEditor uses DeepSeek (an AI) to do the editing. You
-  bring your own DeepSeek key so it's your account, not shared. It costs a
-  few cents per video. Paste your key below to unlock everything.</p>
+  bring your own DeepSeek key so it's your account, not shared. DeepSeek
+  charges your account based on usage. Paste your key below to unlock everything.</p>
 
   <label>DeepSeek API key<input id="key-input" type="password"
     placeholder="starts with sk-..."></label>
@@ -45,22 +50,23 @@
       <li>Open <a href="https://platform.deepseek.com/sign_up"
         target="_blank" rel="noopener">platform.deepseek.com</a> and make a
         free account (email + password).</li>
-      <li>Add a little credit: click <b>Top up</b> (or "Billing") and add
-        $5. That's enough for dozens of videos.</li>
+      <li>Click <b>Top up</b> (or "Billing"). Add the smallest amount you are
+        comfortable with after reading the current amount and price shown on
+        DeepSeek's screen.</li>
       <li>Click <b>API keys</b> in the left menu, then <b>Create new API
         key</b>. Give it any name.</li>
-      <li>It shows the key <b>once</b> — click <b>Copy</b>. (It starts with
+      <li>It shows the key <b>once</b>. Click <b>Copy</b>. (It starts with
         <code>sk-</code>.)</li>
       <li>Come back here, paste it in the box above, and press
         <b>Check &amp; unlock</b>.</li>
     </ol>
     <p class="muted" style="margin-top:8px">Tip: keep that DeepSeek tab open
-    until you've pasted the key here — you can't see it again later.</p>
+    until you've pasted the key here. You can't see it again later.</p>
   </details>
 
   <p class="muted" style="margin-top:14px">The moment your key works, a
-  yellow <b>Help</b> button appears in the corner — a built-in assistant
-  that can walk you through anything from there on.</p>
+  yellow <b>Help</b> button appears in the corner. That built-in assistant
+  can walk you through anything from there on.</p>
 </section>
 
 <!-- dashboard -->
@@ -74,31 +80,40 @@
     <ul id="projects" class="plist"></ul>
   </div>
   <div class="card" id="helper-setup">
-    <h2>One-time: set up your Helper</h2>
-    <p class="muted">Your own computer does the video rendering, so there's
-    a small free Helper to set up once. You only do this the first time.</p>
+    <h2>One-time: connect your computer</h2>
+    <p class="muted">Your videos are rendered on your own computer. The
+      website uses private AutoEditor cloud storage to move your
+      footage to the Helper and return the finished file. The Helper includes
+      the editing engine, FFmpeg, speech models, HyperFrames, Remotion, fonts,
+      and its own rendering browser. Deleting a project removes its uploaded
+      and finished files from that storage.</p>
     <ol style="margin:6px 0 12px 18px; font-size:14px; line-height:1.8">
-      <li><b>Download the Helper</b> for your computer:<br>
-        <a id="dl-helper" class="btn primary" style="margin-top:6px"
-          href="/download/helper.zip" download>Download AutoEditor Helper</a>
+      <li><b>Download one installer:</b>
+        <div id="helper-downloads" class="download-choices">
+          <a id="dl-win" class="btn primary hidden" href="/download/helper/windows" download>Windows PC</a>
+          <a id="dl-mac-arm" class="btn primary hidden" href="/download/helper/mac-arm64" download>Mac, Apple Silicon</a>
+          <a id="dl-mac-x64" class="btn hidden" href="/download/helper/mac-x64" download>Mac, Intel</a>
+          <span id="dl-wait" class="muted">Checking installers…</span>
+        </div>
       </li>
-      <li>Unzip it (double-click the downloaded file), then open the
-        <b>Start Helper</b> file inside:
-        <span class="muted">on Windows double-click
-        <code>start-helper.bat</code>; on Mac double-click
-        <code>start-helper.command</code>.</span></li>
-      <li>The first time, it may ask to install a couple of free tools
-        (Python and FFmpeg) — say yes and let it finish.</li>
-      <li>When it asks, paste your <b>Setup code</b> (below) and press
-        Enter. Leave that little window open while you make a video.</li>
+      <li><b>Windows:</b> open the downloaded <code>.exe</code> and press
+        <b>Yes</b> if Windows asks whether to allow it. <b>Mac:</b> open the
+        <code>.dmg</code>, drag AutoEditor Helper into Applications, then open it.</li>
+      <li>Copy your <b>Setup code</b> below and paste it into the Helper.</li>
+      <li>The Helper walks you through Pexels, Pixabay, ElevenLabs, and Remotion. You can
+        connect each account or clearly skip it. A skipped source will not be
+        available in your edits.</li>
+      <li>Press <b>Check My Setup and Start</b>. Leave the Helper open while
+        AutoEditor makes your video.</li>
     </ol>
     <p><b>Your Setup code</b> <span class="muted">(copy this one thing;
-      paste it into the Helper when it asks)</span></p>
+      paste it into the Helper)</span></p>
     <div class="row"><input id="cc-value" readonly>
       <button id="cc-copy" class="ghost">Copy</button></div>
-    <p class="muted" style="margin-top:8px">Stuck on any of this? Sign in,
-    then use the yellow <b>Help</b> button — it can walk you through your
-    exact computer step by step.</p>
+    <p class="muted" style="margin-top:8px">DeepSeek is required because it
+      plans the edit and handles your change requests. Pexels, Pixabay, ElevenLabs, and a
+      paid Remotion account are only needed for the resources you choose to
+      connect. Use the yellow <b>Help</b> button if you get stuck.</p>
   </div>
 
   <details class="card">
@@ -153,6 +168,12 @@
 
     <button id="make" class="primary big">Make It</button>
     <div id="p-progresslog" class="log hidden"></div>
+    <details class="danger-zone">
+      <summary>Delete this project</summary>
+      <p class="muted">This permanently removes the project, uploaded footage,
+        finished videos, and QA files from AutoEditor cloud storage.</p>
+      <button id="delete-project" class="danger">Delete Project and Cloud Files</button>
+    </details>
   </div>
 
   <div id="p-result" class="card hidden">
@@ -175,6 +196,14 @@
       <ul id="revs" class="plist"></ul></details>
   </div>
 </section>
+</main>
+
+<footer>
+  <span>AutoEditor</span>
+  <span>Built by Omar Marabha. Yup, he's THAT GUY. ·
+    <a href="https://www.instagram.com/ceomarabha/"
+      target="_blank" rel="noopener">@CEOmarabha</a></span>
+</footer>
 
 <!-- always-available DeepSeek help (appears once the key is valid) -->
 <button id="help-fab" class="hidden">Help</button>

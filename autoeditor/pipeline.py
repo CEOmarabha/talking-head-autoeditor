@@ -1370,9 +1370,10 @@ def transcribe(video: Path, workdir: Path) -> list[dict]:
     log("phase 3: faster-whisper word-level transcript")
     script = workdir / "_whisper.py"
     script.write_text(
-        "import json,sys\n"
+        "import json,os,sys\n"
         "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel('small',device='cpu',compute_type='int8')\n"
+        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_SMALL','small'),"
+        "device='cpu',compute_type='int8')\n"
         "segs,_=m.transcribe(sys.argv[1],word_timestamps=True)\n"
         "words=[{'w':w.word.strip(),'s':round(w.start,3),'e':round(w.end,3),"
         "'p':round(w.probability,2)}\n"
@@ -1510,9 +1511,10 @@ def _secondary_asr_text(master: Path, start: float, end: float,
         "-vn", "-ac", "1", "-ar", "16000", clip
     ])
     script_file.write_text(
-        "import json,sys\n"
+        "import json,os,sys\n"
         "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel('medium',device='cpu',compute_type='int8')\n"
+        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_MEDIUM','medium'),"
+        "device='cpu',compute_type='int8')\n"
         "s,_=m.transcribe(sys.argv[1],beam_size=5,vad_filter=False,"
         "condition_on_previous_text=False)\n"
         "json.dump({'text':' '.join(x.text.strip() for x in s)},"
@@ -2164,7 +2166,12 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    caption_inputs_rendered: bool = False,
                    caption_sidecar: Path | None = None) -> dict:
     log("phase 7: QA gate")
-    qa = {"checks": {}, "pass": True}
+    qa = {
+        "checks": {},
+        "pass": True,
+        "product": "AutoEditor",
+        "built_by": "Omar Marabha (@CEOmarabha)",
+    }
     # 2026-07-23 incident guard: a silence-cut that deletes actual speech
     # must NEVER pass QA silently. retention==1.0 means source-uncut fallback.
     qa["checks"]["speech_retention"] = {
@@ -2417,7 +2424,10 @@ def _cut_settings(style: str, config: Config) -> dict:
 
 # ---------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(prog="autoedit")
+    ap = argparse.ArgumentParser(
+        prog="autoedit",
+        description="AutoEditor, built by Omar Marabha (@CEOmarabha)",
+    )
     ap.add_argument("video", type=Path)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--music", type=Path, default=None)
@@ -2802,6 +2812,8 @@ def main():
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
     emit({"event": "result",
+          "product": "AutoEditor",
+          "built_by": "Omar Marabha (@CEOmarabha)",
           "qa_pass": bool(qa["pass"]),
           "status": "delivered" if qa["pass"] else "needs_review",
           "outputs": {k: str(v) for k, v in outs.items()},

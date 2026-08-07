@@ -35,6 +35,7 @@ CFG = Config.load()
 PEXELS_KEY_FILE = CFGH / "pexels.key"
 PIXABAY_KEY_FILE = CFGH / "pixabay.key"
 BROLL_CACHE = CACHE
+_ASSET_METADATA: dict[str, dict] = {}
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
        "AppleWebKit/537.36 autoeditor/1.0")
 _configured_catalogs = [
@@ -56,6 +57,10 @@ CLIP_CATALOGS = _configured_catalogs or [
 
 def _api_key(env_var: str, key_file: Path) -> str:
     """Env var first (what .env and the docs use), then a key file on disk."""
+    if os.environ.get("AUTOEDITOR_PACKAGED"):
+        # The Helper owns every account choice. A blank environment value is
+        # an explicit Skip and must not fall through to an old local key file.
+        return os.environ.get(env_var, "").strip()
     legacy_name = {
         "PEXELS_API_KEY": "pexels.key",
         "PIXABAY_API_KEY": "pixabay.key",
@@ -337,6 +342,15 @@ def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
     transcript = creative_contract.transcript_payload(words)
     creator_direction = _creator_direction_text(profile_id, creative)
     families = sorted({c["family"] for c in clips if c.get("family")})[:80]
+    stock_sources = [
+        name for name, env_var, key_file in (
+            ("Pexels", "PEXELS_API_KEY", PEXELS_KEY_FILE),
+            ("Pixabay", "PIXABAY_API_KEY", PIXABAY_KEY_FILE),
+        ) if _api_key(env_var, key_file)
+    ]
+    remotion_ready = (
+        os.environ.get("AUTOEDITOR_REQUIRE_REMOTION", "1") != "0"
+    )
     schema = {
         "protocol_version": creative_contract.PROTOCOL_VERSION,
         "timeline_space": creative_contract.TIMELINE_SPACE,
@@ -392,7 +406,7 @@ concrete reason for every event.
 8. Apply this pacing contract exactly: {style_rules} Consecutive event starts
 on each layer must be at least that layer's stated interval apart.
 9. If the transcript teaches numbered steps, signals, parts, pillars, stages,
-rules, principles, or ways, include at least one viz.
+rules, principles, or ways, include at least one viz when Remotion is available.
 10. Apply the creator direction below. It may narrow the allowed visual grammar,
 but it cannot override transcript grounding, timing validation, collision rules,
 or any release gate.
@@ -400,6 +414,13 @@ or any release gate.
 
 CREATOR SHORT-FORM DIRECTION:
 {creator_direction}
+
+AVAILABLE AUTOMATIC STOCK SOURCES:
+{json.dumps(stock_sources)}
+If this list is empty, do not plan ordinary stock b-roll. Use graphics, an
+exact local clip family, or a Remotion viz when Remotion is available.
+REMOTION AVAILABLE: {json.dumps(remotion_ready)}
+If false, do not plan a viz.
 
 Local clip families, use only an exact value from this list or an empty string.
 An empty string means stock-only resolution and never selects an arbitrary
@@ -718,31 +739,32 @@ def _resolve_sfx(name: str) -> Path:
     """ElevenLabs-generated cue if a key exists (cached forever), else the
     synthesized fallback. Drop an API key in ~/.autoeditor/elevenlabs.key to
     upgrade every cue automatically on the next render."""
+    _ek = _api_key("ELEVENLABS_API_KEY", ELEVEN_KEY_FILE)
+    if not _ek:
+        return SFX_DIR / f"{name}.wav"
     eleven = SFX_DIR / f"eleven_{name}.wav"
     if eleven.exists():
         return eleven
-    _ek = _api_key("ELEVENLABS_API_KEY", ELEVEN_KEY_FILE)
-    if _ek:
-        try:
-            import urllib.request, tempfile
-            key = _ek
-            prompt, dur = _ELEVEN_PROMPTS[name]
-            req = urllib.request.Request(
-                "https://api.elevenlabs.io/v1/sound-generation",
-                data=json.dumps({"text": prompt, "duration_seconds": dur,
-                                 "prompt_influence": 0.4}).encode(),
-                headers={"xi-api-key": key,
-                         "Content-Type": "application/json"})
-            audio = urllib.request.urlopen(req, timeout=120).read()
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                f.write(audio); tmp = f.name
-            _run([_ffmpeg_path(), "-y", "-i", tmp,
-                  "-ar", "48000", eleven])
-            log(f"sfx: generated '{name}' via ElevenLabs (cached)")
-            return eleven
-        except Exception as e:
-            log(f"sfx: ElevenLabs '{name}' failed ({type(e).__name__}), "
-                "using synth fallback")
+    try:
+        import urllib.request, tempfile
+        key = _ek
+        prompt, dur = _ELEVEN_PROMPTS[name]
+        req = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/sound-generation",
+            data=json.dumps({"text": prompt, "duration_seconds": dur,
+                             "prompt_influence": 0.4}).encode(),
+            headers={"xi-api-key": key,
+                     "Content-Type": "application/json"})
+        audio = urllib.request.urlopen(req, timeout=120).read()
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(audio); tmp = f.name
+        _run([_ffmpeg_path(), "-y", "-i", tmp,
+              "-ar", "48000", eleven])
+        log(f"sfx: generated '{name}' via ElevenLabs (cached)")
+        return eleven
+    except Exception as e:
+        log(f"sfx: ElevenLabs '{name}' failed ({type(e).__name__}), "
+            "using synth fallback")
     return SFX_DIR / f"{name}.wav"
 
 
@@ -845,14 +867,16 @@ GFX_FPS = 30
 GOLD_RGB = CFG.brand.accent_rgb[:3]
 WHITE_RGB = (255, 255, 255)
 GOLD_HEX = CFG.brand.accent
-HF_PROJECT = CFGH / "graphics-project"
-HF_TIMEOUT = 120   # per-graphic render cap; Pillow fallback beyond this
+HF_PROJECT = Path(os.environ.get(
+    "AUTOEDITOR_HYPERFRAMES_PROJECT", str(CFGH / "graphics-project")))
+HF_TIMEOUT = 120
 
 _HF_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="UTF-8" />
 <meta name="viewport" content="width={w}, height={h}" />
-<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script src="./vendor/gsap.min.js"></script>
 <style>
+{font_face}
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 html, body {{ width:{w}px; height:{h}px; overflow:hidden; background:transparent; }}
 body {{ font-family:"Work Sans","Arial Black",sans-serif; font-weight:900; }}
@@ -1011,22 +1035,44 @@ def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
     """Render one graphic via HyperFrames to an RGBA png-sequence in out_seq
     (f_%04d.png, GFX_FPS). Returns False on any failure (caller falls back
     to the Pillow engine, the render never blocks the pipeline)."""
-    if not (HF_PROJECT / "package.json").exists():
+    if not (HF_PROJECT / "index.html").exists():
         return False
     mk = _hf_kind_markup(kind, g, dur, vid_w, vid_h)
     if not mk:
         return False
     body, anim = mk
     try:
-        (HF_PROJECT / "index.html").write_text(_HF_PAGE.format(
+        project = out_seq.parent / f"_hyperframes_{out_seq.name}"
+        shutil.rmtree(project, ignore_errors=True)
+        shutil.copytree(HF_PROJECT, project)
+        font_face = ""
+        font_root = os.environ.get("AUTOEDITOR_BUNDLED_FONTS", "").strip()
+        work_sans = Path(font_root) / "WorkSans-Variable.ttf" \
+            if font_root else None
+        if work_sans is not None and work_sans.is_file():
+            vendor = project / "vendor"
+            vendor.mkdir(exist_ok=True)
+            shutil.copy2(work_sans, vendor / work_sans.name)
+            font_face = (
+                '@font-face { font-family:"Work Sans"; '
+                'src:url("./vendor/WorkSans-Variable.ttf") '
+                'format("truetype"); font-weight:100 900; '
+                'font-display:block; }'
+            )
+        (project / "index.html").write_text(_HF_PAGE.format(
             w=vid_w, h=vid_h, dur=f"{dur:.2f}", gold=GOLD_HEX,
-            body=body, anim=anim))
-        before = {p.name for p in (HF_PROJECT / "renders").glob("*") } \
-            if (HF_PROJECT / "renders").exists() else set()
-        npx = shutil.which("npx") or str(Path.home() / ".local/bin/npx")
-        _run([npx, "hyperframes", "render", "--format", "png-sequence",
-              "--quality", "draft"], cwd=HF_PROJECT, timeout=HF_TIMEOUT)
-        rdirs = [p for p in (HF_PROJECT / "renders").glob("*")
+            font_face=font_face, body=body, anim=anim))
+        before = {p.name for p in (project / "renders").glob("*") } \
+            if (project / "renders").exists() else set()
+        node = os.environ.get("AUTOEDITOR_NODE", "").strip()
+        cli = os.environ.get("AUTOEDITOR_HYPERFRAMES_CLI", "").strip()
+        cmd = ([node, cli] if node and cli else [
+            shutil.which("npx") or str(Path.home() / ".local/bin/npx"),
+            "hyperframes",
+        ])
+        _run([*cmd, "render", "--format", "png-sequence",
+              "--quality", "draft"], cwd=project, timeout=HF_TIMEOUT)
+        rdirs = [p for p in (project / "renders").glob("*")
                  if p.is_dir() and p.name not in before]
         if not rdirs:
             return False
@@ -1039,9 +1085,10 @@ def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
         for i, fr in enumerate(frames[:need]):
             shutil.copy(fr, out_seq / f"f_{i:04d}.png")
         shutil.rmtree(rdir, ignore_errors=True)
+        shutil.rmtree(project, ignore_errors=True)
         return True
     except Exception as e:
-        log(f"hyperframes {kind} failed ({type(e).__name__}), pillow fallback")
+        log(f"hyperframes {kind} failed ({type(e).__name__})")
         return False
 
 
@@ -1117,6 +1164,10 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                 log(f"graphic {i} ({kind}) via hyperframes")
                 # full-frame render: position is baked into the HTML -> y=0
                 layers.append({"seq": str(hf_seq), "s": s, "e": e, "y": 0})
+                continue
+
+            if os.environ.get("AUTOEDITOR_REQUIRE_HYPERFRAMES") == "1":
+                log(f"graphic {i} ({kind}) unresolved: HyperFrames is required")
                 continue
 
             if kind == "stat":
@@ -1248,7 +1299,7 @@ def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
               "AppleWebKit/537.36 autoeditor/1.0")
         orient = "portrait" if portrait else "landscape"
         req = urllib.request.Request(
-            "https://api.pexels.com/videos/search?"
+            "https://api.pexels.com/v1/videos/search?"
             + urllib.parse.urlencode({"query": query, "per_page": 5,
                                       "orientation": orient, "size": "medium"}),
             headers={"Authorization": key, "User-Agent": ua})
@@ -1268,6 +1319,13 @@ def _pexels_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
             if _atomic_download(
                     dreq, dst, min_dur=min_dur, portrait=portrait):
                 log(f"pexels: '{query}' -> {dst.name}")
+                _ASSET_METADATA[str(dst)] = {
+                    "provider": "pexels",
+                    "source_url": vid.get("url", ""),
+                    "contributor": (vid.get("user") or {}).get("name", ""),
+                    "contributor_url": (vid.get("user") or {}).get("url", ""),
+                    "license_url": "https://www.pexels.com/terms-of-service/",
+                }
                 return str(dst)
     except Exception as e:
         log(f"pexels '{query}' failed ({type(e).__name__}), trying next source")
@@ -1310,13 +1368,24 @@ def _pixabay_fetch(query: str, portrait: bool, min_dur: float) -> str | None:
             if _atomic_download(
                     dreq, dst, min_dur=min_dur, portrait=portrait):
                 log(f"pixabay: '{query}' -> {dst.name}")
+                _ASSET_METADATA[str(dst)] = {
+                    "provider": "pixabay",
+                    "source_url": vid.get("pageURL", ""),
+                    "contributor": vid.get("user", ""),
+                    "contributor_url": (
+                        f"https://pixabay.com/users/{vid.get('user', '')}-"
+                        f"{vid.get('user_id', '')}/"
+                    ),
+                    "license_url": "https://pixabay.com/service/terms/",
+                }
                 return str(dst)
     except Exception as e:
         log(f"pixabay '{query}' failed ({type(e).__name__})")
     return None
 
 
-REMOTION_PROJ = Path.home() / "cinematic-autopilot/remotion-viz"
+REMOTION_PROJ = Path(os.environ.get(
+    "AUTOEDITOR_REMOTION_PROJECT", str(VIZ_PROJECT)))
 _VIZ_TEMPLATES = {"flow": "FlowViz", "steps": "StepsViz", "stat": "StatViz"}
 
 
@@ -1325,6 +1394,8 @@ def _remotion_viz(viz: dict, dur: float, vid_w: int, vid_h: int) -> str | None:
     Deterministic: DeepSeek only supplies template + parameters; the React
     compositions are fixed brand templates. Cached by parameter hash."""
     comp = _VIZ_TEMPLATES.get(str(viz.get("template", "")).lower())
+    if os.environ.get("AUTOEDITOR_REQUIRE_REMOTION") == "0":
+        return None
     if not comp or not (REMOTION_PROJ / "package.json").exists():
         return None
     props = {"durSec": round(max(2.5, dur), 2), "w": vid_w, "h": vid_h,
@@ -1355,9 +1426,21 @@ def _remotion_viz(viz: dict, dur: float, vid_w: int, vid_h: int) -> str | None:
                 suffix=".partial.mp4", delete=False) as video_temp:
             temp_path = Path(video_temp.name)
         temp_path.unlink()
-        npx = shutil.which("npx") or str(Path.home() / ".local/bin/npx")
-        _run([npx, "remotion", "render", "src/index.ts", comp, temp_path,
-              f"--props={pfile}", "--log=error"],
+        node = os.environ.get("AUTOEDITOR_NODE", "").strip()
+        cli = os.environ.get("AUTOEDITOR_REMOTION_CLI", "").strip()
+        cmd = ([node, cli] if node and cli else [
+            shutil.which("npx") or str(Path.home() / ".local/bin/npx"),
+            "remotion",
+        ])
+        browser = os.environ.get("AUTOEDITOR_BROWSER", "").strip()
+        browser_arg = [f"--browser-executable={browser}"] if browser else []
+        font_dir = os.environ.get("AUTOEDITOR_BUNDLED_FONTS", "").strip()
+        public_arg = [f"--public-dir={font_dir}"] if font_dir else []
+        license_key = os.environ.get("REMOTION_LICENSE_KEY", "").strip()
+        license_arg = [f"--license-key={license_key}"] if license_key else []
+        _run([*cmd, "render", "src/index.ts", comp, temp_path,
+              f"--props={pfile}", "--log=error", *browser_arg, *public_arg,
+              *license_arg],
              cwd=REMOTION_PROJ, timeout=300)
         if _valid_video_asset(
                 temp_path, dur, exact_size=(vid_w, vid_h)):
@@ -1442,6 +1525,7 @@ def broll_layers(edl: dict, clips: list[dict],
             "event": index, "ok": True, "source": source,
             "asset": str(path), "asset_sha256": _file_sha256(path),
             "asset_duration": round(asset_duration, 3),
+            **_ASSET_METADATA.get(str(path), {}),
         })
     unresolved = [item["event"] for item in resolution if not item["ok"]]
     graphics_state = edl.get("resolution") or {}

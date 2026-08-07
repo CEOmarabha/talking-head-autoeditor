@@ -1,78 +1,129 @@
-# Web Deployment (friends render on their own PCs)
+# Private AutoEditor website deployment
 
-Architecture: a serverless Cloudflare Worker is the website + API + job
-queue (Cloudflare keeps it up 24/7, $0, zero uptime work for Omar). Each
-friend runs a tiny Helper on their OWN computer that renders only their own
-jobs. Nothing runs on Omar's machine.
+This is the owner runbook. Friends never run these commands. Their flow is
+only: open the private website, sign in, download one signed installer, paste
+one Setup code, connect or skip accounts, and make a video.
 
-## What is already provisioned (done in this session)
+## Architecture
 
-- D1 database `autoeditor-web` (id `28a0100d-7996-4d8d-b979-180086527c08`),
-  full schema applied.
-- R2 bucket `autoeditor-media` (private).
-- Worker `autoeditor-web` created with D1 (`DB`) + R2 (`MEDIA`) bindings.
-- Secrets set (encrypted, persist across deploys): `KEY_WRAP_SECRET`,
-  `WORKER_TOKEN`, `ADMIN_TOKEN`.
+- One Cloudflare Worker serves the website and authenticated API.
+- D1 stores invite, account, project, queue, chat, and QA state.
+- Private R2 stores uploads, outputs, installer files, and checksums.
+- Each friend’s signed AutoEditor Helper pulls only that friend’s jobs and
+  renders on that friend’s computer.
+- DeepSeek chat runs through the Worker. Video editing remains a deterministic
+  local pipeline, not a terminal agent or arbitrary code runner.
 
-The live URL is https://autoeditor-web.<your-subdomain>.workers.dev — right
-now it still serves the placeholder page because the real Worker code has
-not been uploaded yet. That is the one remaining deploy step.
+The configured resources are:
 
-## Step 1 — upload the real Worker code (one command, from Omar's Mac)
+- Worker: `autoeditor-web`
+- D1: `autoeditor-web`, id `28a0100d-7996-4d8d-b979-180086527c08`
+- R2: `autoeditor-media`
+- Production Helper host allowlist:
+  `autoeditor-web.mromarmarabha.workers.dev`
 
-The dashboard code-paste and the raw API are both blocked by Cloudflare's
-WAF for a script this size, so use wrangler (it uploads natively):
+Do not change the production hostname without updating and releasing the
+Helper allowlist in `desktop/helper/lib/setup-code.js`.
+
+## Required Cloudflare secrets
+
+The Worker requires:
+
+- `KEY_WRAP_SECRET`: long random secret used to wrap stored DeepSeek keys.
+- `WORKER_TOKEN`: long random token for the optional owner-wide daemon.
+- `ADMIN_TOKEN`: long random token for owner-only invite creation.
+
+Do not put their values in this repository. Confirm the names exist with
+`npx wrangler secret list`. If one is absent, add it interactively with
+`npx wrangler secret put NAME`. Rotating `KEY_WRAP_SECRET` without first
+re-encrypting stored DeepSeek keys makes existing keys unreadable.
+
+## Safe deployment order
+
+This task does not deploy automatically. Before any production change:
+
+1. Export or back up D1 data needed for rollback.
+2. From `webapp/worker`, install the exact locked dependency with `npm ci`.
+3. Run `npm audit --audit-level=high`.
+4. Run the local schema and API acceptance tests.
+5. Apply the idempotent schema to production:
+
+   ```bash
+   npx wrangler d1 execute autoeditor-web --remote --file schema.sql
+   ```
+
+   The current schema adds the server-side sign-in rate-limit table. Confirm
+   the command reports that `rate_limits` exists before deploying code that
+   calls it.
+6. Build without publishing:
+
+   ```bash
+   npx wrangler deploy --dry-run
+   ```
+
+7. Deploy only after the owner approves the production change:
+
+   ```bash
+   npx wrangler deploy
+   ```
+
+8. Open `https://autoeditor-web.mromarmarabha.workers.dev`, confirm the real
+   sign-in page loads, then run the two-account isolation test in
+   `LAUNCH_CHECKLIST.md`.
+
+## Invite one friend
+
+Only Omar creates the first invite code. Keep `ADMIN_TOKEN` in a local shell
+variable or password manager, never in command history, screenshots, or chat.
 
 ```bash
-cd talking-head-autoeditor/webapp/worker
-npx wrangler deploy
+curl -X POST \
+  https://autoeditor-web.mromarmarabha.workers.dev/api/admin/invites \
+  -H "authorization: Bearer $AUTOEDITOR_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"note":"Friend name"}'
 ```
 
-`wrangler.toml` already points at the live D1 id and R2 bucket, and the
-three secrets are already set, so this single command publishes the real
-site with everything wired. Re-run it any time you change the code.
+Send only the returned invite code and website URL to that friend. After the
+friend signs in, the dashboard creates that account’s personal Setup code
+automatically. The owner does not mint or send a separate daemon token.
 
-Verify: open the URL; you should see the AutoEditor sign-in screen (not
-"Hello World").
+An invite code remains that account’s fallback password. The friend can enable
+6-digit authenticator codes under Sign-in settings. Never put multiple friends
+on the same invite or Helper Setup code.
 
-## Step 2 — invite a friend and mint their connect code
+## Local API acceptance rig
+
+Keep local state outside the repository:
 
 ```bash
-BASE=https://autoeditor-web.<your-subdomain>.workers.dev
-ADMIN=<ADMIN_TOKEN>          # the value you set as the secret
-
-# 1) invite (they use this once to make their account)
-curl -X POST $BASE/api/admin/invites -H "authorization: Bearer $ADMIN" \
-  -H 'content-type: application/json' -d '{"note":"Alex"}'
-#   -> {"code":"abc123..."}   send this to the friend
-
-# 2) after they have signed in once, mint their personal connect code
-#    (renders ONLY their jobs; use their exact display name)
-curl -X POST $BASE/api/admin/daemon-tokens -H "authorization: Bearer $ADMIN" \
-  -H 'content-type: application/json' -d '{"user_name":"Alex"}'
-#   -> {"token":"..."}        send this to the friend as their connect code
+STATE_DIR=/tmp/autoeditor-wrangler-state
+npx wrangler d1 execute autoeditor-web --local \
+  --persist-to "$STATE_DIR" --file schema.sql
+npx wrangler dev --local --port 8787 --persist-to "$STATE_DIR" \
+  --var KEY_WRAP_SECRET:dev-wrap-secret \
+  --var WORKER_TOKEN:dev-worker-token \
+  --var ADMIN_TOKEN:dev-admin-token
 ```
 
-## Step 3 — the friend sets up their Helper (once, on their PC)
+The local site may issue a Setup code for `http://127.0.0.1:8787`; the Helper
+allows that address only for development. A production Setup code must use the
+allowlisted HTTPS host.
 
-Send them `docs/FRIEND_WEB_GUIDE.md`. In short: install FFmpeg + Python,
-run `webapp/render_worker/install_helper.sh`, then launch
-`friend_helper.py`, paste the site address + their connect code. It renders
-their jobs whenever it's open; they close it when done. Their PC is the only
-machine that has to be on, and only while they want a video made.
+## Installer publishing
 
-## Local development / acceptance rig (unchanged)
-
-```bash
-cd webapp/worker
-printf 'KEY_WRAP_SECRET=dev\nWORKER_TOKEN=dev\nADMIN_TOKEN=dev\n' > .dev.vars
-npx wrangler d1 execute autoeditor-web --local --file schema.sql
-npx wrangler dev --local --port 8787
-# run the helper against it with AUTOEDITOR_WEB_API=http://127.0.0.1:8787
-```
+Do not upload installers by hand. After all platform build, signing,
+notarization, smoke, and physical acceptance gates pass, a `helper-v*` tag runs
+the release workflow. The workflow uploads the signed Windows installer, both
+notarized Mac DMGs, and `SHA256SUMS.txt` to fixed private R2 paths. It creates
+the GitHub release only after the private upload succeeds.
 
 ## Rollback
 
-`npx wrangler delete autoeditor-web`, then delete the R2 bucket and D1
-database in the dashboard (export first — this destroys user media/state).
-The desktop app and engine are untouched.
+- Worker code: redeploy the last accepted commit.
+- D1: restore the exported data only after checking schema compatibility.
+- Installer: restore all three accepted installer objects and the matching
+  checksum file together. Never mix versions across Windows, Apple Silicon,
+  and Intel.
+- Do not delete the Worker, D1 database, or R2 bucket as a normal rollback.
+  Deleting them destroys account state or user media.

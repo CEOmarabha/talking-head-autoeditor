@@ -1,51 +1,42 @@
-# Windows-First Notes
+# Windows-first release acceptance
 
-Friends on Windows 11 need only Chrome or Edge; everything runs server
-side. There is nothing to install: no Python, FFmpeg, models, or repos.
+Friends receive one signed `AutoEditor-Helper-Windows.exe`. They do not install
+Python, Node, FFmpeg, Whisper models, HyperFrames, Remotion, a browser runtime,
+fonts, repositories, package managers, or command-line tools.
 
-## What was verified where (honest ledger, 2026-08-07)
+The tagged `helper-v*` workflow is required to fail unless Azure Artifact
+Signing or the fallback Windows PFX credentials are completely configured. It
+builds on Windows itself because PyInstaller is not a cross-compiler, installs
+the finished `.exe` silently, runs the frozen daemon, performs real HyperFrames
+and Remotion renders, checks the installed application signature, and
+uninstalls it. The owner-only setup is in `OWNER_SIGNING_SETUP.md`.
 
-- Full-stack end-to-end (invite -> sign-in -> key -> multipart upload of
-  real footage -> Make It -> engine render -> QA gates -> authenticated
-  download -> cross-account isolation -> key-leak sweep): PASS, executed
-  against `wrangler dev --local` plus the real Python engine in a Linux
-  environment, driven over HTTP exactly as a browser would be.
-- Vertical Short sample: PASS (25s real-narration fixture; engine cut it
-  to 22.6s, speech/sync/loudness/word-integrity gates passed; delivery
-  correctly quarantined as Needs Review because the synthetic fixture has
-  blank frames and the render host lacked the brand font: both gates
-  behaving as designed).
-- Long talking-head sample (16:9): run started during acceptance; result
-  recorded in the handoff report.
-- Commercial-style sample: NOT RUN yet (synthetic fixture allowed; run it
-  after deploy with the same script as the Short).
-- Real Windows 11 + Chrome/Edge browser acceptance: NOT RUN. It requires
-  the deployed preview URL (wrangler deploy needs Omar's Cloudflare
-  login). The client code sticks to boring, universally supported APIs
-  (fetch, FormData-free multipart PUTs, <video>, drag-and-drop) precisely
-  to minimize Windows-browser risk, but per the release gate this does
-  NOT count as Windows-ready.
-- Live DeepSeek revision round-trip: exercised with a fake key to verify
-  the graceful-failure path (planner unavailable -> chat explains, no
-  broken revision); the real-key path needs one run after deploy.
+## Required final physical Windows test
 
-## Windows acceptance script (run after deploy)
+CI is necessary but does not replace this test on the installer Omar will
+actually send:
 
-On a Windows 11 machine with Chrome and Edge:
+1. Use a normal 64-bit Windows 11 account with no Python, Node, FFmpeg, Git,
+   Visual Studio, or development tools installed.
+2. Download the `.exe` from the same website link a friend receives.
+3. Confirm Microsoft Defender and SmartScreen show the expected verified
+   publisher. Any unknown-publisher warning fails the signed release.
+4. Install from Downloads and confirm desktop and Start menu shortcuts.
+5. Open the Helper, paste a real Setup code, and connect real DeepSeek, Pexels,
+   Pixabay, and ElevenLabs accounts. Also exercise the Skip path for each
+   account-backed resource.
+6. Confirm every built-in runtime check passes and the real HyperFrames and
+   Remotion samples render.
+7. In Chrome, create one Short, one long talking-head video, and one commercial
+   edit from real footage. Run at least one DeepSeek revision on each.
+8. Disconnect the internet during one large upload, reconnect, and verify the
+   resumable upload finishes.
+9. Download each MP4 and play it in Windows Media Player and a browser.
+10. Delete one project and confirm its authenticated media URLs no longer
+    return files.
+11. Uninstall AutoEditor Helper from Windows Settings and confirm the program
+    files are removed. User projects stay until deleted from the website.
 
-1. Redeem a fresh invite; sign in on Chrome.
-2. Add a real DeepSeek key; confirm it never appears in DevTools network
-   responses, page source, or localStorage (it is posted once and never
-   echoed).
-3. Upload a real phone clip (>100MB ideally) and watch the resume
-   behavior by toggling airplane mode mid-upload.
-4. Make It; verify the state progression through queued -> transcribing
-   -> planning -> rendering preview -> quality checks -> ready or needs
-   review.
-5. Ask for "bigger captions" (auto-applies) and "remove the part where I
-   say X" (must show a proposal and wait for OK).
-6. Download the MP4; play it in Windows Media Player.
-7. Sign out; confirm the project URL now returns the sign-in screen; sign
-   in as a second user and confirm the first user's project is not
-   listed and its media URL returns 403.
-8. Repeat sign-in on Edge to confirm parity.
+Status is not Windows-ready until this physical-machine pass is recorded
+against the exact signed installer. Passing source tests or a macOS build does
+not satisfy it.

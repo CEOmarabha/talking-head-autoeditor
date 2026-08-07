@@ -8,9 +8,12 @@
 3. D1 (data at rest; contains DeepSeek keys ONLY as AES-GCM ciphertext).
 4. R2 (private media; no public access; all reads flow through
    authenticated Worker routes).
-5. Render host (Omar's Mac; holds KEY_WRAP_SECRET in env; the only place
-   plaintext DeepSeek keys ever exist, in process memory, per job).
-6. DeepSeek API (receives the user's own key over TLS, as designed).
+5. Friend Helper and render engine (the friend’s signed local app; holds only
+   that friend’s personal Helper token and connected provider keys in the OS
+   keystore).
+6. Optional global owner render host (holds KEY_WRAP_SECRET only when the
+   owner intentionally runs the global daemon).
+7. DeepSeek API (receives the user's own key over TLS, as designed).
 
 ## DeepSeek key lifecycle (threat model)
 
@@ -21,15 +24,15 @@
   never request bodies).
 - At rest: ciphertext in D1. A D1 dump alone cannot recover keys without
   the Worker secret.
-- Dispatch: the render daemon authenticates with WORKER_TOKEN and receives
-  ciphertext only. Job rows, queue payloads, progress logs, revisions,
-  chat, R2 keys, and URLs never contain key fields (enforced by schema:
-  keys live only on `users.key_ct/key_iv`; verified by the acceptance
-  sweep, which greps logs, every D1 row, and R2 blobs for the plaintext).
-- Use: the daemon decrypts in memory, passes the key to the engine child
-  via env. `AUTOEDITOR_PACKAGED=1` guarantees the engine reads env only
-  and writes no dotfiles. The engine never prints env. The reference is
-  dropped when the job ends.
+- Dispatch: a personal Helper token can claim only that user’s jobs. The
+  Worker unwraps that user’s key and returns the plaintext over HTTPS for that
+  one claimed job. It does not return the stored ciphertext fields to a
+  personal Helper. The optional global owner daemon receives ciphertext and
+  unwraps it locally with KEY_WRAP_SECRET.
+- Use: the daemon passes the key to the engine child through the process
+  environment. `AUTOEDITOR_PACKAGED=1` guarantees the engine reads the
+  environment only and writes no key dotfiles. The engine never prints its
+  environment. The in-process key reference is dropped when the job ends.
 - No third-party queue ever sees key material: the only queue is our own
   D1 table, and it carries no key fields at all.
 - Compromise scenarios: Worker secret alone -> can decrypt only if D1 is
@@ -49,7 +52,12 @@
   read. Verified in acceptance: cross-account project read 404, media 403,
   signed-out 401.
 - The daemon API is a separate bearer-token surface with no session
-  crossover; the admin API likewise.
+  crossover. Personal daemon tokens recheck job ownership on progress and
+  completion, media routes enforce the user prefix, output keys must match the
+  claimed job’s user and project, and revision IDs come from the server-created
+  job payload. The admin API is separate as well.
+- Sign-in attempts are limited per hashed client address in D1. The stored
+  rate-limit key does not contain the raw address.
 
 ## Media
 
@@ -84,10 +92,8 @@ an admin-only sidecar.
 
 ## Known gaps (tracked, not hidden)
 
-- No rate limiting on auth endpoints yet (invite codes are high-entropy;
-  add Cloudflare rate rules before widening the invite list).
 - Session revocation is delete-on-signout only; no admin "kill session"
   UI yet (delete the D1 row manually if needed).
-- The render daemon trusts Worker-supplied R2 keys; a compromised Worker
-  could direct it to overwrite other users' outputs. Same blast radius as
-  the Worker itself.
+- A compromised Worker can still direct a local engine to process malicious
+  input within that user’s job scope. The Helper therefore accepts Setup codes
+  only from the production AutoEditor host and keeps the engine non-agentic.

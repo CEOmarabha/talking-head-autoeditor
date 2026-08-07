@@ -1,0 +1,11 @@
+# Direct runtime and build requirements for target-specific hashed locks.
+faster-whisper==1.2.1
+auto-editor==29.3.1
+pillow==12.3.0
+numpy==2.5.1
+cryptography==48.0.1
+certifi==2026.7.22
+pyinstaller==6.21.0
+huggingface_hub==1.27.0
+pytest==9.1.1
+pip-licenses==5.5.5

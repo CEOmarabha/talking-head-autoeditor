@@ -1,0 +1,500 @@
+name: Build AutoEditor Helper installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version for an unsigned acceptance build
+        required: true
+        default: 0.1.0
+  push:
+    tags: ["helper-v*"]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.23.2
+  HYPERFRAMES_VERSION: 0.7.99
+  HYPERFRAMES_CHROME_VERSION: 152.0.7928.2
+  REMOTION_VERSION: 4.0.507
+  WHISPER_SMALL_REVISION: 536b0662742c02347bc0e980a01041f333bce120
+  WHISPER_MEDIUM_REVISION: 08e178d48790749d25932bbc082711ddcfdfbc4f
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target_os: windows
+            arch: x64
+            electron_target: win
+          - os: macos-15
+            target_os: mac
+            arch: arm64
+            electron_target: mac
+          - os: macos-15-intel
+            target_os: mac
+            arch: x64
+            electron_target: mac
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve version and release policy
+        id: release
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
+          WIN_CERT: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          MAC_CERT: ${{ secrets.CSC_LINK }}
+          MAC_CERT_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID_VALUE: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#helper-v}"
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
+            if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+              if test -n "$AZURE_TENANT_ID" && test -n "$AZURE_CLIENT_ID" && \
+                  test -n "$AZURE_CLIENT_SECRET" && \
+                  test -n "$WIN_AZURE_PUBLISHER_NAME" && \
+                  test -n "$WIN_AZURE_ENDPOINT" && \
+                  test -n "$WIN_AZURE_CERTIFICATE_PROFILE_NAME" && \
+                  test -n "$WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME"; then
+                echo "win_signing=azure" >> "$GITHUB_OUTPUT"
+              elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD"; then
+                echo "win_signing=pfx" >> "$GITHUB_OUTPUT"
+              else
+                echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
+                exit 1
+              fi
+            else
+              test -n "$MAC_CERT" && test -n "$MAC_CERT_PASSWORD" && \
+                test -n "$APPLE_ID_VALUE" && test -n "$APPLE_PASSWORD" && \
+                test -n "$APPLE_TEAM" || {
+                echo "A tagged Mac release requires Developer ID and notarization secrets" >&2
+                exit 1
+              }
+            fi
+          else
+            VERSION="$MANUAL_VERSION"
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
+            echo "win_signing=unsigned" >> "$GITHUB_OUTPUT"
+          fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+            echo "Invalid version: $VERSION" >&2
+            exit 1
+          }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact=helper-${{ matrix.target_os }}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Freeze Python engine and render daemon
+        shell: bash
+        run: |
+          LOCK="packaging/requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt"
+          test -f "$LOCK"
+          python -m pip --version
+          python -m pip install --require-hashes -r "$LOCK"
+          python -m pip check
+          python -m unittest tests.test_safety
+          python -m pytest -q webapp/tests/test_web.py
+          pyinstaller packaging/engine.spec --distpath packaging/dist
+          pyinstaller packaging/helper_daemon.spec --distpath packaging/dist
+          ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
+          DAEMON=packaging/dist/autoeditor-helper-daemon/autoeditor-helper-daemon
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            ENGINE="${ENGINE}.exe"
+            DAEMON="${DAEMON}.exe"
+          fi
+          "$ENGINE" --help >/dev/null
+          test -x "$DAEMON" || test -f "$DAEMON"
+
+      - name: Stage engine, models, profiles, fonts, certificates and notices
+        shell: bash
+        env:
+          STAGE: desktop/helper-staging
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"/{helper,engine,bin,lib,models,profiles,fonts,certs,licenses,node,browser,creative}
+          cp -R packaging/dist/autoeditor-engine/. "$STAGE/engine/"
+          cp -R packaging/dist/autoeditor-helper-daemon/. "$STAGE/helper/"
+          cp -R profiles/. "$STAGE/profiles/"
+          cp packaging/THIRD_PARTY_NOTICES.md "$STAGE/licenses/THIRD_PARTY_NOTICES.md"
+          LOCK="packaging/requirements-${TARGET_OS}-${TARGET_ARCH}.txt"
+          cp "$LOCK" "$STAGE/licenses/PYTHON_REQUIREMENTS_LOCK.txt"
+          python -m pip freeze --all > "$STAGE/licenses/PYTHON_PACKAGES.txt"
+          pip-licenses --format=json --with-urls --with-license-file \
+            > "$STAGE/licenses/PYTHON_LICENSES.json"
+          python - <<'PY'
+          import certifi, os, shutil
+          shutil.copy2(certifi.where(), os.path.join(os.environ["STAGE"], "certs", "cacert.pem"))
+          PY
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          stage = os.environ["STAGE"]
+          snapshot_download(
+              repo_id="Systran/faster-whisper-small",
+              revision=os.environ["WHISPER_SMALL_REVISION"],
+              local_dir=f"{stage}/models/faster-whisper-small",
+          )
+          snapshot_download(
+              repo_id="Systran/faster-whisper-medium",
+              revision=os.environ["WHISPER_MEDIUM_REVISION"],
+              local_dir=f"{stage}/models/faster-whisper-medium",
+          )
+          PY
+          FONTS_COMMIT=2d85e20401920891efb7cd6272d6339685df2820
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/montserrat/Montserrat%5Bwght%5D.ttf" \
+            -o "$STAGE/fonts/Montserrat-Variable.ttf"
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/worksans/WorkSans%5Bwght%5D.ttf" \
+            -o "$STAGE/fonts/WorkSans-Variable.ttf"
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/montserrat/OFL.txt" \
+            -o "$STAGE/licenses/Montserrat-OFL.txt"
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/worksans/OFL.txt" \
+            -o "$STAGE/licenses/WorkSans-OFL.txt"
+          test -s "$STAGE/models/faster-whisper-small/model.bin"
+          test -s "$STAGE/models/faster-whisper-medium/model.bin"
+
+      - name: Bundle FFmpeg and FFprobe on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install ffmpeg
+          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2([[:space:]]|$)' || {
+            echo "Homebrew FFmpeg moved from audited version 8.1.2. Review and repin before releasing." >&2
+            exit 1
+          }
+          python packaging/bundle_macos_ffmpeg.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --bin-dir desktop/helper-staging/bin \
+            --lib-dir desktop/helper-staging/lib
+          if otool -L desktop/helper-staging/bin/ffmpeg \
+              desktop/helper-staging/bin/ffprobe desktop/helper-staging/lib/*.dylib | \
+              grep -E '/opt/homebrew|/usr/local/(Cellar|opt)'; then
+            echo "Homebrew path escaped the portable FFmpeg bundle" >&2
+            exit 1
+          fi
+
+      - name: Bundle verified FFmpeg and FFprobe on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
+          $release = Invoke-RestMethod `
+            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
+          $metadata = $release.assets | Where-Object { $_.name -eq $asset }
+          if (-not $metadata) { throw "Pinned FFmpeg release asset is missing" }
+          Invoke-WebRequest $metadata.browser_download_url -OutFile ffmpeg.zip
+          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          $expected = "8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331"
+          $published = $metadata.digest.Replace("sha256:", "").ToLower()
+          if ($published -ne $expected) {
+            throw "BtbN latest changed from the audited FFmpeg archive. Review and repin before releasing"
+          }
+          if ($actual -ne $expected) { throw "FFmpeg archive digest does not match the audited digest" }
+          Expand-Archive ffmpeg.zip -DestinationPath fftmp
+          Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/helper-staging/bin/"
+          Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/helper-staging/bin/"
+          Set-Content "desktop/helper-staging/licenses/FFMPEG_BUILD.txt" `
+            "asset=$asset`nsha256=$actual`nsource=$($metadata.browser_download_url)"
+
+      - name: Verify required FFmpeg capabilities
+        shell: bash
+        run: |
+          FFMPEG=desktop/helper-staging/bin/ffmpeg
+          FFPROBE=desktop/helper-staging/bin/ffprobe
+          [[ "${{ matrix.target_os }}" == "windows" ]] && FFMPEG="${FFMPEG}.exe" && FFPROBE="${FFPROBE}.exe"
+          "$FFMPEG" -version | tee desktop/helper-staging/licenses/FFMPEG_VERSION.txt
+          "$FFPROBE" -version >/dev/null
+          "$FFMPEG" -hide_banner -encoders 2>&1 | grep -q libx264
+          "$FFMPEG" -hide_banner -encoders 2>&1 | grep -Eiq '(^| )aac( |$)'
+          FILTERS=$($FFMPEG -hide_banner -filters 2>&1)
+          for filter in fps aresample adelay atrim concat scale pad setsar overlay \
+            chromakey despill alphaextract dilation erosion alphamerge \
+            huesaturation loudnorm; do
+            grep -Eq "[[:space:]]${filter}[[:space:]]" <<< "$FILTERS" || {
+              echo "Required FFmpeg filter missing: $filter" >&2
+              exit 1
+            }
+          done
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            packaging/helper-runtime/package-lock.json
+
+      - name: Bundle pinned Node, HyperFrames, Remotion and rendering browser
+        shell: bash
+        env:
+          STAGE: desktop/helper-staging
+        run: |
+          NODE_SOURCE=$(command -v node)
+          cp "$NODE_SOURCE" "$STAGE/node/$(basename "$NODE_SOURCE")"
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            NODE_ROOT=$(dirname "$NODE_SOURCE")
+          else
+            NODE_ROOT=$(dirname "$(dirname "$NODE_SOURCE")")
+          fi
+          test -f "$NODE_ROOT/LICENSE"
+          cp "$NODE_ROOT/LICENSE" "$STAGE/licenses/Node-LICENSE.txt"
+          test -f "$NODE_ROOT/README.md" && \
+            cp "$NODE_ROOT/README.md" "$STAGE/licenses/Node-README.md" || true
+          cp -R packaging/helper-runtime "$STAGE/creative-runtime"
+          (cd "$STAGE/creative-runtime" && npm ci --omit=dev)
+          (cd "$STAGE/creative-runtime" && npm audit --omit=dev --audit-level=high)
+          (cd "$STAGE/creative-runtime" && npm ls --all --json \
+            > "$OLDPWD/$STAGE/licenses/NPM_DEPENDENCIES.json")
+          (cd "$STAGE/creative-runtime" && npm sbom --omit=dev \
+            --sbom-format=cyclonedx \
+            > "$OLDPWD/$STAGE/licenses/NPM_SBOM.cdx.json")
+          cp packaging/helper-runtime/package-lock.json \
+            "$STAGE/licenses/creative-runtime-package-lock.json"
+          cp templates/remotion-viz/package-lock.json \
+            "$STAGE/licenses/remotion-template-package-lock.json"
+          cp -R templates/hyperframes-graphics "$STAGE/creative/hyperframes-graphics"
+          mkdir -p "$STAGE/creative/hyperframes-graphics/vendor"
+          cp "$STAGE/creative-runtime/node_modules/gsap/dist/gsap.min.js" \
+            "$STAGE/creative/hyperframes-graphics/vendor/gsap.min.js"
+          cp -R templates/remotion-viz "$STAGE/creative/remotion-viz"
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            NODE=$(realpath "$STAGE/node/node.exe")
+          else
+            NODE=$(realpath "$STAGE/node/node")
+          fi
+          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            browser ensure
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
+              -name chrome-headless-shell.exe | head -1)
+            DEST=chrome-headless-shell-win64
+          else
+            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
+              -name chrome-headless-shell | head -1)
+            DEST=chrome-headless-shell-mac
+          fi
+          test -n "$BROWSER" && test -f "$BROWSER"
+          cp -R "$(dirname "$BROWSER")" "$STAGE/browser/$DEST"
+
+      - name: Render real HyperFrames and Remotion probes
+        shell: bash
+        env:
+          STAGE: desktop/helper-staging
+          HYPERFRAMES_NO_UPDATE_CHECK: "1"
+          NODE_PATH: ${{ github.workspace }}/desktop/helper-staging/creative-runtime/node_modules
+          REMOTION_LICENSE_KEY: free-license
+        run: |
+          NODE="$STAGE/node/node"
+          FFMPEG="$STAGE/bin/ffmpeg"
+          FFPROBE="$STAGE/bin/ffprobe"
+          BROWSER="$STAGE/browser/chrome-headless-shell-mac/chrome-headless-shell"
+          [[ "${{ matrix.target_os }}" == "windows" ]] && \
+            NODE=$(realpath "$STAGE/node/node.exe") && FFMPEG="$STAGE/bin/ffmpeg.exe" && \
+            FFPROBE="$STAGE/bin/ffprobe.exe" && \
+            BROWSER="$STAGE/browser/chrome-headless-shell-win64/chrome-headless-shell.exe"
+          export HYPERFRAMES_BROWSER_PATH="$BROWSER"
+          export HYPERFRAMES_FFMPEG_PATH="$FFMPEG"
+          export HYPERFRAMES_FFPROBE_PATH="$FFPROBE"
+          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            check --json "$STAGE/creative/hyperframes-graphics"
+          (cd "$STAGE/creative/hyperframes-graphics" && \
+            "$NODE" "$GITHUB_WORKSPACE/$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+              render -o "$RUNNER_TEMP/hyperframes-probe.mp4" --quality draft)
+          "$NODE" "$STAGE/creative-runtime/node_modules/@remotion/cli/remotion-cli.js" \
+            render "$STAGE/creative/remotion-viz/src/index.ts" FlowViz \
+            "$RUNNER_TEMP/remotion-probe.mp4" \
+            --props="$STAGE/creative/remotion-viz/probe-props.json" \
+            --browser-executable="$BROWSER" --license-key="$REMOTION_LICENSE_KEY" \
+            --public-dir="$STAGE/fonts" --log=error
+          "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
+            "$RUNNER_TEMP/hyperframes-probe.mp4"
+          "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
+            "$RUNNER_TEMP/remotion-probe.mp4"
+
+      - name: Write exact runtime manifest
+        shell: bash
+        run: |
+          python packaging/generate_helper_manifest.py \
+            --stage desktop/helper-staging \
+            --output desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
+
+      - name: Build installer
+        shell: bash
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm version "${{ steps.release.outputs.version }}" \
+            --no-git-tag-version --allow-same-version
+          node --check helper/main.js
+          node --check helper/preload.js
+          node --check helper/renderer/app.js
+          node --check scripts/notarize-artifacts.js
+          npm test
+          CONFIG=electron-builder.helper.yml
+          if [[ "${{ steps.release.outputs.win_signing }}" == "azure" ]]; then
+            CONFIG=electron-builder.helper.azure.js
+          fi
+          npx electron-builder --config "$CONFIG" \
+            --${{ matrix.electron_target }} \
+            --${{ matrix.arch }} --publish never
+
+      - name: Smoke-test installed Windows app and signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAGGED: ${{ steps.release.outputs.tagged }}
+        run: |
+          $installer = Get-ChildItem "desktop/helper-dist/*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Windows installer was not created" }
+          if ($env:TAGGED -eq "true") {
+            $sig = Get-AuthenticodeSignature $installer.FullName
+            if ($sig.Status -ne "Valid") { throw "Installer signature is $($sig.Status)" }
+          }
+          $run = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Installer exited $($run.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
+          $app = Join-Path $root "AutoEditor Helper.exe"
+          if (-not (Test-Path $app)) { throw "Installed Helper app is missing" }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $smoke = Start-Process $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
+          if ($env:TAGGED -eq "true") {
+            $sig = Get-AuthenticodeSignature $app
+            if ($sig.Status -ne "Valid") { throw "App signature is $($sig.Status)" }
+          }
+          $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
+          $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
+            throw "Windows uninstall smoke test failed"
+          }
+
+      - name: Smoke-test macOS app, DMG, signing and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TAGGED: ${{ steps.release.outputs.tagged }}
+        run: |
+          APP=$(find desktop/helper-dist -maxdepth 3 -type d -name 'AutoEditor Helper.app' | head -1)
+          DMG=$(find desktop/helper-dist -maxdepth 1 -type f -name '*.dmg' | head -1)
+          test -n "$APP" && test -n "$DMG"
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/AutoEditor Helper"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          hdiutil verify "$DMG"
+          if [[ "$TAGGED" == "true" ]]; then
+            spctl --assess --type execute --verbose=2 "$APP"
+            xcrun stapler validate "$APP"
+            xcrun stapler validate "$DMG"
+          fi
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.release.outputs.artifact }}
+          path: |
+            desktop/helper-dist/*.exe
+            desktop/helper-dist/*.dmg
+            desktop/helper-dist/*.blockmap
+            desktop/helper-staging/runtime-manifest.json
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/helper-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: helper-*
+          path: release-assets
+          merge-multiple: false
+      - name: Require private download publishing credentials
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CF_TOKEN" && test -n "$CF_ACCOUNT" || {
+            echo "Tagged releases require Cloudflare credentials so private friends can download installers" >&2
+            exit 1
+          }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+      - name: Publish installers to private website storage
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm install --global wrangler@4.120.0
+          WIN=$(find release-assets/helper-windows-x64 -name '*.exe' | head -1)
+          MAC_ARM=$(find release-assets/helper-mac-arm64 -name '*.dmg' | head -1)
+          MAC_X64=$(find release-assets/helper-mac-x64 -name '*.dmg' | head -1)
+          test -f "$WIN" && test -f "$MAC_ARM" && test -f "$MAC_X64"
+          sha256sum "$WIN" "$MAC_ARM" "$MAC_X64" > release-assets/SHA256SUMS.txt
+          wrangler r2 object put autoeditor-media/dist/helper/windows/AutoEditor-Helper.exe \
+            --remote --file "$WIN" --content-type application/vnd.microsoft.portable-executable
+          wrangler r2 object put autoeditor-media/dist/helper/mac-arm64/AutoEditor-Helper.dmg \
+            --remote --file "$MAC_ARM" --content-type application/x-apple-diskimage
+          wrangler r2 object put autoeditor-media/dist/helper/mac-x64/AutoEditor-Helper.dmg \
+            --remote --file "$MAC_X64" --content-type application/x-apple-diskimage
+          wrangler r2 object put autoeditor-media/dist/helper/SHA256SUMS.txt \
+            --remote --file release-assets/SHA256SUMS.txt --content-type text/plain
+      - name: Publish GitHub release after every platform and private upload passes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mapfile -d '' FILES < <(find release-assets -type f \
+            \( -name '*.exe' -o -name '*.dmg' -o -name '*.blockmap' \
+              -o -name 'SHA256SUMS.txt' \) -print0)
+          test "${#FILES[@]}" -gt 0
+          gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "AutoEditor Helper ${GITHUB_REF_NAME#helper-v}" \
+            --generate-notes --verify-tag

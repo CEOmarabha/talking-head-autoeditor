@@ -49,6 +49,7 @@ async function boot() {
 
 async function dash() {
   show('dash');
+  loadHelperDownloads();
   // self-serve: connect code + OTP state
   api('/me/connect-code').then((r) => {
     $('cc-value').value = r.setup_code || r.connect_code;
@@ -59,27 +60,73 @@ async function dash() {
   TYPES.forEach(([id, name, desc]) => {
     const d = document.createElement('div');
     d.className = 'type';
-    d.innerHTML = `<b>${name}</b><span class="muted">${desc}</span>`;
-    d.onclick = async () => {
+    d.tabIndex = 0;
+    d.setAttribute('role', 'button');
+    d.setAttribute('aria-label', `Start ${name}`);
+    const title = document.createElement('b');
+    title.textContent = name;
+    const detail = document.createElement('span');
+    detail.className = 'muted';
+    detail.textContent = desc;
+    d.append(title, detail);
+    const startProject = async () => {
       const proj = await api('/projects', { method: 'POST',
         body: { type: id, title: name } });
       openProject(proj.id);
     };
+    d.onclick = startProject;
+    d.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        startProject();
+      }
+    };
     t.appendChild(d);
   });
   const list = await api('/projects');
-  const ul = $('projects'); ul.innerHTML = '';
-  if (!list.length) ul.innerHTML =
-    '<li class="muted">Nothing yet. Pick a type above to start.</li>';
+  const ul = $('projects'); ul.replaceChildren();
+  if (!list.length) {
+    const empty = document.createElement('li');
+    empty.className = 'muted';
+    empty.textContent = 'Nothing yet. Pick a type above to start.';
+    ul.appendChild(empty);
+  }
   list.forEach((pr) => {
     const li = document.createElement('li');
-    li.innerHTML = `<a href="#">${pr.title}</a> ` +
-      `<span class="badge">${pr.status}</span>`;
-    li.querySelector('a').onclick = (e) => {
+    const link = document.createElement('a');
+    link.href = '#'; link.textContent = pr.title;
+    const badge = document.createElement('span');
+    badge.className = 'badge'; badge.textContent = pr.status;
+    li.append(link, document.createTextNode(' '), badge);
+    link.onclick = (e) => {
       e.preventDefault(); openProject(pr.id);
     };
     ul.appendChild(li);
   });
+}
+
+async function loadHelperDownloads() {
+  try {
+    const response = await fetch('/download/helper/availability', {
+      credentials: 'same-origin', cache: 'no-store',
+    });
+    const available = response.ok ? await response.json() : {};
+    const mapping = [
+      ['dl-win', '/download/helper/windows'],
+      ['dl-mac-arm', '/download/helper/mac-arm64'],
+      ['dl-mac-x64', '/download/helper/mac-x64'],
+    ];
+    let count = 0;
+    for (const [id, route] of mapping) {
+      const showLink = !!available[route];
+      $(id).classList.toggle('hidden', !showLink);
+      if (showLink) count += 1;
+    }
+    $('dl-wait').textContent = count
+      ? '' : 'The signed installers are being prepared. Ask Omar for the release link.';
+  } catch (_) {
+    $('dl-wait').textContent = 'Could not check installers. Refresh this page or ask Omar.';
+  }
 }
 
 // ------------------------------------------------------------ project
@@ -112,7 +159,7 @@ async function renderProject() {
   $('p-title').textContent = pr.title;
   $('p-status').textContent = HUMAN_STATUS[pr.status] || pr.status;
   $('p-detail').textContent = pr.status_detail || '';
-  const ul = $('p-files'); ul.innerHTML = '';
+  const ul = $('p-files'); ul.replaceChildren();
   pr.uploads.forEach((u) => {
     const li = document.createElement('li');
     li.textContent = `${u.filename} (${u.status})`;
@@ -138,7 +185,7 @@ async function renderProject() {
       : 'A quality check failed; watch before using (Needs Review).';
   }
   // chat + proposals
-  const chat = $('chat'); chat.innerHTML = '';
+  const chat = $('chat'); chat.replaceChildren();
   pr.chat.forEach((c) => {
     const d = document.createElement('div');
     d.className = 'msg ' + c.role;
@@ -152,23 +199,31 @@ async function renderProject() {
   if (pending) {
     box.classList.remove('hidden');
     const prop = JSON.parse(pending.proposal_json || '{}');
-    box.innerHTML =
-      `<b>Proposed changes (needs your OK):</b>` +
-      `<ul>${(prop.operations || []).map((o) =>
-        `<li>${o.human || o.op}</li>`).join('')}</ul>` +
-      `<button class="primary" id="prop-ok">Apply</button> ` +
-      `<button class="ghost" id="prop-no">Reject</button>`;
-    $('prop-ok').onclick = () =>
+    box.replaceChildren();
+    const title = document.createElement('b');
+    title.textContent = 'Proposed changes (needs your OK):';
+    const changes = document.createElement('ul');
+    for (const operation of (prop.operations || [])) {
+      const item = document.createElement('li');
+      item.textContent = operation.human || operation.op || 'Edit';
+      changes.appendChild(item);
+    }
+    const apply = document.createElement('button');
+    apply.className = 'primary'; apply.textContent = 'Apply';
+    const reject = document.createElement('button');
+    reject.className = 'ghost'; reject.textContent = 'Reject';
+    box.append(title, changes, apply, document.createTextNode(' '), reject);
+    apply.onclick = () =>
       api(`/revisions/${pending.id}/approve`, { method: 'POST' })
         .then(renderProject);
-    $('prop-no').onclick = () =>
+    reject.onclick = () =>
       api(`/revisions/${pending.id}/reject`, { method: 'POST' })
         .then(renderProject);
   } else box.classList.add('hidden');
-  const revs = $('revs'); revs.innerHTML = '';
+  const revs = $('revs'); revs.replaceChildren();
   pr.revisions.forEach((r) => {
     const li = document.createElement('li');
-    li.textContent = `#${r.num} ${r.request_text || ''} — ${r.status}` +
+    li.textContent = `#${r.num} ${r.request_text || ''}: ${r.status}` +
       (r.qa_pass === 1 ? ' (QA pass)' :
         r.qa_pass === 0 && r.status === 'applied' ? ' (needs review)' : '');
     revs.appendChild(li);
@@ -185,8 +240,14 @@ async function uploadFile(file) {
   const meta = await api(`/projects/${state.projectId}/uploads`, {
     method: 'POST', body: { filename: file.name, size: file.size } });
   const partSize = meta.part_size;
+  const uploaded = new Set(meta.uploaded_parts || []);
   const total = Math.ceil(file.size / partSize) || 1;
   for (let i = 0; i < total; i++) {
+    if (uploaded.has(i + 1)) {
+      $('up-progress').textContent =
+        `Resuming ${file.name}: ${Math.round(((i + 1) / total) * 100)}%`;
+      continue;
+    }
     const blob = file.slice(i * partSize, (i + 1) * partSize);
     let ok = false, tries = 0;
     while (!ok && tries < 5) {
@@ -248,7 +309,7 @@ $('chat-send').onclick = async () => {
     const r = await api(`/projects/${state.projectId}/chat`,
       { method: 'POST', body: { text } });
     thinking.textContent = r.reply || '…';
-  } catch (e) { thinking.textContent = 'Sorry — ' + e.message; }
+  } catch (e) { thinking.textContent = 'Sorry, ' + e.message; }
   renderProject();
 };
 
@@ -284,6 +345,17 @@ $('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') $('chat-send').click();
 });
 $('back').onclick = () => { clearInterval(state.pollTimer); dash(); };
+$('delete-project').onclick = async () => {
+  const confirmed = window.confirm(
+    'Permanently delete this project, its uploaded footage, finished videos, and QA files?');
+  if (!confirmed) return;
+  try {
+    await api('/projects/' + state.projectId, { method: 'DELETE' });
+    clearInterval(state.pollTimer);
+    state.projectId = null;
+    await dash();
+  } catch (error) { alert(error.message); }
+};
 $('si-go').onclick = async () => {
   try {
     await api('/auth/signin', { method: 'POST', body: {
@@ -310,7 +382,7 @@ $('key-save').onclick = async () => {
 // ---- built-in DeepSeek help chat (always available once key is valid)
 const helpHistory = [];
 function renderHelp() {
-  const box = $('help-chat'); box.innerHTML = '';
+  const box = $('help-chat'); box.replaceChildren();
   helpHistory.forEach((m) => {
     const d = document.createElement('div');
     d.className = 'msg ' + m.role;
@@ -324,7 +396,7 @@ $('help-fab').onclick = () => {
   $('help-fab').classList.add('hidden');
   if (!helpHistory.length) {
     helpHistory.push({ role: 'assistant',
-      content: "Hi! I'm your DeepSeek helper. Ask me anything — setting up, " +
+      content: "Hi! I'm your DeepSeek helper. Ask me anything, including setup, " +
         'an error you saw, or what to make. How can I help?' });
     renderHelp();
   }
@@ -349,7 +421,7 @@ $('help-send').onclick = async () => {
       content: r.reply || '(no reply)' };
   } catch (e) {
     helpHistory[helpHistory.length - 1] = { role: 'assistant',
-      content: 'Sorry — ' + e.message };
+      content: 'Sorry, ' + e.message };
   }
   renderHelp();
 };

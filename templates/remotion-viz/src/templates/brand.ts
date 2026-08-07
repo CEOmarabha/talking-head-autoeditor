@@ -1,5 +1,4 @@
-// PSE brand constants — black, gold, white; WorkSans Black (Arial Black
-// fallback until the font is installed); restrained enterprise motion.
+// Generic AutoEditor palette and the bundled Work Sans family.
 export const GOLD = '#E8C7A7';
 export const WHITE = '#FFFFFF';
 export const BLACK = '#000000';

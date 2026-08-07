@@ -1,0 +1,70 @@
+appId: com.marabha.autoeditor.helper
+productName: AutoEditor Helper
+artifactName: "AutoEditor-Helper-${version}-${os}-${arch}.${ext}"
+copyright: "Copyright © 2026 Omar Marabha (@CEOmarabha)"
+directories:
+  output: helper-dist
+  buildResources: build
+extraMetadata:
+  main: helper/main.js
+  author: Omar Marabha
+  description: "Private local video rendering engine built by Omar Marabha"
+
+files:
+  - helper/**
+  - lib/process-tree.js
+
+extraResources:
+  - from: helper-staging/helper
+    to: helper
+  - from: helper-staging/engine
+    to: engine
+  - from: helper-staging/bin
+    to: bin
+  - from: helper-staging/lib
+    to: lib
+  - from: helper-staging/models
+    to: models
+  - from: helper-staging/profiles
+    to: profiles
+  - from: helper-staging/fonts
+    to: fonts
+  - from: helper-staging/certs
+    to: certs
+  - from: helper-staging/node
+    to: node
+  - from: helper-staging/creative-runtime
+    to: creative-runtime
+  - from: helper-staging/browser
+    to: browser
+  - from: helper-staging/creative
+    to: creative
+  - from: helper-staging/licenses
+    to: licenses
+  - from: helper-staging/runtime-manifest.json
+    to: runtime-manifest.json
+
+mac:
+  category: public.app-category.video
+  target:
+    - target: dmg
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  minimumSystemVersion: "12.0"
+
+afterSign: scripts/notarize.js
+afterAllArtifactBuild: scripts/notarize-artifacts.js
+
+win:
+  target:
+    - target: nsis
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
