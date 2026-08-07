@@ -7,10 +7,18 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
+  name TEXT NOT NULL,     -- unique (enforced in app code at signup)
   invite_code TEXT NOT NULL,
   key_ct TEXT,            -- AES-GCM ciphertext of DeepSeek key (b64)
   key_iv TEXT,            -- b64 IV; NEVER return either field over the API
+  totp_secret TEXT,       -- active OTP secret (base32), NULL = OTP off
+  totp_pending TEXT,      -- secret awaiting first verification
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS daemon_tokens (
+  token TEXT PRIMARY KEY,
+  user_id TEXT,           -- NULL = global daemon; else that user's Helper
+  note TEXT DEFAULT '',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (

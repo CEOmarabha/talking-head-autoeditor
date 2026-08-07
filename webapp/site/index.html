@@ -17,7 +17,11 @@
 <section id="signin" class="card narrow hidden">
   <h2>Private beta</h2>
   <label>Your name<input id="si-name" maxlength="60"></label>
-  <label>Invite code<input id="si-code"></label>
+  <label>Your code
+    <input id="si-code" placeholder="invite code (or 6-digit code)"></label>
+  <p class="muted">First time: use the invite code you were given, and it
+  becomes your password. If you set up quick codes, use the 6-digit code
+  from your authenticator app instead.</p>
   <button id="si-go" class="primary">Sign in</button>
   <p id="si-msg" class="muted"></p>
 </section>
@@ -49,6 +53,38 @@
     <h2>Your projects</h2>
     <ul id="projects" class="plist"></ul>
   </div>
+  <details class="card">
+    <summary><b>Your Helper &amp; sign-in settings</b></summary>
+    <div style="margin-top:10px">
+      <p><b>Helper connect code</b> <span class="muted">(paste into the
+        Helper app on your computer; it renders your videos)</span></p>
+      <div class="row"><input id="cc-value" readonly>
+        <button id="cc-copy" class="ghost">Copy</button></div>
+      <hr style="border-color:#232a32; margin:14px 0">
+      <p><b>Quick sign-in codes</b> <span class="muted">(optional: sign in
+        with a 6-digit code from a free authenticator app instead of your
+        invite code)</span></p>
+      <div id="otp-off">
+        <button id="otp-start" class="ghost">Set up quick codes</button>
+      </div>
+      <div id="otp-setup" class="hidden">
+        <p class="muted">1. Install any authenticator app (Google
+        Authenticator, Authy...). 2. Add an account "enter key manually"
+        and paste this key:</p>
+        <div class="row"><input id="otp-secret" readonly>
+          <button id="otp-copy" class="ghost">Copy</button></div>
+        <p class="muted">Or on your phone, tap:
+          <a id="otp-link" href="#">add to authenticator</a></p>
+        <p class="muted">3. Type the 6-digit code it shows:</p>
+        <div class="row"><input id="otp-code" maxlength="6"
+          placeholder="123456">
+          <button id="otp-verify" class="primary">Turn on</button></div>
+        <p id="otp-msg" class="muted"></p>
+      </div>
+      <p id="otp-on" class="muted hidden">Quick codes are ON. Sign in with
+        your name + the 6-digit code from your app.</p>
+    </div>
+  </details>
 </section>
 
 <!-- project view -->

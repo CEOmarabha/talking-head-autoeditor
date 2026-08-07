@@ -38,6 +38,57 @@ async function wrapKey(env, plaintext) {
   return { ct: b64(ct), iv: b64(iv.buffer) };
 }
 
+// ------------------------------------------------------------- TOTP (OTP)
+const B32A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function b32encode(bytes) {
+  let bits = 0, val = 0, out = '';
+  for (const b of bytes) {
+    val = (val << 8) | b; bits += 8;
+    while (bits >= 5) { out += B32A[(val >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits) out += B32A[(val << (5 - bits)) & 31];
+  return out;
+}
+function b32decode(s) {
+  let bits = 0, val = 0; const out = [];
+  for (const c of s.replace(/=+$/, '').toUpperCase()) {
+    const i = B32A.indexOf(c);
+    if (i < 0) continue;
+    val = (val << 5) | i; bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return new Uint8Array(out);
+}
+async function totpAt(secretB32, counter) {
+  const key = await crypto.subtle.importKey('raw', b32decode(secretB32),
+    { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setUint32(4, counter);
+  const h = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+  const o = h[19] & 15;
+  const code = (((h[o] & 127) << 24) | (h[o + 1] << 16) |
+    (h[o + 2] << 8) | h[o + 3]) % 1e6;
+  return String(code).padStart(6, '0');
+}
+async function verifyTotp(secretB32, code) {
+  const c = Math.floor(Date.now() / 30000);
+  for (const d of [-1, 0, 1]) {
+    if (await totpAt(secretB32, c + d) === String(code).trim()) return true;
+  }
+  return false;
+}
+
+async function sessionFor(env, userId, name) {
+  const token = crypto.randomUUID().replaceAll('-', '') + uid();
+  await env.DB.prepare(
+    'INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)')
+    .bind(token, userId, now() + 1000 * 60 * 60 * 24 * 30).run();
+  return j({ ok: true, name }, 200, {
+    'set-cookie': `session=${token}; HttpOnly; Secure; SameSite=Lax; ` +
+      'Path=/; Max-Age=2592000',
+  });
+}
+
 async function deepseekChat(key, messages, opts = {}) {
   // Direct OpenAI-shaped call to DeepSeek, matching the engine's provider.
   const r = await fetch('https://api.deepseek.com/chat/completions', {
@@ -124,6 +175,85 @@ async function setStatus(env, projectId, status, detail = '') {
     'WHERE id = ?').bind(status, detail, now(), projectId).run();
 }
 
+// ---------------------------------------------------------- edit contract
+// Mirror of webapp/render_worker/project_types.py ALLOWED_OPS. DeepSeek is
+// an untrusted planner: every proposal is validated deterministically here
+// and anything outside this contract rejects the WHOLE proposal.
+const ALLOWED_OPS = {
+  faster_hook: { params: { factor: ['num', 1.0, 2.0] }, approval: false,
+    human: (p) => `Tighten the opening (about ${p.factor}x faster pacing)` },
+  remove_segment: { params: { start: ['num', 0, 36000],
+    end: ['num', 0, 36000] }, approval: true,
+    human: (p) => `Remove the section from ${p.start}s to ${p.end}s` },
+  fewer_punchins: { params: {}, approval: false,
+    human: () => 'Use fewer punch-ins' },
+  more_punchins: { params: {}, approval: false,
+    human: () => 'Use more punch-ins' },
+  caption_scale: { params: { scale: ['num', 0.03, 0.09] }, approval: false,
+    human: (p) => `Set caption size to ${p.scale} of frame height` },
+  broll_density: { params: { level: ['choice', 'less', 'normal', 'more'] },
+    approval: false, human: (p) => `Use ${p.level} b-roll` },
+  cinematic_grade: { params: {}, approval: false,
+    human: () => 'Apply a more cinematic look' },
+  retarget_duration: { params: { seconds: ['num', 10, 3600] },
+    approval: true,
+    human: (p) => `Re-cut the video to about ${p.seconds} seconds` },
+  split_into_clips: { params: { count: ['int', 1, 10] }, approval: true,
+    human: (p) => `Create ${p.count} clips from this video` },
+  acquire_asset: { params: { query: ['str', 1, 120],
+    kind: ['choice', 'broll', 'music', 'sfx', 'image'] }, approval: true,
+    human: (p) => `Find licensed ${p.kind}: "${p.query}"` },
+};
+
+function validateProposal(raw) {
+  const errors = [];
+  const opsIn = raw && raw.operations;
+  if (!Array.isArray(opsIn) || !opsIn.length) {
+    return { clean: null, needsApproval: false,
+      errors: ['no operations'] };
+  }
+  if (opsIn.length > 8) {
+    return { clean: null, needsApproval: false,
+      errors: ['too many operations (max 8)'] };
+  }
+  const clean = []; let needsApproval = false;
+  for (const op of opsIn) {
+    const spec = op && ALLOWED_OPS[op.op];
+    if (!spec) { errors.push(`unknown operation '${op && op.op}'`); continue; }
+    const params = {}; let ok = true;
+    for (const [pname, pspec] of Object.entries(spec.params)) {
+      let val = op[pname];
+      if (pspec[0] === 'choice') {
+        if (!pspec.slice(1).includes(val)) {
+          errors.push(`${op.op}.${pname} invalid`); ok = false;
+        }
+      } else if (pspec[0] === 'str') {
+        val = String(val || '');
+        if (val.length < pspec[1] || val.length > pspec[2]) {
+          errors.push(`${op.op}.${pname} bad length`); ok = false;
+        }
+      } else {
+        val = Number(val);
+        if (!isFinite(val) || val < pspec[1] || val > pspec[2]) {
+          errors.push(`${op.op}.${pname} out of range`); ok = false;
+        }
+        if (pspec[0] === 'int') val = Math.round(val);
+      }
+      params[pname] = val;
+    }
+    if (!ok) continue;
+    if (op.op === 'remove_segment' && params.end <= params.start) {
+      errors.push('remove_segment end before start'); continue;
+    }
+    clean.push({ op: op.op, ...params, human: spec.human(params) });
+    needsApproval = needsApproval || spec.approval;
+  }
+  if (errors.length) return { clean: null, needsApproval: false, errors };
+  return { clean: { operations: clean,
+    summary: String(raw.summary || '').slice(0, 400) },
+  needsApproval, errors: [] };
+}
+
 const PROJECT_TYPES = new Set(['short', 'long', 'commercial', 'podcast',
   'course', 'clips', 'custom']);
 const PRESET_NAMES = new Set(['My Style', 'My Shorts Style',
@@ -177,12 +307,36 @@ async function api(req, env, url) {
     return j({ token, scoped_to: user_name || 'ALL USERS (global)' });
   }
 
-  // ---------- auth
+  // ---------- auth: name + code. The code is either the invite code
+  // (works forever as the account password) or, if the user set up OTP,
+  // the current 6-digit code from their authenticator app.
   if (p === '/auth/signin' && method === 'POST') {
     const { invite_code, name } = await req.json().catch(() => ({}));
-    if (!invite_code || !name) return bad('invite code and name required');
+    const code = String(invite_code || '').trim();
+    const who = String(name || '').trim().slice(0, 60);
+    if (!code || !who) return bad('name and code required');
+
+    // 6-digit path: OTP login by name
+    if (/^\d{6}$/.test(code)) {
+      const candidates = (await env.DB.prepare(
+        'SELECT id, name, totp_secret FROM users WHERE name = ? ' +
+        'AND totp_secret IS NOT NULL').bind(who).all()).results || [];
+      if (candidates.length !== 1) {
+        return bad(candidates.length
+          ? 'more than one account has that name; use your invite code'
+          : 'no one-time codes set up for that name; use your invite code',
+        403);
+      }
+      if (!(await verifyTotp(candidates[0].totp_secret, code))) {
+        return bad('that code is wrong or expired; codes change every ' +
+          '30 seconds', 403);
+      }
+      return sessionFor(env, candidates[0].id, candidates[0].name);
+    }
+
+    // invite-code path
     const inv = await env.DB.prepare(
-      'SELECT * FROM invites WHERE code = ?').bind(invite_code).first();
+      'SELECT * FROM invites WHERE code = ?').bind(code).first();
     if (!inv) return bad('invalid invite code', 403);
     let user;
     if (inv.used_by) {
@@ -190,23 +344,23 @@ async function api(req, env, url) {
         .bind(inv.used_by).first();
       if (!user) return bad('invite orphaned; ask Omar', 403);
     } else {
-      user = { id: uid(), name: String(name).slice(0, 60) };
+      // new account: names must be unique so OTP-by-name stays unambiguous
+      const taken = await env.DB.prepare(
+        'SELECT id FROM users WHERE name = ?').bind(who).first();
+      if (taken) {
+        return bad('that name is taken; add a last initial or pick ' +
+          'another', 409);
+      }
+      user = { id: uid(), name: who };
       await env.DB.prepare(
         'INSERT INTO users (id, name, invite_code, created_at) ' +
         'VALUES (?, ?, ?, ?)')
-        .bind(user.id, user.name, invite_code, now()).run();
+        .bind(user.id, user.name, code, now()).run();
       await env.DB.prepare(
         'UPDATE invites SET used_by = ? WHERE code = ?')
-        .bind(user.id, invite_code).run();
+        .bind(user.id, code).run();
     }
-    const token = crypto.randomUUID().replaceAll('-', '') + uid();
-    await env.DB.prepare(
-      'INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)')
-      .bind(token, user.id, now() + 1000 * 60 * 60 * 24 * 30).run();
-    return j({ ok: true, name: user.name }, 200, {
-      'set-cookie': `session=${token}; HttpOnly; Secure; SameSite=Lax; ` +
-        'Path=/; Max-Age=2592000',
-    });
+    return sessionFor(env, user.id, user.name);
   }
   if (p === '/auth/signout' && method === 'POST') {
     const user = await auth(req, env);
@@ -232,7 +386,11 @@ async function api(req, env, url) {
   if (!user) return bad('sign in required', 401);
 
   if (p === '/me' && method === 'GET') {
-    return j({ name: user.name, hasKey: user.hasKey });
+    const row = await env.DB.prepare(
+      'SELECT (totp_secret IS NOT NULL) AS has_otp FROM users WHERE id = ?')
+      .bind(user.userId).first();
+    return j({ name: user.name, hasKey: user.hasKey,
+      hasOtp: !!(row && row.has_otp) });
   }
   if (p === '/me/key' && method === 'PUT') {
     const { key } = await req.json().catch(() => ({}));
@@ -289,6 +447,49 @@ async function api(req, env, url) {
         'credit). Try again in a moment.', 502);
     }
     return j({ reply: res.text });
+  }
+
+  // ---------- self-serve Helper connect code (auto-minted per account)
+  if (p === '/me/connect-code' && method === 'GET') {
+    let row = await env.DB.prepare(
+      'SELECT token FROM daemon_tokens WHERE user_id = ?')
+      .bind(user.userId).first();
+    if (!row) {
+      const token = crypto.randomUUID().replaceAll('-', '') + uid();
+      await env.DB.prepare(
+        'INSERT INTO daemon_tokens (token,user_id,note,created_at) ' +
+        'VALUES (?,?,?,?)')
+        .bind(token, user.userId, 'self-serve', now()).run();
+      row = { token };
+    }
+    return j({ connect_code: row.token,
+      site: new URL(req.url).origin });
+  }
+
+  // ---------- optional OTP setup (their choice, tied to their account)
+  if (p === '/me/otp/setup' && method === 'POST') {
+    const secret = b32encode(crypto.getRandomValues(new Uint8Array(20)));
+    await env.DB.prepare(
+      'UPDATE users SET totp_pending = ? WHERE id = ?')
+      .bind(secret, user.userId).run();
+    const label = encodeURIComponent(`AutoEditor:${user.name}`);
+    return j({ secret,
+      otpauth: `otpauth://totp/${label}?secret=${secret}` +
+        '&issuer=AutoEditor' });
+  }
+  if (p === '/me/otp/verify' && method === 'POST') {
+    const { code } = await req.json().catch(() => ({}));
+    const row = await env.DB.prepare(
+      'SELECT totp_pending FROM users WHERE id = ?')
+      .bind(user.userId).first();
+    if (!row || !row.totp_pending) return bad('start OTP setup first');
+    if (!(await verifyTotp(row.totp_pending, code || ''))) {
+      return bad('that code is wrong or expired; try the newest one', 403);
+    }
+    await env.DB.prepare(
+      'UPDATE users SET totp_secret = totp_pending, totp_pending = NULL ' +
+      'WHERE id = ?').bind(user.userId).run();
+    return j({ ok: true });
   }
 
   // ---------- style presets
@@ -422,23 +623,123 @@ async function api(req, env, url) {
   }
 
   if ((m = p.match(/^\/projects\/(\w+)\/chat$/)) && method === 'POST') {
+    // Instant back-and-forth with DeepSeek, straight from the Worker: no
+    // queue, no Helper needed. DeepSeek decides whether the message is
+    // conversation (reply now) or an edit request (typed proposal that the
+    // deterministic contract validates; sensitive ops wait for an OK).
     const proj = await ownedProject(env, user, m[1]);
     if (!proj) return bad('not found', 404);
     if (!user.hasKey) return bad('add your DeepSeek key first', 428);
     const { text } = await req.json().catch(() => ({}));
     if (!text || !text.trim()) return bad('empty request');
+    const userMsg = text.slice(0, 2000);
     await env.DB.prepare(
       'INSERT INTO chat_messages (id,project_id,role,content,created_at) ' +
       'VALUES (?,?,?,?,?)')
-      .bind(uid(), proj.id, 'user', text.slice(0, 2000), now()).run();
-    const jobId = uid();
+      .bind(uid(), proj.id, 'user', userMsg, now()).run();
+
+    const krow = await env.DB.prepare(
+      'SELECT key_ct, key_iv FROM users WHERE id = ?')
+      .bind(user.userId).first();
+    let key;
+    try { key = await unwrapKey(env, krow.key_ct, krow.key_iv); }
+    catch (_) { return bad('your stored key could not be unlocked; ' +
+      're-enter it in Settings', 409); }
+
+    const history = ((await env.DB.prepare(
+      'SELECT role, content FROM chat_messages WHERE project_id = ? ' +
+      'ORDER BY created_at DESC LIMIT 10').bind(proj.id).all())
+      .results || []).reverse();
+    const revs = ((await env.DB.prepare(
+      'SELECT num, request_text, status, qa_pass FROM revisions ' +
+      'WHERE project_id = ? ORDER BY num').bind(proj.id).all())
+      .results || []);
+    const contract = Object.fromEntries(Object.entries(ALLOWED_OPS)
+      .map(([k, v]) => [k, Object.fromEntries(Object.entries(v.params)
+        .map(([pn, ps]) => [pn, ps.join(' ')]))]));
+    const sys = { role: 'system', content:
+      'You are the creative editing partner inside AutoEditor. You work ' +
+      'WITH the person, back and forth, until their video is right. ' +
+      `Project type: ${proj.type}. ` +
+      `Transcript excerpt: ${(proj.transcript || '(none yet)')
+        .slice(0, 1500)}. ` +
+      `Revisions so far: ${JSON.stringify(revs).slice(0, 600)}. ` +
+      'Respond with ONLY a JSON object, one of:\n' +
+      '{"mode":"reply","text":"<conversational answer, advice, options, ' +
+      'or clarifying question>"}\n' +
+      '{"mode":"edit","summary":"<one sentence>","operations":[...]}\n' +
+      'Use mode "edit" ONLY when they clearly asked for a change. Allowed ' +
+      `operations (use ONLY these, max 8): ${JSON.stringify(contract)}. ` +
+      'If their request needs an operation that does not exist, use mode ' +
+      '"reply" to say what you CAN do instead. Be warm, specific, concise.' };
+    const msgs = [sys, ...history.map((h) => ({ role: h.role === 'user'
+      ? 'user' : 'assistant', content: h.content.slice(0, 1500) }))];
+    const res = await deepseekChat(key, msgs,
+      { model: 'deepseek-v4-pro', max_tokens: 900 });
+    key = null;
+    if (!res.ok) {
+      return bad('DeepSeek did not respond (key out of credit?). Try ' +
+        'again in a moment.', 502);
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(res.text.slice(res.text.indexOf('{'),
+        res.text.lastIndexOf('}') + 1));
+    } catch (_) { parsed = { mode: 'reply', text: res.text.slice(0, 1500) }; }
+
+    if (parsed.mode === 'edit') {
+      const { clean, needsApproval, errors } = validateProposal(parsed);
+      if (!clean) {
+        const msg = 'I couldn\'t turn that into a safe edit ' +
+          `(${(errors || []).join('; ').slice(0, 150)}). Tell me more ` +
+          'about what you want and we\'ll get there.';
+        await env.DB.prepare(
+          'INSERT INTO chat_messages (id,project_id,role,content,' +
+          'created_at) VALUES (?,?,?,?,?)')
+          .bind(uid(), proj.id, 'assistant', msg, now()).run();
+        return j({ reply: msg });
+      }
+      const count = await env.DB.prepare(
+        'SELECT COUNT(*) AS n FROM revisions WHERE project_id = ?')
+        .bind(proj.id).first();
+      const revId = uid();
+      await env.DB.prepare(
+        'INSERT INTO revisions (id,project_id,num,request_text,' +
+        'proposal_json,needs_approval,status,created_at) ' +
+        'VALUES (?,?,?,?,?,?,?,?)')
+        .bind(revId, proj.id, (count.n || 0) + 1, userMsg,
+          JSON.stringify(clean), needsApproval ? 1 : 0,
+          needsApproval ? 'proposed' : 'approved', now()).run();
+      const summary = clean.summary ||
+        'Here\'s what I\'ll change.';
+      await env.DB.prepare(
+        'INSERT INTO chat_messages (id,project_id,role,content,' +
+        'created_at) VALUES (?,?,?,?,?)')
+        .bind(uid(), proj.id, 'assistant', summary, now()).run();
+      if (needsApproval) {
+        await setStatus(env, proj.id, 'awaiting approval');
+        return j({ reply: summary, proposal: clean, revision_id: revId,
+          needs_approval: true });
+      }
+      // visual-only: queue the apply render right away
+      const jobId = uid();
+      await env.DB.prepare(
+        'INSERT INTO jobs (id,project_id,user_id,kind,payload_json,' +
+        'created_at) VALUES (?,?,?,?,?,?)')
+        .bind(jobId, proj.id, user.userId, 'revision_apply',
+          JSON.stringify({ revision_id: revId }), now()).run();
+      await setStatus(env, proj.id, 'applying revision');
+      return j({ reply: summary + ' Applying it now — keep your Helper ' +
+        'open to render.', proposal: clean, revision_id: revId,
+      needs_approval: false });
+    }
+
+    const replyText = String(parsed.text || 'Tell me more.').slice(0, 2000);
     await env.DB.prepare(
-      'INSERT INTO jobs (id,project_id,user_id,kind,payload_json,' +
-      'created_at) VALUES (?,?,?,?,?,?)')
-      .bind(jobId, proj.id, user.userId, 'chat_proposal',
-        JSON.stringify({ text: text.slice(0, 2000) }), now()).run();
-    await setStatus(env, proj.id, 'planning');
-    return j({ job_id: jobId });
+      'INSERT INTO chat_messages (id,project_id,role,content,created_at) ' +
+      'VALUES (?,?,?,?,?)')
+      .bind(uid(), proj.id, 'assistant', replyText, now()).run();
+    return j({ reply: replyText });
   }
 
   if ((m = p.match(/^\/revisions\/(\w+)\/(approve|reject)$/))

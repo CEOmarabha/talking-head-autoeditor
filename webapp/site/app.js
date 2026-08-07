@@ -49,6 +49,12 @@ async function boot() {
 
 async function dash() {
   show('dash');
+  // self-serve: connect code + OTP state
+  api('/me/connect-code').then((r) => {
+    $('cc-value').value = r.connect_code;
+  }).catch(() => {});
+  $('otp-on').classList.toggle('hidden', !state.me.hasOtp);
+  $('otp-off').classList.toggle('hidden', !!state.me.hasOtp);
   const t = $('types'); t.innerHTML = '';
   TYPES.forEach(([id, name, desc]) => {
     const d = document.createElement('div');
@@ -229,11 +235,50 @@ $('chat-send').onclick = async () => {
   const text = $('chat-input').value.trim();
   if (!text) return;
   $('chat-input').value = '';
+  // optimistic bubble so the back-and-forth feels instant
+  const chatBox = $('chat');
+  const mine = document.createElement('div');
+  mine.className = 'msg user'; mine.textContent = text;
+  chatBox.appendChild(mine);
+  const thinking = document.createElement('div');
+  thinking.className = 'msg assistant'; thinking.textContent = '…';
+  chatBox.appendChild(thinking);
+  chatBox.scrollTop = chatBox.scrollHeight;
   try {
-    await api(`/projects/${state.projectId}/chat`, { method: 'POST',
-      body: { text } });
-    renderProject();
+    const r = await api(`/projects/${state.projectId}/chat`,
+      { method: 'POST', body: { text } });
+    thinking.textContent = r.reply || '…';
+  } catch (e) { thinking.textContent = 'Sorry — ' + e.message; }
+  renderProject();
+};
+
+// ---- self-serve settings
+$('cc-copy').onclick = () => {
+  $('cc-value').select();
+  navigator.clipboard.writeText($('cc-value').value).catch(() => {});
+};
+$('otp-start').onclick = async () => {
+  try {
+    const r = await api('/me/otp/setup', { method: 'POST' });
+    $('otp-secret').value = r.secret;
+    $('otp-link').href = r.otpauth;
+    $('otp-setup').classList.remove('hidden');
+    $('otp-off').classList.add('hidden');
   } catch (e) { alert(e.message); }
+};
+$('otp-copy').onclick = () => {
+  $('otp-secret').select();
+  navigator.clipboard.writeText($('otp-secret').value).catch(() => {});
+};
+$('otp-verify').onclick = async () => {
+  try {
+    await api('/me/otp/verify', { method: 'POST',
+      body: { code: $('otp-code').value.trim() } });
+    $('otp-msg').textContent = 'Quick codes are on!';
+    $('otp-setup').classList.add('hidden');
+    $('otp-on').classList.remove('hidden');
+    state.me.hasOtp = true;
+  } catch (e) { $('otp-msg').textContent = e.message; }
 };
 $('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') $('chat-send').click();
