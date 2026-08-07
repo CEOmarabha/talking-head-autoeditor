@@ -10,7 +10,7 @@
       <span class="brand-mark" aria-hidden="true">OM</span>
       <div><h1>AutoEditor Helper</h1>
       <p>Runs video edits on this computer.</p></div></div>
-      <span id="status" class="pill">Checking</span></header>
+      <span id="status" class="pill" role="status" aria-live="polite">Checking</span></header>
 
     <section id="setup" class="card hidden">
       <h2>Finish one-time setup</h2>
@@ -145,7 +145,7 @@
 
     <section id="ready" class="card hidden">
       <h2 id="headline">Ready</h2>
-      <p id="detail">Leave this app open while AutoEditor makes your video.</p>
+      <p id="detail" aria-live="polite">Leave this app open while AutoEditor makes your video.</p>
       <div class="actions">
         <button id="start" class="primary">Start Helper</button>
         <button id="stop">Stop</button>
@@ -156,7 +156,7 @@
 
     <section class="card">
       <h2>Built-in checks</h2>
-      <div id="checks" class="checks"></div>
+      <div id="checks" class="checks" role="status" aria-live="polite"></div>
       <p class="small">Python, Node, FFmpeg, FFprobe, both speech models,
         HyperFrames, Remotion, a headless browser, fonts, certificates,
         profiles, and the editing engine are inside this app.</p>

@@ -20,9 +20,18 @@ const MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024;
 // ------------------------------------------------------------- helpers
 const uid = () => crypto.randomUUID().replaceAll('-', '').slice(0, 20);
 const now = () => Date.now();
+// Baseline hardening applied to EVERY worker response (API, media,
+// installer), not just static assets. secureSiteResponse adds the full
+// site CSP on top of this for HTML.
+const BASE_SECURITY_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
+};
 function j(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
-    status, headers: { ...JSONH, 'cache-control': 'no-store', ...headers },
+    status, headers: { ...JSONH, 'cache-control': 'no-store',
+      ...BASE_SECURITY_HEADERS, ...headers },
   });
 }
 function bad(msg, status = 400) { return j({ error: msg }, status); }
@@ -450,13 +459,18 @@ async function api(req, env, url) {
           'another', 409);
       }
       user = { id: uid(), name: who };
+      // Claim the invite FIRST, atomically. Two concurrent signups on one
+      // invite: only the request that flips used_by NULL->id proceeds.
+      const claim = await env.DB.prepare(
+        'UPDATE invites SET used_by = ? WHERE code = ? AND used_by IS NULL')
+        .bind(user.id, code).run();
+      if (!claim.meta || claim.meta.changes !== 1) {
+        return bad('that invite was just used; ask Omar for another', 403);
+      }
       await env.DB.prepare(
         'INSERT INTO users (id, name, invite_code, created_at) ' +
         'VALUES (?, ?, ?, ?)')
         .bind(user.id, user.name, code, now()).run();
-      await env.DB.prepare(
-        'UPDATE invites SET used_by = ? WHERE code = ?')
-        .bind(user.id, code).run();
     }
     return sessionFor(env, user.id, user.name);
   }
@@ -491,6 +505,11 @@ async function api(req, env, url) {
       hasOtp: !!(row && row.has_otp) });
   }
   if (p === '/me/key' && method === 'PUT') {
+    // each attempt fires a live DeepSeek call; cap per-user brute force
+    if (!(await withinRateLimit(env, req, `key:${user.userId}`, 20,
+        10 * 60 * 1000))) {
+      return bad('too many key attempts; wait a few minutes', 429);
+    }
     const { key } = await req.json().catch(() => ({}));
     if (!key || key.length < 20) return bad('that does not look like a key');
     // Validate against DeepSeek before storing: nothing works until the
@@ -513,6 +532,10 @@ async function api(req, env, url) {
   // help with setup or anything else the moment their key is in.
   if (p === '/assistant' && method === 'POST') {
     if (!user.hasKey) return bad('add your DeepSeek key first', 428);
+    if (!(await withinRateLimit(env, req, `assist:${user.userId}`, 40,
+        5 * 60 * 1000))) {
+      return bad('slow down a moment and try again', 429);
+    }
     const { messages } = await req.json().catch(() => ({}));
     if (!Array.isArray(messages) || !messages.length) {
       return bad('nothing to send');
@@ -751,6 +774,9 @@ async function api(req, env, url) {
       'SELECT u.*, p.user_id FROM uploads u JOIN projects p ' +
       'ON p.id = u.project_id WHERE u.id = ?').bind(m[1]).first();
     if (!up || up.user_id !== user.userId) return bad('not found', 404);
+    if (up.status !== 'uploading') {
+      return bad('this upload is already finished', 409);
+    }
     const partNum = parseInt(url.searchParams.get('n'), 10);
     const totalParts = Math.ceil(up.size / UPLOAD_PART_SIZE);
     if (!partNum || partNum < 1 || partNum > totalParts) {
@@ -759,9 +785,13 @@ async function api(req, env, url) {
     const expectedBytes = partNum === totalParts
       ? up.size - ((totalParts - 1) * UPLOAD_PART_SIZE) : UPLOAD_PART_SIZE;
     const lengthHeader = req.headers.get('content-length');
-    const suppliedBytes = lengthHeader === null ? null : Number(lengthHeader);
-    if (suppliedBytes !== null &&
-        (!Number.isFinite(suppliedBytes) || suppliedBytes !== expectedBytes)) {
+    // require a declared length and enforce the exact expected part size —
+    // a missing Content-Length must not skip the check.
+    if (lengthHeader === null) {
+      return bad('missing content-length on upload part', 411);
+    }
+    const suppliedBytes = Number(lengthHeader);
+    if (!Number.isFinite(suppliedBytes) || suppliedBytes !== expectedBytes) {
       return bad('upload part has the wrong size');
     }
     const mp = env.MEDIA.resumeMultipartUpload(up.r2_key, up.mp_upload_id);
@@ -778,6 +808,9 @@ async function api(req, env, url) {
       'SELECT u.*, p.user_id FROM uploads u JOIN projects p ' +
       'ON p.id = u.project_id WHERE u.id = ?').bind(m[1]).first();
     if (!up || up.user_id !== user.userId) return bad('not found', 404);
+    if (up.status !== 'uploading') {
+      return j({ ok: true, already: true });   // idempotent re-complete
+    }
     const parts = JSON.parse(up.parts_json || '[]')
       .sort((a, b) => a.partNumber - b.partNumber);
     const totalParts = Math.ceil(up.size / UPLOAD_PART_SIZE);
@@ -787,9 +820,13 @@ async function api(req, env, url) {
     }
     const mp = env.MEDIA.resumeMultipartUpload(up.r2_key, up.mp_upload_id);
     await mp.complete(parts);
-    await env.DB.prepare(
-      "UPDATE uploads SET status = 'done' WHERE id = ?").bind(up.id).run();
-    await setStatus(env, up.project_id, 'uploaded');
+    // atomic finish so a duplicate complete can't double-run R2 complete.
+    const done = await env.DB.prepare(
+      "UPDATE uploads SET status = 'done' WHERE id = ? " +
+      "AND status = 'uploading'").bind(up.id).run();
+    if (done.meta && done.meta.changes === 1) {
+      await setStatus(env, up.project_id, 'uploaded');
+    }
     return j({ ok: true });
   }
 
@@ -821,6 +858,10 @@ async function api(req, env, url) {
     const proj = await ownedProject(env, user, m[1]);
     if (!proj) return bad('not found', 404);
     if (!user.hasKey) return bad('add your DeepSeek key first', 428);
+    if (!(await withinRateLimit(env, req, `chat:${user.userId}`, 40,
+        5 * 60 * 1000))) {
+      return bad('slow down a moment and try again', 429);
+    }
     const { text } = await req.json().catch(() => ({}));
     if (!text || !text.trim()) return bad('empty request');
     const userMsg = text.slice(0, 2000);
@@ -947,9 +988,14 @@ async function api(req, env, url) {
       await setStatus(env, rev.project_id, 'ready');
       return j({ ok: true });
     }
-    await env.DB.prepare(
-      "UPDATE revisions SET status = 'approved' WHERE id = ?")
-      .bind(rev.id).run();
+    // atomic claim: only the request that flips proposed->approved queues
+    // the render, so a double-click / replay can't double-render.
+    const claimed = await env.DB.prepare(
+      "UPDATE revisions SET status = 'approved' WHERE id = ? " +
+      "AND status = 'proposed'").bind(rev.id).run();
+    if (!claimed.meta || claimed.meta.changes !== 1) {
+      return bad('already resolved');
+    }
     const jobId = uid();
     await env.DB.prepare(
       'INSERT INTO jobs (id,project_id,user_id,kind,payload_json,' +
@@ -969,13 +1015,19 @@ async function api(req, env, url) {
     if (!obj) return bad('not found', 404);
     const headers = { 'content-type': 'video/mp4',
       'accept-ranges': 'bytes', 'cache-control': 'private, no-store',
+      // media keys embed u/<userId>/<projectId>/... — no-referrer stops
+      // those paths leaking via the Referer header off-site.
+      'referrer-policy': 'no-referrer',
+      'strict-transport-security': 'max-age=31536000; includeSubDomains',
       'x-content-type-options': 'nosniff' };
     if (obj.range) {
       headers['content-range'] =
         `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}` +
         `/${obj.size}`;
+      headers['content-length'] = String(obj.range.length);
       return new Response(obj.body, { status: 206, headers });
     }
+    headers['content-length'] = String(obj.size);
     return new Response(obj.body, { headers });
   }
 

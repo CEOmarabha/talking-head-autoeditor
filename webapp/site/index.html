@@ -108,7 +108,7 @@
     </ol>
     <p><b>Your Setup code</b> <span class="muted">(copy this one thing;
       paste it into the Helper)</span></p>
-    <div class="row"><input id="cc-value" readonly>
+    <div class="row"><input id="cc-value" readonly aria-label="Your Setup code">
       <button id="cc-copy" class="ghost">Copy</button></div>
     <p class="muted" style="margin-top:8px">DeepSeek is required because it
       plans the edit and handles your change requests. Pexels, Pixabay, ElevenLabs, and a
@@ -129,12 +129,12 @@
         <p class="muted">1. Install any authenticator app (Google
         Authenticator, Authy...). 2. Add an account "enter key manually"
         and paste this key:</p>
-        <div class="row"><input id="otp-secret" readonly>
+        <div class="row"><input id="otp-secret" readonly aria-label="Authenticator setup key">
           <button id="otp-copy" class="ghost">Copy</button></div>
         <p class="muted">Or on your phone, tap:
           <a id="otp-link" href="#">add to authenticator</a></p>
         <p class="muted">3. Type the 6-digit code it shows:</p>
-        <div class="row"><input id="otp-code" maxlength="6"
+        <div class="row"><input id="otp-code" maxlength="6" aria-label="6-digit code from your authenticator app"
           placeholder="123456">
           <button id="otp-verify" class="primary">Turn on</button></div>
         <p id="otp-msg" class="muted"></p>
@@ -150,7 +150,7 @@
   <button id="back" class="ghost">&larr; All projects</button>
   <div class="card">
     <h2 id="p-title"></h2>
-    <p><span id="p-status" class="badge"></span>
+    <p><span id="p-status" class="badge" role="status" aria-live="polite"></span>
        <span id="p-detail" class="muted"></span></p>
 
     <div id="p-upload">

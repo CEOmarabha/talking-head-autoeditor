@@ -38,6 +38,10 @@ extraResources:
     to: profiles
   - from: staging/fonts
     to: fonts
+  # GPL binaries (FFmpeg/x264) are bundled below — ship their notices with
+  # them. Corresponding-source obligation is tracked separately (owner).
+  - from: staging/licenses
+    to: licenses
 
 publish:
   provider: github

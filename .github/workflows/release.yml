@@ -100,7 +100,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/staging/bin desktop/staging/lib \
-            desktop/staging/profiles desktop/staging/fonts
+            desktop/staging/profiles desktop/staging/fonts \
+            desktop/staging/licenses
+          # GPL FFmpeg/x264 are bundled below; ship their notices with them.
+          cp packaging/THIRD_PARTY_NOTICES.md desktop/staging/licenses/
+          cp LICENSE desktop/staging/licenses/AutoEditor-LICENSE.txt
           cp -r packaging/dist/autoeditor-engine desktop/staging/engine
           for p in ${{ steps.product.outputs.profiles }}; do
             cp -r "profiles/$p" "desktop/staging/profiles/$p"
