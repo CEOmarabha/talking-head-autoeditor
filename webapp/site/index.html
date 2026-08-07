@@ -22,14 +22,21 @@
   <p id="si-msg" class="muted"></p>
 </section>
 
-<!-- key setup -->
+<!-- key setup: the hard gate. Nothing else is reachable until this is a
+     VALID key that DeepSeek accepts. -->
 <section id="keysetup" class="card narrow hidden">
-  <h2>One-time setup</h2>
-  <p class="muted">Paste your DeepSeek API key. It is encrypted immediately
-  and never shown or logged anywhere. Get one at platform.deepseek.com.</p>
-  <label>DeepSeek API key<input id="key-input" type="password"></label>
-  <button id="key-save" class="primary">Save key</button>
+  <h2>Step 1: connect DeepSeek</h2>
+  <p class="muted">Paste your DeepSeek API key to unlock AutoEditor. It's
+  checked with DeepSeek, then encrypted, and never shown or logged again.
+  Get one at platform.deepseek.com (a few cents per video, billed to you).
+  </p>
+  <label>DeepSeek API key<input id="key-input" type="password"
+    placeholder="sk-..."></label>
+  <button id="key-save" class="primary">Check &amp; unlock</button>
   <p id="key-msg" class="muted"></p>
+  <p class="muted" style="margin-top:14px">Stuck? Once your key works, a
+  built-in DeepSeek helper appears in the corner that can walk you through
+  anything.</p>
 </section>
 
 <!-- dashboard -->
@@ -87,6 +94,20 @@
     </div>
     <details><summary class="muted">Revision history</summary>
       <ul id="revs" class="plist"></ul></details>
+  </div>
+</section>
+
+<!-- always-available DeepSeek help (appears once the key is valid) -->
+<button id="help-fab" class="hidden">Help</button>
+<section id="help-panel" class="hidden">
+  <div class="help-head">
+    <b>DeepSeek Help</b>
+    <button id="help-close" class="ghost">Close</button>
+  </div>
+  <div id="help-chat" class="chat"></div>
+  <div class="row">
+    <input id="help-input" placeholder="Ask anything… setup, errors, ideas">
+    <button id="help-send" class="primary">Send</button>
   </div>
 </section>
 

@@ -36,7 +36,13 @@ async function boot() {
     state.me = await api('/me');
     $('who').textContent = state.me.name;
     $('signout').classList.remove('hidden');
-    if (!state.me.hasKey) return show('keysetup');
+    // Hard gate: the ONLY thing you can do without a valid key is enter
+    // one. The help chat (which needs the key) turns on the moment it's in.
+    if (!state.me.hasKey) {
+      $('help-fab').classList.add('hidden');
+      return show('keysetup');
+    }
+    $('help-fab').classList.remove('hidden');
     await dash();
   } catch (_) { show('signin'); }
 }
@@ -242,13 +248,69 @@ $('si-go').onclick = async () => {
   } catch (e) { $('si-msg').textContent = e.message; }
 };
 $('key-save').onclick = async () => {
+  const btn = $('key-save');
+  btn.disabled = true;
+  $('key-msg').textContent = 'Checking your key with DeepSeek…';
   try {
     await api('/me/key', { method: 'PUT',
       body: { key: $('key-input').value.trim() } });
     $('key-input').value = '';
+    $('key-msg').textContent = 'Unlocked!';
     boot();
-  } catch (e) { $('key-msg').textContent = e.message; }
+  } catch (e) {
+    $('key-msg').textContent = e.message;
+  } finally { btn.disabled = false; }
 };
+
+// ---- built-in DeepSeek help chat (always available once key is valid)
+const helpHistory = [];
+function renderHelp() {
+  const box = $('help-chat'); box.innerHTML = '';
+  helpHistory.forEach((m) => {
+    const d = document.createElement('div');
+    d.className = 'msg ' + m.role;
+    d.textContent = m.content;
+    box.appendChild(d);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+$('help-fab').onclick = () => {
+  $('help-panel').classList.remove('hidden');
+  $('help-fab').classList.add('hidden');
+  if (!helpHistory.length) {
+    helpHistory.push({ role: 'assistant',
+      content: "Hi! I'm your DeepSeek helper. Ask me anything — setting up, " +
+        'an error you saw, or what to make. How can I help?' });
+    renderHelp();
+  }
+  $('help-input').focus();
+};
+$('help-close').onclick = () => {
+  $('help-panel').classList.add('hidden');
+  $('help-fab').classList.remove('hidden');
+};
+$('help-send').onclick = async () => {
+  const text = $('help-input').value.trim();
+  if (!text) return;
+  $('help-input').value = '';
+  helpHistory.push({ role: 'user', content: text });
+  renderHelp();
+  helpHistory.push({ role: 'assistant', content: '…' });
+  renderHelp();
+  try {
+    const r = await api('/assistant', { method: 'POST',
+      body: { messages: helpHistory.filter((m) => m.content !== '…') } });
+    helpHistory[helpHistory.length - 1] = { role: 'assistant',
+      content: r.reply || '(no reply)' };
+  } catch (e) {
+    helpHistory[helpHistory.length - 1] = { role: 'assistant',
+      content: 'Sorry — ' + e.message };
+  }
+  renderHelp();
+};
+$('help-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('help-send').click();
+});
 $('signout').onclick = async () => {
   await api('/auth/signout', { method: 'POST' });
   location.reload();

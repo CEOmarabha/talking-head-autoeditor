@@ -38,6 +38,35 @@ async function wrapKey(env, plaintext) {
   return { ct: b64(ct), iv: b64(iv.buffer) };
 }
 
+async function deepseekChat(key, messages, opts = {}) {
+  // Direct OpenAI-shaped call to DeepSeek, matching the engine's provider.
+  const r = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json',
+      authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: opts.model || 'deepseek-v4-flash',
+      messages,
+      max_tokens: opts.max_tokens || 700,
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    return { ok: false, status: r.status, body: body.slice(0, 300) };
+  }
+  const data = await r.json().catch(() => ({}));
+  const text = data?.choices?.[0]?.message?.content || '';
+  return { ok: true, text };
+}
+
+async function validateDeepseekKey(key) {
+  // A tiny real call proves the key works before we ever store it.
+  const res = await deepseekChat(key,
+    [{ role: 'user', content: 'reply with the single word: ok' }],
+    { max_tokens: 5 });
+  return res.ok;
+}
+
 async function unwrapKey(env, ctB64, ivB64) {
   // Used ONLY to hand a user's own key to that user's own authenticated
   // helper daemon over TLS (scope 'user'). The shared KEK never leaves
@@ -208,11 +237,58 @@ async function api(req, env, url) {
   if (p === '/me/key' && method === 'PUT') {
     const { key } = await req.json().catch(() => ({}));
     if (!key || key.length < 20) return bad('that does not look like a key');
-    const { ct, iv } = await wrapKey(env, key);
+    // Validate against DeepSeek before storing: nothing works until the
+    // key is real, and a bad key is rejected here with a clear message.
+    const valid = await validateDeepseekKey(key.trim());
+    if (!valid) {
+      return bad('That key did not work with DeepSeek. Double-check you ' +
+        'copied the whole key from platform.deepseek.com and that your ' +
+        'DeepSeek account has credit.', 422);
+    }
+    const { ct, iv } = await wrapKey(env, key.trim());
     await env.DB.prepare(
       'UPDATE users SET key_ct = ?, key_iv = ? WHERE id = ?')
       .bind(ct, iv, user.userId).run();
     return j({ ok: true }); // the key itself is never echoed anywhere
+  }
+
+  // ---------- help chat: talk to DeepSeek directly (needs a valid key).
+  // This is the always-available lifeline — a friend can ask DeepSeek for
+  // help with setup or anything else the moment their key is in.
+  if (p === '/assistant' && method === 'POST') {
+    if (!user.hasKey) return bad('add your DeepSeek key first', 428);
+    const { messages } = await req.json().catch(() => ({}));
+    if (!Array.isArray(messages) || !messages.length) {
+      return bad('nothing to send');
+    }
+    const row = await env.DB.prepare(
+      'SELECT key_ct, key_iv FROM users WHERE id = ?')
+      .bind(user.userId).first();
+    let key;
+    try { key = await unwrapKey(env, row.key_ct, row.key_iv); }
+    catch (_) { return bad('your stored key could not be unlocked; ' +
+      're-enter it in Settings', 409); }
+    const sys = { role: 'system', content:
+      'You are the friendly built-in helper inside AutoEditor, a website ' +
+      'that turns raw footage into finished videos. The person you are ' +
+      'helping may not be technical. Help them with setup (installing the ' +
+      'Helper app, FFmpeg, Python), using the site, understanding error ' +
+      'messages, or anything else. Be concise, warm, and concrete. Give ' +
+      'exact click-by-click or copy-paste steps and say which app to open ' +
+      'on Windows (PowerShell) or Mac (Terminal) when relevant.' };
+    const trimmed = messages
+      .filter((m) => m && typeof m.content === 'string' &&
+        (m.role === 'user' || m.role === 'assistant'))
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+    const res = await deepseekChat(key, [sys, ...trimmed],
+      { model: 'deepseek-v4-flash', max_tokens: 800 });
+    key = null;
+    if (!res.ok) {
+      return bad('DeepSeek did not respond (your key may be out of ' +
+        'credit). Try again in a moment.', 502);
+    }
+    return j({ reply: res.text });
   }
 
   // ---------- style presets
