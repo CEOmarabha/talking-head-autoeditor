@@ -8,6 +8,6 @@ echo "Publishing the website..."
 npx wrangler deploy
 echo "Uploading the Helper download..."
 npx wrangler r2 object put autoeditor-media/dist/helper.zip \
-  --file "$ROOT/webapp/helper.zip" --content-type application/zip
+  --remote --file "$ROOT/webapp/helper.zip" --content-type application/zip
 echo
 echo "Done. Site + Helper download are live."
