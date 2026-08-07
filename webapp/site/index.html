@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoEditor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>AutoEditor</h1>
+  <div><span id="who" class="muted"></span>
+    <button id="signout" class="ghost hidden">Sign out</button></div>
+</header>
+
+<!-- sign in -->
+<section id="signin" class="card narrow hidden">
+  <h2>Private beta</h2>
+  <label>Your name<input id="si-name" maxlength="60"></label>
+  <label>Invite code<input id="si-code"></label>
+  <button id="si-go" class="primary">Sign in</button>
+  <p id="si-msg" class="muted"></p>
+</section>
+
+<!-- key setup -->
+<section id="keysetup" class="card narrow hidden">
+  <h2>One-time setup</h2>
+  <p class="muted">Paste your DeepSeek API key. It is encrypted immediately
+  and never shown or logged anywhere. Get one at platform.deepseek.com.</p>
+  <label>DeepSeek API key<input id="key-input" type="password"></label>
+  <button id="key-save" class="primary">Save key</button>
+  <p id="key-msg" class="muted"></p>
+</section>
+
+<!-- dashboard -->
+<section id="dash" class="hidden">
+  <div class="card">
+    <h2>What are you making?</h2>
+    <div id="types" class="types"></div>
+  </div>
+  <div class="card">
+    <h2>Your projects</h2>
+    <ul id="projects" class="plist"></ul>
+  </div>
+</section>
+
+<!-- project view -->
+<section id="proj" class="hidden">
+  <button id="back" class="ghost">&larr; All projects</button>
+  <div class="card">
+    <h2 id="p-title"></h2>
+    <p><span id="p-status" class="badge"></span>
+       <span id="p-detail" class="muted"></span></p>
+
+    <div id="p-upload">
+      <div id="dropzone" class="dropzone">Drop your footage here or click
+        to choose. Big files are fine; uploads resume if interrupted.</div>
+      <ul id="p-files" class="plist"></ul>
+      <div id="up-progress" class="muted"></div>
+    </div>
+
+    <details id="p-scriptbox">
+      <summary>Script (optional but recommended)</summary>
+      <textarea id="p-script" rows="5"
+        placeholder="Paste the script you performed, if you had one. It makes the quality checks stricter."></textarea>
+    </details>
+
+    <button id="make" class="primary big">Make It</button>
+    <div id="p-progresslog" class="log hidden"></div>
+  </div>
+
+  <div id="p-result" class="card hidden">
+    <h2>Preview</h2>
+    <video id="player" controls playsinline></video>
+    <p id="qa-line" class="muted"></p>
+    <a id="download" class="primary btn" download>Download MP4</a>
+  </div>
+
+  <div class="card">
+    <h2>Ask for changes</h2>
+    <div id="chat" class="chat"></div>
+    <div id="proposal" class="proposal hidden"></div>
+    <div class="row">
+      <input id="chat-input"
+        placeholder='e.g. "Make the opening faster" or "Bigger captions"'>
+      <button id="chat-send" class="primary">Send</button>
+    </div>
+    <details><summary class="muted">Revision history</summary>
+      <ul id="revs" class="plist"></ul></details>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

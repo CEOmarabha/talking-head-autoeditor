@@ -1,0 +1,22 @@
+name = "autoeditor-web"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Static site (SPA)
+[assets]
+directory = "../site"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "autoeditor-web"
+database_id = "REPLACE_AFTER_wrangler_d1_create"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "autoeditor-media"
+
+# Secrets (set with `wrangler secret put`):
+#   KEY_WRAP_SECRET   32+ byte random string; wraps DeepSeek keys at rest
+#   WORKER_TOKEN      bearer token the render daemon uses
+#   ADMIN_TOKEN       Omar-only invite management

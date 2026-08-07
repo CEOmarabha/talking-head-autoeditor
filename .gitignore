@@ -12,7 +12,6 @@ __pycache__/
 # node
 node_modules/
 package-lock.json
-!desktop/package-lock.json
 
 # generated media + caches
 *.mp4
@@ -36,3 +35,8 @@ desktop/dist/
 desktop/staging/
 packaging/build/
 packaging/dist/
+
+# webapp
+webapp/worker/node_modules/
+webapp/worker/.wrangler/
+webapp/worker/.dev.vars
