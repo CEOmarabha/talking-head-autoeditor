@@ -107,3 +107,30 @@ acceptance (B11–B12); (6) if shipping the desktop product, fix C5–C9.
 
 Do not publish an unsigned artifact. A friend release is not "ready" until
 D1–D7 and E2–E3 are closed against the exact signed installers.
+
+--------------------------------------------------------------------------
+
+## Addendum 2026-08-07: real Mac acceptance run (unsigned DMG at c697aa3)
+
+Omar ran the first real-hardware Mac acceptance against an unsigned 2.2 GB
+`AutoEditor Helper` DMG. The editing core passed (engine + web tests, locked
+deps, frozen arm64 engine/daemon, bundled FFmpeg/Whisper/Node/HyperFrames/
+Remotion/Chrome, real HyperFrames and Remotion MP4 renders, DMG built and
+mounted, setup window usable). The installer itself FAILED acceptance. New
+gate rows, with the fixes committed after the run:
+
+| # | Gate | Status at run | Fix in this commit | Remaining owner action |
+|---|------|---------------|--------------------|------------------------|
+| F1 | Packed app contains creative runtime node_modules | FAIL — electron-builder pruned node_modules from extraResources; HyperFrames + Remotion missing in the DMG | explicit `creative-runtime/node_modules` file set in `electron-builder.helper.yml`; CI gate "Verify the packed app ships the complete creative runtime" inspects the PACKED app; contract test locks both | rebuild, confirm gate passes |
+| F2 | Packaged Helper smoke test | FAIL — downstream of F1 (preflight checks hyperframesCli/remotionCli existence) | resolved by F1; smoke unchanged (it caught the defect correctly) | re-run on rebuilt DMG |
+| F3 | Signature survives packaging (no post-seal Finder metadata) | FAIL — Finder metadata attached after sealing broke `codesign --strict` | plain DMG (no background/volume icon); staging stripped of `.DS_Store`/`._*`/xattrs before sealing; CI now verifies the app from a fresh DMG mount incl. FinderInfo xattr check | re-run; verify from the mounted DMG, not a Finder-browsed folder |
+| F4 | Mac CI calls the correct app executable | FAIL — hardcoded binary name was wrong | both workflows resolve `CFBundleExecutable` from the bundle's Info.plist | none |
+| F5 | FFmpeg pin accepts Homebrew bottle revisions | FAIL — guard rejected `8.1.2_1` (a rebuild of the same 8.1.2 source) | regex accepts `8.1.2(_N)?`, still rejects real version moves | none |
+| F6 | Real app icon | FAIL — default Electron icon | `desktop/build/icon.{icns,ico,png}` added and wired into both products | replace with final brand art whenever desired |
+| F7 | Developer ID signing + notarization | BLOCKED (unchanged, = D1–D3) | n/a | configure signing secrets |
+| F8 | Worker transaction fixes present | STALE FINDING — the report flagged them unresolved, but HEAD `c697aa3` contains all of them (atomic invite claim, atomic revision approval, atomic upload complete, rate limits, security headers; verified by line inspection on the device repo) | none needed | re-test against a Worker deployed from HEAD, not an older checkout |
+
+Order to green: rebuild the Mac DMG from this commit, repeat the mounted-DMG
+smoke + signature + launch + real-edit test, then build Windows, then the MSI
+friend-workflow walkthrough. The failed DMG at
+`work/mac-acceptance-c697aa3/` is evidence only — never distribute it.

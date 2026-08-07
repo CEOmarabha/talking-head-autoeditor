@@ -182,7 +182,10 @@ jobs:
         shell: bash
         run: |
           brew install ffmpeg
-          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2([[:space:]]|$)' || {
+          # Accept Homebrew bottle revisions (8.1.2, 8.1.2_1, 8.1.2_2...): the
+          # _N suffix is a Homebrew rebuild of the same upstream 8.1.2 source,
+          # not a version change. Reject anything else.
+          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2(_[0-9]+)?([[:space:]]|$)' || {
             echo "Homebrew FFmpeg moved from audited version 8.1.2. Review and repin before releasing." >&2
             exit 1
           }
@@ -346,6 +349,16 @@ jobs:
             --target-arch "${{ matrix.arch }}" \
             --version "${{ steps.release.outputs.version }}"
 
+      - name: Strip Finder metadata from staging before sealing
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # .DS_Store, AppleDouble files, and extended attributes inside the
+          # staged payload become detritus inside the signed app. Remove them
+          # BEFORE electron-builder copies resources and seals the bundle.
+          find desktop/helper-staging \( -name '.DS_Store' -o -name '._*' \) -delete
+          xattr -cr desktop/helper-staging
+
       - name: Build installer
         shell: bash
         working-directory: desktop
@@ -384,6 +397,45 @@ jobs:
             --${{ matrix.electron_target }} \
             --${{ matrix.arch }} --publish never
 
+      - name: Verify the packed app ships the complete creative runtime
+        shell: bash
+        run: |
+          # The 2026-08 Mac acceptance failed because electron-builder pruned
+          # node_modules out of extraResources, so HyperFrames and Remotion
+          # were missing from the actual DMG while every earlier stage passed.
+          # This gate inspects the PACKED app, not the staging directory.
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            RES=$(find desktop/helper-dist -maxdepth 2 -type d -name resources | head -1)
+            NODE_BIN="$RES/node/node.exe"
+            ENGINE_BIN="$RES/engine/autoeditor-engine.exe"
+            DAEMON_BIN="$RES/helper/autoeditor-helper-daemon.exe"
+          else
+            APP=$(find desktop/helper-dist -maxdepth 3 -type d -name '*.app' | head -1)
+            RES="$APP/Contents/Resources"
+            NODE_BIN="$RES/node/node"
+            ENGINE_BIN="$RES/engine/autoeditor-engine"
+            DAEMON_BIN="$RES/helper/autoeditor-helper-daemon"
+          fi
+          test -n "$RES" && test -d "$RES" || { echo "Packed resources not found" >&2; exit 1; }
+          for required in \
+            "$RES/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            "$RES/creative-runtime/node_modules/@remotion/cli/remotion-cli.js" \
+            "$RES/creative-runtime/package.json" \
+            "$RES/creative/hyperframes-graphics/vendor/gsap.min.js" \
+            "$RES/creative/remotion-viz/src/index.ts" \
+            "$NODE_BIN" "$ENGINE_BIN" "$DAEMON_BIN" \
+            "$RES/runtime-manifest.json"; do
+            test -e "$required" || {
+              echo "Packed app is missing: $required" >&2
+              exit 1
+            }
+          done
+          test -d "$RES/browser" && [ -n "$(ls -A "$RES/browser")" ] || {
+            echo "Packed app is missing the rendering browser" >&2
+            exit 1
+          }
+          echo "Packed creative runtime is complete."
+
       - name: Smoke-test installed Windows app and signature
         if: runner.os == 'Windows'
         shell: pwsh
@@ -421,17 +473,46 @@ jobs:
         env:
           TAGGED: ${{ steps.release.outputs.tagged }}
         run: |
-          APP=$(find desktop/helper-dist -maxdepth 3 -type d -name 'AutoEditor Helper.app' | head -1)
+          APP=$(find desktop/helper-dist -maxdepth 3 -type d -name '*.app' | head -1)
           DMG=$(find desktop/helper-dist -maxdepth 1 -type f -name '*.dmg' | head -1)
           test -n "$APP" && test -n "$DMG"
-          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/AutoEditor Helper"
+          # Never hardcode the binary name: resolve it from the bundle itself
+          # (2026-08 acceptance found the workflow calling the wrong name).
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          test -x "$APP/Contents/MacOS/$BIN" || {
+            echo "Bundle executable $BIN is missing from $APP" >&2
+            exit 1
+          }
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
           codesign --verify --deep --strict --verbose=2 "$APP"
           hdiutil verify "$DMG"
+          # Verify the app AS FRIENDS RECEIVE IT: from a fresh DMG mount. This
+          # catches Finder metadata attached after sealing, which passes on the
+          # loose build directory but fails on the shipped artifact.
+          MOUNT=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$MOUNTED_APP"
+          if xattr -l "$MOUNTED_APP" 2>/dev/null | \
+              grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
+            echo "Finder metadata is attached to the app inside the DMG" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
+          MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$MOUNTED_APP/Contents/Info.plist")
+          test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs"
+          test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/@remotion/cli/remotion-cli.js"
           if [[ "$TAGGED" == "true" ]]; then
-            spctl --assess --type execute --verbose=2 "$APP"
+            spctl --assess --type execute --verbose=2 "$MOUNTED_APP"
             xcrun stapler validate "$APP"
             xcrun stapler validate "$DMG"
           fi
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

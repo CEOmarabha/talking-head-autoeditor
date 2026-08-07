@@ -35,6 +35,17 @@ extraResources:
     to: node
   - from: helper-staging/creative-runtime
     to: creative-runtime
+    filter:
+      - "**/*"
+  # electron-builder prunes node_modules from extraResources directories that
+  # carry a package.json, which silently dropped HyperFrames and Remotion from
+  # the installed app (2026-08 Mac acceptance failure). List node_modules as
+  # its own explicit file set so the creative runtime always ships complete.
+  # CI additionally fails the build if the packed app is missing either CLI.
+  - from: helper-staging/creative-runtime/node_modules
+    to: creative-runtime/node_modules
+    filter:
+      - "**/*"
   - from: helper-staging/browser
     to: browser
   - from: helper-staging/creative
@@ -46,6 +57,7 @@ extraResources:
 
 mac:
   category: public.app-category.video
+  icon: build/icon.icns
   target:
     - target: dmg
   hardenedRuntime: true
@@ -55,10 +67,28 @@ mac:
   notarize: false
   minimumSystemVersion: "12.0"
 
+# Keep the DMG plain: no background image and no custom volume icon. The
+# Finder scripting those features require can attach Finder metadata after the
+# app is sealed, which breaks codesign --strict verification (2026-08 Mac
+# acceptance failure). CI re-verifies the app from a fresh DMG mount.
+dmg:
+  background: null
+  icon: null
+  writeUpdateInfo: false
+  contents:
+    - x: 130
+      y: 160
+      type: file
+    - x: 400
+      y: 160
+      type: link
+      path: /Applications
+
 afterSign: scripts/notarize.js
 afterAllArtifactBuild: scripts/notarize-artifacts.js
 
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
 

@@ -271,8 +271,12 @@ jobs:
           "$APP/Contents/Resources/engine/autoeditor-engine" --help >/dev/null
           "$APP/Contents/Resources/bin/ffmpeg" -version >/dev/null
           "$APP/Contents/Resources/bin/ffprobe" -version >/dev/null
+          # Resolve the binary name from the bundle instead of assuming it
+          # matches the product name (see 2026-08 Helper acceptance failure).
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
           AUTOEDITOR_SMOKE_TEST=1 \
-            "$APP/Contents/MacOS/$PRODUCT_NAME"
+            "$APP/Contents/MacOS/$BIN"
           EXPECTED="${{ steps.product.outputs.profiles }}"
           ACTUAL=$(find "$APP/Contents/Resources/profiles" \
             -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | \

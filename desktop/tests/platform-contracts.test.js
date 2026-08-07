@@ -56,3 +56,27 @@ assert.ok(ignoreRules.includes('!webapp/worker/package-lock.json'));
 const helperHtml = fs.readFileSync(
   path.join(desktop, 'helper', 'renderer', 'index.html'), 'utf8');
 assert.ok(helperHtml.includes('Built by Omar Marabha'));
+
+// 2026-08 Mac acceptance regressions must stay fixed.
+const helperBuilder = fs.readFileSync(
+  path.join(desktop, 'electron-builder.helper.yml'), 'utf8');
+// The creative runtime's node_modules ships as an explicit file set so
+// electron-builder cannot prune HyperFrames/Remotion out of the installer.
+assert.ok(helperBuilder.includes(
+  'from: helper-staging/creative-runtime/node_modules'));
+// The DMG stays plain: Finder customization attached metadata after sealing.
+assert.ok(helperBuilder.includes('background: null'));
+// Both products ship a real icon, not the default Electron one.
+assert.ok(helperBuilder.includes('icon: build/icon.icns'));
+assert.ok(fs.existsSync(path.join(desktop, 'build', 'icon.icns')));
+assert.ok(fs.existsSync(path.join(desktop, 'build', 'icon.ico')));
+// CI inspects the PACKED app for the creative runtime and verifies the app
+// from a fresh DMG mount, resolving the executable from Info.plist.
+assert.ok(helperWorkflow.includes(
+  'Verify the packed app ships the complete creative runtime'));
+assert.ok(helperWorkflow.includes('CFBundleExecutable'));
+assert.ok(helperWorkflow.includes('hdiutil attach'));
+// Homebrew bottle revisions (8.1.2_1) of the audited FFmpeg are accepted.
+assert.ok(helperWorkflow.includes('8\\.1\\.2(_[0-9]+)?'));
+assert.ok(workflow.includes('CFBundleExecutable'));
+console.log('platform contracts ok');
