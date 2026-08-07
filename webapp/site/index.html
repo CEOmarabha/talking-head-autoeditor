@@ -30,17 +30,37 @@
      VALID key that DeepSeek accepts. -->
 <section id="keysetup" class="card narrow hidden">
   <h2>Step 1: connect DeepSeek</h2>
-  <p class="muted">Paste your DeepSeek API key to unlock AutoEditor. It's
-  checked with DeepSeek, then encrypted, and never shown or logged again.
-  Get one at platform.deepseek.com (a few cents per video, billed to you).
-  </p>
+  <p class="muted">AutoEditor uses DeepSeek (an AI) to do the editing. You
+  bring your own DeepSeek key so it's your account, not shared. It costs a
+  few cents per video. Paste your key below to unlock everything.</p>
+
   <label>DeepSeek API key<input id="key-input" type="password"
-    placeholder="sk-..."></label>
+    placeholder="starts with sk-..."></label>
   <button id="key-save" class="primary">Check &amp; unlock</button>
   <p id="key-msg" class="muted"></p>
-  <p class="muted" style="margin-top:14px">Stuck? Once your key works, a
-  built-in DeepSeek helper appears in the corner that can walk you through
-  anything.</p>
+
+  <details style="margin-top:16px">
+    <summary><b>Don't have a key yet? Do this first (5 min)</b></summary>
+    <ol style="margin:10px 0 0 18px; font-size:14px; line-height:1.7">
+      <li>Open <a href="https://platform.deepseek.com/sign_up"
+        target="_blank" rel="noopener">platform.deepseek.com</a> and make a
+        free account (email + password).</li>
+      <li>Add a little credit: click <b>Top up</b> (or "Billing") and add
+        $5. That's enough for dozens of videos.</li>
+      <li>Click <b>API keys</b> in the left menu, then <b>Create new API
+        key</b>. Give it any name.</li>
+      <li>It shows the key <b>once</b> — click <b>Copy</b>. (It starts with
+        <code>sk-</code>.)</li>
+      <li>Come back here, paste it in the box above, and press
+        <b>Check &amp; unlock</b>.</li>
+    </ol>
+    <p class="muted" style="margin-top:8px">Tip: keep that DeepSeek tab open
+    until you've pasted the key here — you can't see it again later.</p>
+  </details>
+
+  <p class="muted" style="margin-top:14px">The moment your key works, a
+  yellow <b>Help</b> button appears in the corner — a built-in assistant
+  that can walk you through anything from there on.</p>
 </section>
 
 <!-- dashboard -->
@@ -53,14 +73,37 @@
     <h2>Your projects</h2>
     <ul id="projects" class="plist"></ul>
   </div>
+  <div class="card" id="helper-setup">
+    <h2>One-time: set up your Helper</h2>
+    <p class="muted">Your own computer does the video rendering, so there's
+    a small free Helper to set up once. You only do this the first time.</p>
+    <ol style="margin:6px 0 12px 18px; font-size:14px; line-height:1.8">
+      <li><b>Download the Helper</b> for your computer:<br>
+        <a id="dl-helper" class="btn primary" style="margin-top:6px"
+          href="/download/helper.zip" download>Download AutoEditor Helper</a>
+      </li>
+      <li>Unzip it (double-click the downloaded file), then open the
+        <b>Start Helper</b> file inside:
+        <span class="muted">on Windows double-click
+        <code>start-helper.bat</code>; on Mac double-click
+        <code>start-helper.command</code>.</span></li>
+      <li>The first time, it may ask to install a couple of free tools
+        (Python and FFmpeg) — say yes and let it finish.</li>
+      <li>When it asks, paste your <b>Setup code</b> (below) and press
+        Enter. Leave that little window open while you make a video.</li>
+    </ol>
+    <p><b>Your Setup code</b> <span class="muted">(copy this one thing;
+      paste it into the Helper when it asks)</span></p>
+    <div class="row"><input id="cc-value" readonly>
+      <button id="cc-copy" class="ghost">Copy</button></div>
+    <p class="muted" style="margin-top:8px">Stuck on any of this? Sign in,
+    then use the yellow <b>Help</b> button — it can walk you through your
+    exact computer step by step.</p>
+  </div>
+
   <details class="card">
-    <summary><b>Your Helper &amp; sign-in settings</b></summary>
+    <summary><b>Sign-in settings (optional)</b></summary>
     <div style="margin-top:10px">
-      <p><b>Helper connect code</b> <span class="muted">(paste into the
-        Helper app on your computer; it renders your videos)</span></p>
-      <div class="row"><input id="cc-value" readonly>
-        <button id="cc-copy" class="ghost">Copy</button></div>
-      <hr style="border-color:#232a32; margin:14px 0">
       <p><b>Quick sign-in codes</b> <span class="muted">(optional: sign in
         with a 6-digit code from a free authenticator app instead of your
         invite code)</span></p>

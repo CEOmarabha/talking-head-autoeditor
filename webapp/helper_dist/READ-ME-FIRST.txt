@@ -1,0 +1,12 @@
+AutoEditor Helper
+=================
+1. Double-click "Start Helper":
+   - Windows:  start-helper.bat
+   - Mac:      start-helper.command   (if it won't open: right-click > Open)
+2. If it asks to install Python or FFmpeg, follow the page it opens, then
+   double-click Start Helper again.
+3. When it asks, paste your SETUP CODE (copy it from the website, under
+   "set up your Helper") and press Return.
+4. Leave the window open while you make a video. Close it when done.
+
+Stuck? On the website, click the yellow Help button.

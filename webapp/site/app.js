@@ -51,7 +51,7 @@ async function dash() {
   show('dash');
   // self-serve: connect code + OTP state
   api('/me/connect-code').then((r) => {
-    $('cc-value').value = r.connect_code;
+    $('cc-value').value = r.setup_code || r.connect_code;
   }).catch(() => {});
   $('otp-on').classList.toggle('hidden', !state.me.hasOtp);
   $('otp-off').classList.toggle('hidden', !!state.me.hasOtp);

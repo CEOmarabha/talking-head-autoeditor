@@ -40,3 +40,6 @@ packaging/dist/
 webapp/worker/node_modules/
 webapp/worker/.wrangler/
 webapp/worker/.dev.vars
+
+webapp/helper.zip
+webapp/helper_dist/__pycache__/

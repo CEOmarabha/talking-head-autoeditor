@@ -265,6 +265,18 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
     try {
+      // public Helper download (from R2 so friends never need the private
+      // repo); contains no secrets, so unauthenticated is fine.
+      if (p === '/download/helper.zip') {
+        const obj = await env.MEDIA.get('dist/helper.zip');
+        if (!obj) return new Response('Helper not uploaded yet', {
+          status: 503 });
+        return new Response(obj.body, { headers: {
+          'content-type': 'application/zip',
+          'content-disposition':
+            'attachment; filename="AutoEditor-Helper.zip"',
+        } });
+      }
       if (p.startsWith('/api/')) return await api(req, env, url);
       return env.ASSETS.fetch(req);
     } catch (e) {
@@ -462,8 +474,11 @@ async function api(req, env, url) {
         .bind(token, user.userId, 'self-serve', now()).run();
       row = { token };
     }
-    return j({ connect_code: row.token,
-      site: new URL(req.url).origin });
+    const origin = new URL(req.url).origin;
+    // one-paste setup code = base64url("site|connectcode")
+    const setup = btoa(`${origin}|${row.token}`)
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return j({ connect_code: row.token, site: origin, setup_code: setup });
   }
 
   // ---------- optional OTP setup (their choice, tied to their account)
