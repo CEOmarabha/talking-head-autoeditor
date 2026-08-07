@@ -261,8 +261,8 @@ def handle_revision(job, project, uploads, key, preset) -> None:
 
 def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
-    if not TOKEN or not KEK:
-        sys.exit("WORKER_TOKEN and KEY_WRAP_SECRET are required")
+    if not TOKEN:
+        sys.exit("WORKER_TOKEN (or your personal connect code) is required")
     log(f"polling {API}")
     while True:
         try:
@@ -278,7 +278,9 @@ def main() -> None:
         log(f"job {job['id']} kind={job['kind']}")
         key = ""
         try:
-            if r.get("key_ct"):
+            if r.get("key_plain"):
+                key = r["key_plain"]   # user-scoped helper: own key only
+            elif r.get("key_ct"):
                 key = decrypt_key(r["key_ct"], r["key_iv"])
         except Exception:
             api(f"/worker/jobs/{job['id']}/complete",

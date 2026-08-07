@@ -10,13 +10,12 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "autoeditor-web"
-database_id = "REPLACE_AFTER_wrangler_d1_create"
+database_id = "28a0100d-7996-4d8d-b979-180086527c08"
 
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "autoeditor-media"
 
-# Secrets (set with `wrangler secret put`):
-#   KEY_WRAP_SECRET   32+ byte random string; wraps DeepSeek keys at rest
-#   WORKER_TOKEN      bearer token the render daemon uses
-#   ADMIN_TOKEN       Omar-only invite management
+# Secrets are already set in the Cloudflare dashboard and persist across
+# deploys: KEY_WRAP_SECRET, WORKER_TOKEN, ADMIN_TOKEN. To rotate them:
+#   npx wrangler secret put <NAME>

@@ -38,6 +38,20 @@ async function wrapKey(env, plaintext) {
   return { ct: b64(ct), iv: b64(iv.buffer) };
 }
 
+async function unwrapKey(env, ctB64, ivB64) {
+  // Used ONLY to hand a user's own key to that user's own authenticated
+  // helper daemon over TLS (scope 'user'). The shared KEK never leaves
+  // Worker secrets; friends' machines never see other users' keys.
+  const material = await crypto.subtle.importKey(
+    'raw', await crypto.subtle.digest('SHA-256',
+      enc.encode(env.KEY_WRAP_SECRET)),
+    'AES-GCM', false, ['decrypt']);
+  const un64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: un64(ivB64) }, material, un64(ctB64));
+  return new TextDecoder().decode(pt);
+}
+
 async function auth(req, env) {
   const cookie = req.headers.get('cookie') || '';
   const m = cookie.match(/session=([a-zA-Z0-9_-]+)/);
@@ -51,9 +65,18 @@ async function auth(req, env) {
   return { userId: s.id, name: s.name, hasKey: !!s.has_key };
 }
 
-function workerAuth(req, env) {
+async function workerAuth(req, env) {
+  // Returns {scope:'global'} for Omar's daemon, {scope:'user', userId} for
+  // a friend's personal daemon (only pulls THAT user's jobs), or null.
   const h = req.headers.get('authorization') || '';
-  return h === `Bearer ${env.WORKER_TOKEN}`;
+  if (!h.startsWith('Bearer ')) return null;
+  const tok = h.slice(7);
+  if (tok === env.WORKER_TOKEN) return { scope: 'global' };
+  const row = await env.DB.prepare(
+    'SELECT user_id FROM daemon_tokens WHERE token = ?').bind(tok).first();
+  if (!row) return null;
+  return row.user_id ? { scope: 'user', userId: row.user_id }
+    : { scope: 'global' };
 }
 function adminAuth(req, env) {
   const h = req.headers.get('authorization') || '';
@@ -108,6 +131,23 @@ async function api(req, env, url) {
     return j({ code });
   }
 
+  if (p === '/admin/daemon-tokens' && method === 'POST') {
+    if (!adminAuth(req, env)) return bad('forbidden', 403);
+    const { user_name, note } = await req.json().catch(() => ({}));
+    let userId = null;
+    if (user_name) {
+      const u = await env.DB.prepare(
+        'SELECT id FROM users WHERE name = ?').bind(user_name).first();
+      if (!u) return bad('no such user');
+      userId = u.id;
+    }
+    const token = crypto.randomUUID().replaceAll('-', '') + uid();
+    await env.DB.prepare(
+      'INSERT INTO daemon_tokens (token,user_id,note,created_at) ' +
+      'VALUES (?,?,?,?)').bind(token, userId, note || '', now()).run();
+    return j({ token, scoped_to: user_name || 'ALL USERS (global)' });
+  }
+
   // ---------- auth
   if (p === '/auth/signin' && method === 'POST') {
     const { invite_code, name } = await req.json().catch(() => ({}));
@@ -153,8 +193,9 @@ async function api(req, env, url) {
 
   // ---------- worker (render daemon) routes, bearer-token scoped
   if (p.startsWith('/worker/')) {
-    if (!workerAuth(req, env)) return bad('forbidden', 403);
-    return workerApi(req, env, p, method);
+    const scope = await workerAuth(req, env);
+    if (!scope) return bad('forbidden', 403);
+    return workerApi(req, env, p, method, scope);
   }
 
   // ---------- everything below requires a signed-in user
@@ -373,12 +414,16 @@ async function api(req, env, url) {
 }
 
 // ------------------------------------------------------------- daemon API
-async function workerApi(req, env, p, method) {
+async function workerApi(req, env, p, method, scope) {
   let m;
   if (p === '/worker/next-job' && method === 'POST') {
-    const job = await env.DB.prepare(
-      "SELECT * FROM jobs WHERE status = 'queued' " +
-      'ORDER BY created_at LIMIT 1').first();
+    const job = scope.scope === 'user'
+      ? await env.DB.prepare(
+        "SELECT * FROM jobs WHERE status = 'queued' AND user_id = ? " +
+        'ORDER BY created_at LIMIT 1').bind(scope.userId).first()
+      : await env.DB.prepare(
+        "SELECT * FROM jobs WHERE status = 'queued' " +
+        'ORDER BY created_at LIMIT 1').first();
     if (!job) return j({ job: null });
     await env.DB.prepare(
       "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?")
@@ -394,9 +439,16 @@ async function workerApi(req, env, p, method) {
     const preset = proj.style_preset_id ? await env.DB.prepare(
       'SELECT name, params_json FROM style_presets WHERE id = ?')
       .bind(proj.style_preset_id).first() : null;
-    // ciphertext only; the daemon decrypts with its local KEK
+    // user-scoped helper: hand the user their OWN key over TLS (no KEK
+    // distribution). Global daemon: ciphertext only + local KEK.
+    let key_plain = null;
+    if (scope.scope === 'user' && u && u.key_ct) {
+      try { key_plain = await unwrapKey(env, u.key_ct, u.key_iv); }
+      catch (_) { key_plain = null; }
+    }
     return j({ job, project: proj, uploads: uploads.results || [],
-      key_ct: u ? u.key_ct : null, key_iv: u ? u.key_iv : null, preset });
+      key_ct: u ? u.key_ct : null, key_iv: u ? u.key_iv : null,
+      key_plain, preset });
   }
   if ((m = p.match(/^\/worker\/jobs\/(\w+)\/progress$/))
       && method === 'POST') {
@@ -497,6 +549,9 @@ async function workerApi(req, env, p, method) {
   // R2 passthrough for the daemon (download raw, upload outputs)
   if ((m = p.match(/^\/worker\/media\/(.+)$/))) {
     const key = decodeURIComponent(m[1]);
+    if (scope.scope === 'user' && !key.startsWith(`u/${scope.userId}/`)) {
+      return bad('forbidden', 403);   // personal daemons touch own media only
+    }
     if (method === 'GET') {
       const obj = await env.MEDIA.get(key);
       if (!obj) return bad('not found', 404);

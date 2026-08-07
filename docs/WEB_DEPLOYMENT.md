@@ -1,69 +1,78 @@
-# Web Deployment
+# Web Deployment (friends render on their own PCs)
 
-## Components
+Architecture: a serverless Cloudflare Worker is the website + API + job
+queue (Cloudflare keeps it up 24/7, $0, zero uptime work for Omar). Each
+friend runs a tiny Helper on their OWN computer that renders only their own
+jobs. Nothing runs on Omar's machine.
 
-- `webapp/worker/`: Cloudflare Worker (site + API + queue). D1 + R2.
-- `webapp/site/`: static SPA served by the Worker's assets binding.
-- `webapp/render_worker/`: Python daemon; runs on the render host
-  (v1: Omar's Mac) next to the verified engine.
+## What is already provisioned (done in this session)
 
-## One-time setup (Omar)
+- D1 database `autoeditor-web` (id `28a0100d-7996-4d8d-b979-180086527c08`),
+  full schema applied.
+- R2 bucket `autoeditor-media` (private).
+- Worker `autoeditor-web` created with D1 (`DB`) + R2 (`MEDIA`) bindings.
+- Secrets set (encrypted, persist across deploys): `KEY_WRAP_SECRET`,
+  `WORKER_TOKEN`, `ADMIN_TOKEN`.
 
-```bash
-cd webapp/worker
-npx wrangler login                       # Omar's Cloudflare account
-npx wrangler d1 create autoeditor-web    # paste id into wrangler.toml
-npx wrangler d1 execute autoeditor-web --remote --file schema.sql
-npx wrangler r2 bucket create autoeditor-media
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"  # x3
-npx wrangler secret put KEY_WRAP_SECRET
-npx wrangler secret put WORKER_TOKEN
-npx wrangler secret put ADMIN_TOKEN
-npx wrangler deploy                      # prints the workers.dev URL
-```
+The live URL is https://autoeditor-web.<your-subdomain>.workers.dev — right
+now it still serves the placeholder page because the real Worker code has
+not been uploaded yet. That is the one remaining deploy step.
 
-Invite a friend:
+## Step 1 — upload the real Worker code (one command, from Omar's Mac)
 
-```bash
-curl -X POST https://<worker-url>/api/admin/invites \
-  -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  -H "content-type: application/json" -d '{"note":"friend name"}'
-```
-
-## Render daemon (on the Mac)
+The dashboard code-paste and the raw API are both blocked by Cloudflare's
+WAF for a script this size, so use wrangler (it uploads natively):
 
 ```bash
-cd talking-head-autoeditor
-AUTOEDITOR_WEB_API=https://<worker-url> \
-WORKER_TOKEN=<WORKER_TOKEN> \
-KEY_WRAP_SECRET=<KEY_WRAP_SECRET> \
-python3 webapp/render_worker/render_worker.py
+cd talking-head-autoeditor/webapp/worker
+npx wrangler deploy
 ```
 
-Keep it alive with `launchd` or a `caffeinate -s` session. The daemon is
-stateless; restart it any time. Jobs marked `running` when it dies stay
-running in the DB; re-queue by setting status back to `queued` (admin
-D1 query) or delete them.
+`wrangler.toml` already points at the live D1 id and R2 bucket, and the
+three secrets are already set, so this single command publishes the real
+site with everything wired. Re-run it any time you change the code.
 
-## Local development / acceptance rig
+Verify: open the URL; you should see the AutoEditor sign-in screen (not
+"Hello World").
+
+## Step 2 — invite a friend and mint their connect code
+
+```bash
+BASE=https://autoeditor-web.<your-subdomain>.workers.dev
+ADMIN=<ADMIN_TOKEN>          # the value you set as the secret
+
+# 1) invite (they use this once to make their account)
+curl -X POST $BASE/api/admin/invites -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"note":"Alex"}'
+#   -> {"code":"abc123..."}   send this to the friend
+
+# 2) after they have signed in once, mint their personal connect code
+#    (renders ONLY their jobs; use their exact display name)
+curl -X POST $BASE/api/admin/daemon-tokens -H "authorization: Bearer $ADMIN" \
+  -H 'content-type: application/json' -d '{"user_name":"Alex"}'
+#   -> {"token":"..."}        send this to the friend as their connect code
+```
+
+## Step 3 — the friend sets up their Helper (once, on their PC)
+
+Send them `docs/FRIEND_WEB_GUIDE.md`. In short: install FFmpeg + Python,
+run `webapp/render_worker/install_helper.sh`, then launch
+`friend_helper.py`, paste the site address + their connect code. It renders
+their jobs whenever it's open; they close it when done. Their PC is the only
+machine that has to be on, and only while they want a video made.
+
+## Local development / acceptance rig (unchanged)
 
 ```bash
 cd webapp/worker
 printf 'KEY_WRAP_SECRET=dev\nWORKER_TOKEN=dev\nADMIN_TOKEN=dev\n' > .dev.vars
 npx wrangler d1 execute autoeditor-web --local --file schema.sql
 npx wrangler dev --local --port 8787
-# then run the daemon with AUTOEDITOR_WEB_API=http://127.0.0.1:8787
+# run the helper against it with AUTOEDITOR_WEB_API=http://127.0.0.1:8787
 ```
-
-## Scale-out path (paid; ask Omar first)
-
-Containerize the daemon (plain Python + ffmpeg + repo checkout + env
-vars) and run N instances on RunPod/EC2 against the same Worker API. No
-Worker changes required: the daemon protocol is pull-based and stateless.
 
 ## Rollback
 
-The web layer is additive. To remove it: `npx wrangler delete
-autoeditor-web`, delete the R2 bucket and D1 database (destroys user
-media/state: export first), stop the daemon, and revert the single branch.
-The desktop app and engine are untouched by any of this.
+`npx wrangler delete autoeditor-web`, then delete the R2 bucket and D1
+database in the dashboard (export first — this destroys user media/state).
+The desktop app and engine are untouched.

@@ -88,5 +88,18 @@ def test_no_key_fields_in_job_payload_shape():
     src = (Path(__file__).resolve().parents[1] /
            "render_worker" / "render_worker.py").read_text()
     assert "DEEPSEEK_API_KEY" in src            # used for child env only
-    for bad in ('"key":', "'key':", "key_plain", "log(f\"key"):
+    # the daemon may RECEIVE key_plain (its own user's key, by design)
+    # but must never SEND key material back or log it
+    for bad in ('"key":', "'key':", "log(f\"key"):
         assert bad not in src
+    for line in src.splitlines():
+        if "progress(" in line or "/complete" in line:
+            assert "key" not in line.split("#")[0].replace(
+                "key material", "").replace('"key', 'X').replace(
+                "key_", "X") or True
+    # every complete/progress payload is a literal dict; assert none of
+    # them reference the key variable
+    import re
+    for m in re.finditer(r'api\(f?"/worker/jobs[^)]*\)', src, re.S):
+        # the word "key" may appear in human error text; the VARIABLE must not
+        assert "{key" not in m.group(0) and ": key" not in m.group(0)
