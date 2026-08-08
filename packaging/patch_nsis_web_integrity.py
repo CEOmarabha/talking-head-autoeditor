@@ -22,7 +22,7 @@ ORIGINAL_HASHES = {
     "webPackage.nsh": "2c0c0ab1ce525caf6ef908502d3ec007430986c3022c3987ccfaf021ddabe7b1",
 }
 PATCHED_HASHES = {
-    "installer.nsh": "d78593885ecdb62e335c225eadaea5f596791ae94aa6228b882d01d2e21afee5",
+    "installer.nsh": "6a026f48f4634da65ef1b24921a3a450f6b2e206dc8da3d1d3b6ad06f5c07005",
     "webPackage.nsh": "69d65a4280e7a9440cc798f3208e7f93acdcc2516bbda2ee52dc1e15b4fc95e1",
 }
 
@@ -39,7 +39,7 @@ INSTALLER_PATCHED = '''      fun_extract:
         StrCpy $1 "${APP_64_HASH}"
         ${StdUtils.HashFile} $3 "SHA2-512" "$packageFile"
         ${if} $3 != $1
-          MessageBox MB_OK|MB_ICONSTOP /SD IDOK "The AutoEditor runtime package failed its security check. Nothing was installed."
+          MessageBox MB_OK|MB_ICONSTOP "The AutoEditor runtime package failed its security check. Nothing was installed." /SD IDOK
           SetErrorLevel 3
           Quit
         ${endif}
