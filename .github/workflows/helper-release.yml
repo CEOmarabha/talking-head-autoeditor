@@ -384,24 +384,26 @@ jobs:
           cp "$STAGE/creative-runtime/node_modules/gsap/dist/gsap.min.js" \
             "$STAGE/creative/hyperframes-graphics/vendor/gsap.min.js"
           cp -R templates/remotion-viz "$STAGE/creative/remotion-viz"
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            NODE=$(realpath "$STAGE/node/node.exe")
-          else
-            NODE=$(realpath "$STAGE/node/node")
-          fi
-          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
-            browser ensure
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell.exe -print -quit)
-            DEST=chrome-headless-shell-win64
-          else
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell -print -quit)
-            DEST=chrome-headless-shell-mac
-          fi
-          test -n "$BROWSER" && test -f "$BROWSER"
-          cp -R "$(dirname "$BROWSER")" "$STAGE/browser/$DEST"
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses "$STAGE/licenses" \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --electron-dist-dir "$RUNNER_TEMP/electron-dist" \
+            --browser-dir "$STAGE/browser"
+
+      - name: Keep only the target ONNX Runtime native payload
+        shell: bash
+        run: |
+          python packaging/prune_onnxruntime_node.py \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --transaction-parent "$RUNNER_TEMP" \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
 
       - name: Prune the exact stale Windows Remotion FFmpeg runtime
         if: runner.os == 'Windows'
@@ -490,6 +492,17 @@ jobs:
       - name: Write exact runtime manifest
         shell: bash
         run: |
+          python packaging/prune_onnxruntime_node.py --verify-only \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/helper-staging/licenses \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
           python packaging/generate_helper_manifest.py \
             --stage desktop/helper-staging \
             --output desktop/helper-staging/runtime-manifest.json \
@@ -541,6 +554,7 @@ jobs:
           npx electron-builder --config electron-builder.helper.yml \
             --${{ matrix.electron_target }} \
             --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             "${EXTRA_CONFIG[@]}"
 
@@ -665,6 +679,9 @@ jobs:
             --target-os "${{ matrix.target_os }}" `
             --target-arch "${{ matrix.arch }}" `
             --version "${{ steps.release.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Installed frozen engine is missing" }
           & $engine --self-test
@@ -837,6 +854,12 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os windows --target-arch x64
           python ../packaging/prepare_nsis_web.py \
             --build-resources build \
             --licenses helper-staging/licenses
@@ -893,6 +916,7 @@ jobs:
           PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.azure.js \
             --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
 
@@ -910,6 +934,7 @@ jobs:
           PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.yml \
             --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
 
@@ -1064,6 +1089,9 @@ jobs:
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
             --target-os windows --target-arch x64 `
             --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Signed installed frozen engine is missing" }
           & $engine --self-test
@@ -1218,7 +1246,15 @@ jobs:
 
       - name: Install locked packaging dependencies without signing credentials
         working-directory: desktop
-        run: npm ci
+        shell: bash
+        run: |
+          npm ci
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os mac --target-arch "${{ matrix.arch }}"
 
       - name: Build the signed and notarized macOS installer
         shell: bash
@@ -1241,6 +1277,7 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           npx electron-builder --config electron-builder.helper.yml \
             --mac --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST"
 
       - name: Release duplicate signed staging bytes before acceptance
