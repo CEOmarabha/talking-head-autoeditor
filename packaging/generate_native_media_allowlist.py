@@ -756,7 +756,7 @@ def _validate_runtime_build_manifest(
     expected_algorithm = (
         "pe-authenticode-content-v1"
         if platform == "windows-x64"
-        else "raw-sha256-v1"
+        else "macho-codesign-content-v1"
     )
     if payload["receipt_algorithm"] != expected_algorithm:
         raise AllowlistGenerationError(
@@ -796,6 +796,7 @@ def _validate_runtime_build_manifest(
                 actual = helper_manifest.directory_receipt(
                     component_root,
                     normalize_windows_executables=platform == "windows-x64",
+                    normalize_macos_machos=platform in {"mac-arm64", "mac-x64"},
                 )
         except helper_manifest.ManifestReceiptError as exc:
             raise AllowlistGenerationError(

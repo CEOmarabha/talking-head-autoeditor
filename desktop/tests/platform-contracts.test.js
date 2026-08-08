@@ -477,6 +477,8 @@ assert.ok(helperWorkflow.includes(
   '--config.directories.output="$HELPER_DIST"'));
 assert.ok(helperWorkflow.includes('verify_helper_manifest.py'));
 assert.ok(helperManifestGenerator.includes('pe-authenticode-content-v1'));
+assert.ok(helperManifestGenerator.includes('macho-codesign-content-v1'));
+assert.ok(helperManifestVerifier.includes('macho-codesign-content-v1'));
 assert.ok(workflow.includes('pe-authenticode-content-v1'));
 assert.ok(workflow.includes(
   'normalize_windows_executables=normalize_windows'));

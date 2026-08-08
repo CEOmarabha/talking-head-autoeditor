@@ -75,6 +75,7 @@ MACHO_MAGICS = {
 }
 MH_EXECUTE = 0x2
 MH_DYLIB = 0x6
+MH_BUNDLE = 0x8
 LC_UUID = 0x1B
 LC_CODE_SIGNATURE = 0x1D
 LC_SEGMENT_64 = 0x19
@@ -131,7 +132,7 @@ class SourceFilePin:
 class MachMetadata:
     architecture: str
     kind: str
-    macho_uuid: str
+    macho_uuid: str | None
     has_code_signature: bool
     linkedit_vm_address: int
     linkedit_vm_size: int
@@ -593,6 +594,8 @@ def _parse_macho(
     label: str,
     *,
     allow_stripped_signed_vmsize: bool = False,
+    require_uuid: bool = True,
+    allow_exact_vmsize: bool = False,
 ) -> MachMetadata:
     if len(raw) < 32:
         raise MacRemotionReceiptError(f"truncated Mach-O file: {label}")
@@ -610,7 +613,11 @@ def _parse_macho(
     architecture = architectures.get(cpu_type)
     if architecture is None:
         raise MacRemotionReceiptError(f"unsupported Mach-O CPU type: {label}")
-    kind = {MH_EXECUTE: "executable", MH_DYLIB: "dylib"}.get(file_type)
+    kind = {
+        MH_EXECUTE: "executable",
+        MH_DYLIB: "dylib",
+        MH_BUNDLE: "bundle",
+    }.get(file_type)
     if kind is None:
         raise MacRemotionReceiptError(f"unsupported Mach-O kind: {label}")
     if (
@@ -672,7 +679,11 @@ def _parse_macho(
                 )
             code_signatures.append((data_offset, data_size))
         cursor += command_size
-    if cursor != command_end or len(uuids) != 1:
+    if (
+        cursor != command_end
+        or len(uuids) > 1
+        or (require_uuid and len(uuids) != 1)
+    ):
         raise MacRemotionReceiptError(
             f"Mach-O file must have exactly one UUID: {label}"
         )
@@ -703,12 +714,15 @@ def _parse_macho(
     signature_size: int | None = None
     if code_signatures:
         signature_offset, signature_size = code_signatures[0]
+        signed_vmsizes = {_round_up(file_size, 16 * 1024)}
+        if allow_exact_vmsize:
+            signed_vmsizes.update({file_size, _round_up(file_size, 4 * 1024)})
         if (
             signature_offset % 16
             or signature_offset < file_offset
             or signature_offset + signature_size != len(raw)
             or signature_offset + signature_size > file_offset + file_size
-            or vm_size != _round_up(file_size, 16 * 1024)
+            or vm_size not in signed_vmsizes
         ):
             raise MacRemotionReceiptError(
                 f"code signature is not the exact terminal __LINKEDIT suffix: {label}"
@@ -718,6 +732,8 @@ def _parse_macho(
             _round_up(file_size, 4 * 1024),
             _round_up(file_size, 16 * 1024),
         }
+        if allow_exact_vmsize:
+            canonical_sizes.add(file_size)
         if vm_size not in canonical_sizes:
             raise MacRemotionReceiptError(
                 f"unsigned Mach-O has noncanonical __LINKEDIT vmsize: {label}"
@@ -725,7 +741,7 @@ def _parse_macho(
     return MachMetadata(
         architecture=architecture,
         kind=kind,
-        macho_uuid=uuids[0],
+        macho_uuid=uuids[0] if uuids else None,
         has_code_signature=bool(code_signatures),
         linkedit_vm_address=vm_address,
         linkedit_vm_size=vm_size,
@@ -741,9 +757,34 @@ def _normalize_macho_bytes(
     raw: bytes,
     label: str,
     expected_linkedit_vmsize: int | None = None,
+    *,
+    max_bytes: int = MAX_MEMBER_BYTES,
+    require_uuid: bool = True,
+    general_codesign_layout: bool = False,
 ) -> bytes:
-    metadata = _parse_macho(raw, label)
+    metadata = _parse_macho(
+        raw,
+        label,
+        require_uuid=require_uuid,
+        allow_exact_vmsize=general_codesign_layout,
+    )
     if not metadata.has_code_signature:
+        if general_codesign_layout:
+            normalized_buffer = bytearray(raw)
+            struct.pack_into(
+                f"{MACHO_MAGICS[raw[:4]]}Q",
+                normalized_buffer,
+                metadata.linkedit_vmsize_offset,
+                metadata.linkedit_file_size,
+            )
+            normalized = bytes(normalized_buffer)
+            _parse_macho(
+                normalized,
+                f"normalized unsigned {label}",
+                require_uuid=require_uuid,
+                allow_exact_vmsize=True,
+            )
+            return normalized
         if (
             expected_linkedit_vmsize is not None
             and metadata.linkedit_vm_size != expected_linkedit_vmsize
@@ -821,12 +862,14 @@ def _normalize_macho_bytes(
         stripped, _, _ = _read_regular_path(
             temporary,
             f"normalized Mach-O temporary file {label}",
-            max_bytes=MAX_MEMBER_BYTES,
+            max_bytes=max_bytes,
         )
     stripped_metadata = _parse_macho(
         stripped,
         f"signature-stripped {label}",
         allow_stripped_signed_vmsize=True,
+        require_uuid=require_uuid,
+        allow_exact_vmsize=general_codesign_layout,
     )
     signature_offset = metadata.code_signature_offset
     if signature_offset is None:
@@ -853,13 +896,18 @@ def _normalize_macho_bytes(
         _round_up(stripped_metadata.linkedit_file_size, 4 * 1024),
         _round_up(stripped_metadata.linkedit_file_size, 16 * 1024),
     }
+    if general_codesign_layout:
+        canonical_sizes.add(stripped_metadata.linkedit_file_size)
     target_vmsize = expected_linkedit_vmsize
     if target_vmsize is None:
-        target_vmsize = (
-            _round_up(stripped_metadata.linkedit_file_size, 16 * 1024)
-            if metadata.architecture == "arm64"
-            else min(canonical_sizes)
-        )
+        if general_codesign_layout:
+            target_vmsize = stripped_metadata.linkedit_file_size
+        else:
+            target_vmsize = (
+                _round_up(stripped_metadata.linkedit_file_size, 16 * 1024)
+                if metadata.architecture == "arm64"
+                else min(canonical_sizes)
+            )
     if target_vmsize not in canonical_sizes:
         raise MacRemotionReceiptError(
             f"source __LINKEDIT vmsize is not canonical for {label}"
@@ -872,7 +920,12 @@ def _normalize_macho_bytes(
         target_vmsize,
     )
     normalized = bytes(normalized_buffer)
-    normalized_metadata = _parse_macho(normalized, f"normalized {label}")
+    normalized_metadata = _parse_macho(
+        normalized,
+        f"normalized {label}",
+        require_uuid=require_uuid,
+        allow_exact_vmsize=general_codesign_layout,
+    )
     if (
         normalized_metadata.architecture != metadata.architecture
         or normalized_metadata.kind != metadata.kind

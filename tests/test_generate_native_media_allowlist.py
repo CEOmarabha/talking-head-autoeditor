@@ -190,6 +190,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             components[name] = generator.helper_manifest.directory_receipt(
                 component,
                 normalize_windows_executables=platform == "windows-x64",
+                normalize_macos_machos=platform in {"mac-arm64", "mac-x64"},
             )
         return {
             "account_capabilities": {},
@@ -198,7 +199,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             "receipt_algorithm": (
                 "pe-authenticode-content-v1"
                 if platform == "windows-x64"
-                else "raw-sha256-v1"
+                else "macho-codesign-content-v1"
             ),
             "required_local_capabilities": [],
             "schema": generator.RUNTIME_BUILD_SCHEMA,

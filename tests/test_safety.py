@@ -316,7 +316,10 @@ class SafetyContracts(unittest.TestCase):
                 "python_utf8_mode",
                 payload["required_local_capabilities"],
             )
-            self.assertEqual(payload["receipt_algorithm"], "raw-sha256-v1")
+            self.assertEqual(
+                payload["receipt_algorithm"],
+                "macho-codesign-content-v1",
+            )
             self.assertEqual(
                 payload["account_capabilities"]["remotion"],
                 "required: free-license eligibility or paid key",
