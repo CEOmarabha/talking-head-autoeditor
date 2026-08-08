@@ -301,7 +301,7 @@ jobs:
             throw "Accepted Windows FFmpeg artifact name is not bound to this commit"
           }
           if ($env:WINDOWS_FFMPEG_ARTIFACT_DIGEST `
-              -notmatch '^sha256:[0-9a-f]{64}$') {
+              -notmatch '^[0-9a-f]{64}$') {
             throw "Accepted Windows FFmpeg artifact digest is invalid"
           }
           $expectedRoot = @(

@@ -32,6 +32,10 @@ class HelperWindowsFFmpegWorkflowTests(unittest.TestCase):
             "${{ needs.windows_ffmpeg.outputs.artifact_digest }}",
             self.workflow,
         )
+        self.assertIn("-notmatch '^[0-9a-f]{64}$'", self.workflow)
+        self.assertNotIn(
+            "-notmatch '^sha256:[0-9a-f]{64}$'", self.workflow
+        )
         self.assertIn(
             '$expectedName = "windows-ffmpeg-accepted-$env:GITHUB_SHA"',
             self.workflow,
