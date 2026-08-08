@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -144,6 +146,10 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             },
             "license_expression": "GPL-2.0-or-later",
             "outputs": {"ffmpeg": output, "ffprobe": ffprobe},
+            "runtime_notices": [
+                {**notice, "bytes": 1, "sha256": digest}
+                for notice in self.capability_value["runtime_notices"]
+            ],
             "runtime_smoke": {
                 "checks": list(verifier.RUNTIME_SMOKE_CHECKS),
                 "status": "passed",
@@ -168,6 +174,10 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         self.assertEqual(capabilities.sha256, verifier.EXPECTED_CAPABILITIES_SHA256)
         self.assertEqual(SOURCE_LOCK.read_bytes(), canonical(self.source_value))
         self.assertEqual(CAPABILITIES.read_bytes(), canonical(self.capability_value))
+        self.assertEqual(
+            self.capability_value["runtime_notices"],
+            verifier.EXPECTED_RUNTIME_NOTICES,
+        )
 
     def test_windows_checkout_preserves_canonical_contract_line_endings(self):
         attributes = GIT_ATTRIBUTES.read_text(encoding="utf-8").splitlines()
@@ -406,6 +416,67 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "archive drifted"):
                 verifier.verify_source_cache(loaded, cache)
 
+    def test_runtime_notice_is_byte_identical_to_nested_source_archive(self):
+        notice_raw = b"pinned upstream license text\n"
+        archive_member = "codec-deadbeef/COPYING"
+        inner_buffer = io.BytesIO()
+        with tarfile.open(fileobj=inner_buffer, mode="w:gz") as inner:
+            info = tarfile.TarInfo(archive_member)
+            info.size = len(notice_raw)
+            inner.addfile(info, io.BytesIO(notice_raw))
+        archive_raw = inner_buffer.getvalue()
+        notice_contract = {
+            "archive_member": archive_member,
+            "filename": "codec-COPYING",
+            "license_expression": "GPL-2.0-or-later",
+            "source_id": "codec",
+        }
+        source_value = {
+            "sources": [{
+                "archive": "codec-deadbeef.tar.gz",
+                "archive_sha256": hashlib.sha256(archive_raw).hexdigest(),
+                "id": "codec",
+            }],
+        }
+        capability_value = {"runtime_notices": [notice_contract]}
+        source = verifier.LoadedContract(
+            Path("source.json"),
+            canonical(source_value),
+            hashlib.sha256(canonical(source_value)).hexdigest(),
+        )
+        capabilities = verifier.LoadedContract(
+            Path("capabilities.json"),
+            canonical(capability_value),
+            hashlib.sha256(canonical(capability_value)).hexdigest(),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "source.tar"
+            with tarfile.open(bundle, mode="w") as outer:
+                info = tarfile.TarInfo(
+                    "autoeditor-corresponding-source/upstream/codec-deadbeef.tar.gz"
+                )
+                info.size = len(archive_raw)
+                outer.addfile(info, io.BytesIO(archive_raw))
+            license_dir = root / "licenses"
+            license_dir.mkdir()
+            (license_dir / "codec-COPYING").write_bytes(notice_raw)
+            self.assertEqual(
+                verifier.runtime_notice_receipts(
+                    license_dir, bundle, source, capabilities
+                ),
+                [{
+                    **notice_contract,
+                    "bytes": len(notice_raw),
+                    "sha256": hashlib.sha256(notice_raw).hexdigest(),
+                }],
+            )
+            (license_dir / "codec-COPYING").write_bytes(b"changed\n")
+            with self.assertRaisesRegex(verifier.WindowsFFmpegError, "differs"):
+                verifier.runtime_notice_receipts(
+                    license_dir, bundle, source, capabilities
+                )
+
     def test_required_inventory_accepts_exact_minimum_and_rejects_missing_filter(self):
         capabilities = verifier.load_capabilities(CAPABILITIES)
         required = self.capability_value["required"]
@@ -484,6 +555,30 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         args.append("--enable-network")
         with self.assertRaisesRegex(verifier.WindowsFFmpegError, "buildconf differs"):
             verifier.verify_inventory(inventory, args, capabilities)
+
+    def test_buildconf_ignores_ffmpeg_exit_diagnostic_after_arguments(self):
+        output = """
+configuration:
+  --disable-autodetect
+  --enable-gpl --enable-libx264
+
+Exiting with exit code 0
+"""
+        self.assertEqual(
+            verifier._buildconf(output),
+            ["--disable-autodetect", "--enable-gpl", "--enable-libx264"],
+        )
+        with self.assertRaisesRegex(verifier.WindowsFFmpegError, "invalid arguments"):
+            verifier._buildconf("configuration:\nnot-an-argument\n")
+        with self.assertRaisesRegex(verifier.WindowsFFmpegError, "invalid arguments"):
+            verifier._buildconf(
+                "configuration:\n--disable-network\nunexpected-tail\n"
+            )
+        with self.assertRaisesRegex(verifier.WindowsFFmpegError, "invalid arguments"):
+            verifier._buildconf(
+                "configuration:\n--disable-network\n"
+                "Exiting with exit code 0\n--enable-network\n"
+            )
 
     def test_pe_inspection_accepts_hardened_static_fixture(self):
         with tempfile.TemporaryDirectory() as td:
@@ -667,6 +762,12 @@ print(json.dumps({"streams": [
         self.assertIn("verify-configure-help", text)
         self.assertIn("verify-makefile", text)
         self.assertIn("make -j2 ffmpeg.exe ffprobe.exe", text)
+        for filename in (
+            "FFmpeg-COPYING.GPLv2",
+            "x264-COPYING",
+            "zlib-LICENSE",
+        ):
+            self.assertIn(f"/artifact/licenses/{filename}", text)
         self.assertIn('--user "$(id -u):$(id -g)"', text)
         self.assertIn('--volume "$nasm_prefix:/opt/nasm-3.01"', text)
         self.assertNotIn("HOST_UID", text)
@@ -682,6 +783,8 @@ print(json.dumps({"streams": [
         ).read_text(encoding="utf-8")
         self.assertIn("windows-ffmpeg-accepted-${{ github.sha }}", workflow)
         self.assertIn("compare-receipts", workflow)
+        self.assertEqual(workflow.count("--license-dir"), 2)
+        self.assertEqual(workflow.count("overwrite: true"), 3)
         self.assertLess(
             workflow.index("compare-receipts"),
             workflow.index("Upload accepted source-built runtime"),

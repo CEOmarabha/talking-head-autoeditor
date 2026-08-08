@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,13 +24,13 @@ from urllib.parse import urlsplit
 
 SOURCE_LOCK_SCHEMA = "autoeditor-windows-ffmpeg-sources/v1"
 CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
-RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v1"
+RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v2"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
     "9ddeb34ef69d577c77379dfeeccb7414400495119c9ca5d5888ea703fa5f63ab"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "b365d4fd074e3cf3bcc78c0426c0944060f68e079b649c9b59da6e63ab9fa4cf"
+    "19cfae4a5a705bc64d284cdf03de45233160dfc381c8ef3ff2d9d843b92c40e8"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -53,7 +55,7 @@ GIT_FETCH_FIELDS = {
 }
 CAPABILITY_ROOT_FIELDS = {
     "build", "forbidden", "license_expression", "required", "schema",
-    "target", "version_marker",
+    "runtime_notices", "target", "version_marker",
 }
 CAPABILITY_BUILD_FIELDS = {
     "configure_args", "container_image", "environment", "make",
@@ -67,9 +69,13 @@ CAPABILITY_FORBIDDEN_FIELDS = {
     "buildconf_tokens", "pe_import_patterns", "protocols",
 }
 RECEIPT_FIELDS = {
-    "build", "inventory", "license_expression", "outputs", "schema",
-    "runtime_smoke", "source", "target",
+    "build", "inventory", "license_expression", "outputs", "runtime_notices",
+    "schema", "runtime_smoke", "source", "target",
 }
+RUNTIME_NOTICE_CONTRACT_FIELDS = {
+    "archive_member", "filename", "license_expression", "source_id",
+}
+RUNTIME_NOTICE_RECEIPT_FIELDS = RUNTIME_NOTICE_CONTRACT_FIELDS | {"bytes", "sha256"}
 RECEIPT_SOURCE_FIELDS = {
     "bundle_bytes", "bundle_lock_sha256", "bundle_manifest_bytes",
     "bundle_manifest_sha256", "bundle_sha256", "primary_lock_sha256",
@@ -103,6 +109,32 @@ RUNTIME_SMOKE_CHECKS = [
     "lavfi-input",
     "libx264-aac-mp4",
     "wrapped-avframe-null-video",
+]
+EXPECTED_RUNTIME_NOTICES = [
+    {
+        "archive_member": (
+            "FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/COPYING.GPLv2"
+        ),
+        "filename": "FFmpeg-COPYING.GPLv2",
+        "license_expression": "GPL-2.0-or-later",
+        "source_id": "ffmpeg",
+    },
+    {
+        "archive_member": (
+            "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING"
+        ),
+        "filename": "x264-COPYING",
+        "license_expression": "GPL-2.0-or-later",
+        "source_id": "x264",
+    },
+    {
+        "archive_member": (
+            "zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca/LICENSE"
+        ),
+        "filename": "zlib-LICENSE",
+        "license_expression": "Zlib",
+        "source_id": "zlib",
+    },
 ]
 
 
@@ -183,6 +215,103 @@ def _require_regular_file(path: Path, label: str) -> os.stat_result:
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise WindowsFFmpegError(f"{label} must be a regular file, not a symlink")
     return metadata
+
+
+def runtime_notice_receipts(
+    license_dir: Path,
+    source_bundle: Path,
+    source_lock: LoadedContract,
+    capabilities: LoadedContract,
+) -> list[dict[str, Any]]:
+    try:
+        metadata = license_dir.lstat()
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot inspect Windows FFmpeg license directory {license_dir}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise WindowsFFmpegError(
+            "Windows FFmpeg license directory must be a directory, not a symlink"
+        )
+    try:
+        members = list(license_dir.iterdir())
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot enumerate Windows FFmpeg license directory {license_dir}: {exc}"
+        ) from exc
+    notices = capabilities.parsed()["runtime_notices"]
+    actual = {member.name for member in members}
+    expected = {notice["filename"] for notice in notices}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unexpected " + ", ".join(extra))
+        raise WindowsFFmpegError(
+            "Windows FFmpeg license set drifted (" + "; ".join(details) + ")"
+        )
+    sources = {source["id"]: source for source in source_lock.parsed()["sources"]}
+    try:
+        with tarfile.open(source_bundle, mode="r:") as outer:
+            outer_members = outer.getmembers()
+            receipts = []
+            for notice in notices:
+                source = sources[notice["source_id"]]
+                outer_name = (
+                    "autoeditor-corresponding-source/upstream/" + source["archive"]
+                )
+                matches = [member for member in outer_members if member.name == outer_name]
+                if len(matches) != 1 or not matches[0].isfile():
+                    raise WindowsFFmpegError(
+                        f"source bundle lacks one regular archive for {notice['source_id']}"
+                    )
+                outer_handle = outer.extractfile(matches[0])
+                if outer_handle is None:
+                    raise WindowsFFmpegError(
+                        f"cannot read source archive for {notice['source_id']}"
+                    )
+                archive_raw = outer_handle.read()
+                if sha256_bytes(archive_raw) != source["archive_sha256"]:
+                    raise WindowsFFmpegError(
+                        f"source archive for {notice['source_id']} differs from the source lock"
+                    )
+                with tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:*") as inner:
+                    inner_matches = [
+                        member for member in inner.getmembers()
+                        if member.name == notice["archive_member"]
+                    ]
+                    if len(inner_matches) != 1 or not inner_matches[0].isfile():
+                        raise WindowsFFmpegError(
+                            f"source archive lacks one regular {notice['archive_member']}"
+                        )
+                    inner_handle = inner.extractfile(inner_matches[0])
+                    if inner_handle is None:
+                        raise WindowsFFmpegError(
+                            f"cannot read source notice {notice['archive_member']}"
+                        )
+                    expected_raw = inner_handle.read()
+                filename = notice["filename"]
+                actual_raw = _read_regular_file(
+                    license_dir / filename,
+                    f"Windows FFmpeg runtime notice {filename}",
+                )
+                if not actual_raw or actual_raw != expected_raw:
+                    raise WindowsFFmpegError(
+                        f"Windows FFmpeg runtime notice {filename} differs from its source archive"
+                    )
+                receipts.append({
+                    **notice,
+                    "bytes": len(actual_raw),
+                    "sha256": sha256_bytes(actual_raw),
+                })
+            return receipts
+    except WindowsFFmpegError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise WindowsFFmpegError(f"cannot verify Windows FFmpeg runtime notices: {exc}") from exc
 
 
 def _exact_fields(value: dict[str, Any], expected: set[str], label: str) -> None:
@@ -370,6 +499,23 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
         )
     if value["license_expression"] != "GPL-2.0-or-later":
         raise WindowsFFmpegError("capability license expression drifted")
+    notices = value["runtime_notices"]
+    if not isinstance(notices, list):
+        raise WindowsFFmpegError("capability runtime_notices must be an array")
+    for index, notice in enumerate(notices):
+        if not isinstance(notice, dict):
+            raise WindowsFFmpegError(
+                f"capability runtime_notices[{index}] must be an object"
+            )
+        _exact_fields(
+            notice,
+            RUNTIME_NOTICE_CONTRACT_FIELDS,
+            f"capability runtime_notices[{index}]",
+        )
+        for field in RUNTIME_NOTICE_CONTRACT_FIELDS:
+            _trimmed_string(notice[field], f"runtime_notices[{index}].{field}")
+    if notices != EXPECTED_RUNTIME_NOTICES:
+        raise WindowsFFmpegError("capability runtime notice contract drifted")
     _trimmed_string(value["version_marker"], "version_marker")
     _validate_target(value["target"], include_machine=True, label="capability target")
 
@@ -759,15 +905,34 @@ def _run(executable: Path, arguments: list[str]) -> str:
 
 def _buildconf(output: str) -> list[str]:
     marker = "configuration:"
+    terminal_diagnostic = "Exiting with exit code 0"
     position = output.find(marker)
     if position < 0:
         raise WindowsFFmpegError("FFmpeg buildconf output lacks configuration")
-    text = output[position + len(marker):].strip()
-    try:
-        arguments = shlex.split(text)
-    except ValueError as exc:
-        raise WindowsFFmpegError(f"cannot parse FFmpeg buildconf: {exc}") from exc
-    if not arguments or any(not item.startswith("--") for item in arguments):
+    arguments = []
+    started = False
+    finished = False
+    for raw_line in output[position + len(marker):].splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if finished:
+            raise WindowsFFmpegError("FFmpeg buildconf contains invalid arguments")
+        if line == terminal_diagnostic:
+            if not started:
+                raise WindowsFFmpegError("FFmpeg buildconf contains invalid arguments")
+            finished = True
+            continue
+        try:
+            values = shlex.split(line)
+        except ValueError as exc:
+            raise WindowsFFmpegError(f"cannot parse FFmpeg buildconf: {exc}") from exc
+        if values and all(value.startswith("--") for value in values):
+            arguments.extend(values)
+            started = True
+            continue
+        raise WindowsFFmpegError("FFmpeg buildconf contains invalid arguments")
+    if not arguments:
         raise WindowsFFmpegError("FFmpeg buildconf contains invalid arguments")
     return arguments
 
@@ -1160,6 +1325,7 @@ def create_receipt(
     capabilities_path: Path,
     ffmpeg: Path,
     ffprobe: Path,
+    license_dir: Path,
     source_bundle: Path,
     source_manifest: Path,
     repository_commit: str,
@@ -1198,6 +1364,12 @@ def create_receipt(
             "ffmpeg": ffmpeg_receipt,
             "ffprobe": ffprobe_receipt,
         },
+        "runtime_notices": runtime_notice_receipts(
+            license_dir,
+            source_bundle,
+            source_lock,
+            capabilities,
+        ),
         "runtime_smoke": runtime_smoke,
         "schema": RECEIPT_SCHEMA,
         "source": source_receipt,
@@ -1218,6 +1390,26 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
         raise WindowsFFmpegError(f"build receipt schema must be {RECEIPT_SCHEMA}")
     if receipt["license_expression"] != "GPL-2.0-or-later":
         raise WindowsFFmpegError("build receipt license expression drifted")
+    notices = receipt["runtime_notices"]
+    if not isinstance(notices, list) or len(notices) != len(EXPECTED_RUNTIME_NOTICES):
+        raise WindowsFFmpegError("build receipt runtime_notices are incomplete")
+    for index, record in enumerate(notices):
+        if not isinstance(record, dict):
+            raise WindowsFFmpegError(
+                f"build receipt runtime_notices[{index}] must be an object"
+            )
+        _exact_fields(
+            record,
+            RUNTIME_NOTICE_RECEIPT_FIELDS,
+            f"build receipt runtime_notices[{index}]",
+        )
+        for field in RUNTIME_NOTICE_CONTRACT_FIELDS:
+            _trimmed_string(record[field], f"runtime_notices[{index}].{field}")
+        _positive_int(record["bytes"], f"runtime_notices[{index}].bytes")
+        if not SHA256_RE.fullmatch(str(record["sha256"])):
+            raise WindowsFFmpegError(
+                f"build receipt runtime_notices[{index}].sha256 is invalid"
+            )
     _validate_target(receipt["target"], include_machine=True, label="receipt target")
     source = receipt["source"]
     if not isinstance(source, dict):
@@ -1368,6 +1560,14 @@ def validate_receipt_against_contracts(
         raise WindowsFFmpegError("build receipt target differs from the pinned contract")
     if receipt["license_expression"] != source_contract["license_expression"]:
         raise WindowsFFmpegError("build receipt license differs from the pinned contract")
+    notice_contracts = [
+        {field: notice[field] for field in RUNTIME_NOTICE_CONTRACT_FIELDS}
+        for notice in receipt["runtime_notices"]
+    ]
+    if notice_contracts != capability_contract["runtime_notices"]:
+        raise WindowsFFmpegError(
+            "build receipt runtime notices differ from the pinned contract"
+        )
     if receipt["runtime_smoke"] != {
         "checks": RUNTIME_SMOKE_CHECKS,
         "status": "passed",
@@ -1427,6 +1627,7 @@ def _add_artifact_paths(parser: argparse.ArgumentParser, defaults: tuple[Path, P
     repo_root, _, _ = defaults
     parser.add_argument("--ffmpeg", type=Path, required=True)
     parser.add_argument("--ffprobe", type=Path, required=True)
+    parser.add_argument("--license-dir", type=Path, required=True)
     parser.add_argument("--source-bundle", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--repository-commit", required=True)
@@ -1593,6 +1794,7 @@ def main() -> None:
                 capabilities_path=args.capabilities,
                 ffmpeg=args.ffmpeg,
                 ffprobe=args.ffprobe,
+                license_dir=args.license_dir,
                 source_bundle=args.source_bundle,
                 source_manifest=args.source_manifest,
                 repository_commit=args.repository_commit,

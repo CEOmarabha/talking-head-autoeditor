@@ -44,6 +44,9 @@ The output directory contains:
 ```text
 ffmpeg.exe
 ffprobe.exe
+licenses/FFmpeg-COPYING.GPLv2
+licenses/x264-COPYING
+licenses/zlib-LICENSE
 windows-ffmpeg-corresponding-source.tar
 windows-ffmpeg-corresponding-source.manifest.json
 ```
@@ -62,6 +65,7 @@ executing the produced programs on Windows:
 python packaging/verify_windows_ffmpeg.py create-receipt `
   --ffmpeg artifacts\ffmpeg.exe `
   --ffprobe artifacts\ffprobe.exe `
+  --license-dir artifacts\licenses `
   --source-bundle artifacts\windows-ffmpeg-corresponding-source.tar `
   --source-manifest artifacts\windows-ffmpeg-corresponding-source.manifest.json `
   --repository-commit $env:GITHUB_SHA `
@@ -70,6 +74,7 @@ python packaging/verify_windows_ffmpeg.py create-receipt `
 ```
 
 The receipt binds the raw and Authenticode-normalized hash of both executables,
+the exact standalone FFmpeg, x264, and zlib license texts,
 PE imports and hardening fields, the full parsed codec, encoder, decoder,
 filter, format, protocol, and device inventories, the exact build
 configuration, both tracked contract hashes, the source bundle, its manifest,
@@ -84,6 +89,7 @@ python packaging/verify_windows_ffmpeg.py verify-receipt `
   --receipt artifacts\windows-ffmpeg-build-receipt.json `
   --ffmpeg artifacts\ffmpeg.exe `
   --ffprobe artifacts\ffprobe.exe `
+  --license-dir artifacts\licenses `
   --source-bundle artifacts\windows-ffmpeg-corresponding-source.tar `
   --source-manifest artifacts\windows-ffmpeg-corresponding-source.manifest.json `
   --repository-commit $env:GITHUB_SHA `

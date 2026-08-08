@@ -142,7 +142,18 @@ inside_container() {
   install -m 0755 ffprobe.exe /artifact/ffprobe.exe
   popd >/dev/null
 
-  touch -d "@$SOURCE_DATE_EPOCH" /artifact/ffmpeg.exe /artifact/ffprobe.exe
+  mkdir -p /artifact/licenses
+  install -m 0644 \
+    sources/FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/COPYING.GPLv2 \
+    /artifact/licenses/FFmpeg-COPYING.GPLv2
+  install -m 0644 \
+    sources/x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING \
+    /artifact/licenses/x264-COPYING
+  install -m 0644 \
+    sources/zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca/LICENSE \
+    /artifact/licenses/zlib-LICENSE
+  touch -d "@$SOURCE_DATE_EPOCH" \
+    /artifact/ffmpeg.exe /artifact/ffprobe.exe /artifact/licenses/*
   if find /artifact -maxdepth 1 -type f -iname '*.dll' -print -quit | grep -q .; then
     fail "The Windows FFmpeg artifact unexpectedly contains a DLL"
   fi

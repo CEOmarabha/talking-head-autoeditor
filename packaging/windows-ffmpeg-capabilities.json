@@ -251,6 +251,26 @@
       ]
     }
   },
+  "runtime_notices": [
+    {
+      "archive_member": "FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/COPYING.GPLv2",
+      "filename": "FFmpeg-COPYING.GPLv2",
+      "license_expression": "GPL-2.0-or-later",
+      "source_id": "ffmpeg"
+    },
+    {
+      "archive_member": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING",
+      "filename": "x264-COPYING",
+      "license_expression": "GPL-2.0-or-later",
+      "source_id": "x264"
+    },
+    {
+      "archive_member": "zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca/LICENSE",
+      "filename": "zlib-LICENSE",
+      "license_expression": "Zlib",
+      "source_id": "zlib"
+    }
+  ],
   "schema": "autoeditor-windows-ffmpeg-capabilities/v1",
   "target": {
     "arch": "x64",

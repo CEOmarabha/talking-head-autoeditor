@@ -61,6 +61,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+          overwrite: true
 
   receipt:
     needs: build
@@ -90,6 +91,7 @@ jobs:
           python packaging/verify_windows_ffmpeg.py create-receipt `
             --ffmpeg "$env:ARTIFACT\ffmpeg.exe" `
             --ffprobe "$env:ARTIFACT\ffprobe.exe" `
+            --license-dir "$env:ARTIFACT\licenses" `
             --source-bundle "$env:ARTIFACT\windows-ffmpeg-corresponding-source.tar" `
             --source-manifest "$env:ARTIFACT\windows-ffmpeg-corresponding-source.manifest.json" `
             --repository-commit "$env:GITHUB_SHA" `
@@ -99,6 +101,7 @@ jobs:
             --receipt "$env:ARTIFACT\windows-ffmpeg-build-receipt.json" `
             --ffmpeg "$env:ARTIFACT\ffmpeg.exe" `
             --ffprobe "$env:ARTIFACT\ffprobe.exe" `
+            --license-dir "$env:ARTIFACT\licenses" `
             --source-bundle "$env:ARTIFACT\windows-ffmpeg-corresponding-source.tar" `
             --source-manifest "$env:ARTIFACT\windows-ffmpeg-corresponding-source.manifest.json" `
             --repository-commit "$env:GITHUB_SHA" `
@@ -110,6 +113,7 @@ jobs:
           path: ${{ runner.temp }}/windows-ffmpeg/windows-ffmpeg-build-receipt.json
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   compare:
     needs: receipt
@@ -153,3 +157,4 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+          overwrite: true
