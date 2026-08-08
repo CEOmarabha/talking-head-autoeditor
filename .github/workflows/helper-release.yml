@@ -384,24 +384,15 @@ jobs:
           cp "$STAGE/creative-runtime/node_modules/gsap/dist/gsap.min.js" \
             "$STAGE/creative/hyperframes-graphics/vendor/gsap.min.js"
           cp -R templates/remotion-viz "$STAGE/creative/remotion-viz"
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            NODE=$(realpath "$STAGE/node/node.exe")
-          else
-            NODE=$(realpath "$STAGE/node/node")
-          fi
-          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
-            browser ensure
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell.exe -print -quit)
-            DEST=chrome-headless-shell-win64
-          else
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell -print -quit)
-            DEST=chrome-headless-shell-mac
-          fi
-          test -n "$BROWSER" && test -f "$BROWSER"
-          cp -R "$(dirname "$BROWSER")" "$STAGE/browser/$DEST"
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses "$STAGE/licenses" \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --browser-dir "$STAGE/browser"
 
       - name: Keep only the target ONNX Runtime native payload
         shell: bash
@@ -500,6 +491,12 @@ jobs:
       - name: Write exact runtime manifest
         shell: bash
         run: |
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/helper-staging/licenses \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
           python packaging/generate_helper_manifest.py \
             --stage desktop/helper-staging \
             --output desktop/helper-staging/runtime-manifest.json \

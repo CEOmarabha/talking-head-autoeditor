@@ -323,6 +323,18 @@ jobs:
             --stage-root desktop/staging \
             --package-lock packaging/helper-runtime/package-lock.json
 
+      - name: Stage hash-locked Electron and Chromium notices
+        shell: bash
+        run: |
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses desktop/staging/licenses \
+            --product pse \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+
       - name: Generate byte-verifiable product runtime manifest
         shell: bash
         env:
@@ -331,6 +343,12 @@ jobs:
           PRODUCT_VERSION: ${{ steps.product.outputs.version }}
           PRODUCT_ID: ${{ steps.product.outputs.product }}
         run: |
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/staging/licenses \
+            --product pse \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
           python - <<'PY'
           import json
           import os

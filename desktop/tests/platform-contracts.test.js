@@ -40,6 +40,12 @@ const helperManifestGenerator = fs.readFileSync(
   path.join(desktop, '..', 'packaging', 'generate_helper_manifest.py'), 'utf8');
 const helperManifestVerifier = fs.readFileSync(
   path.join(desktop, '..', 'packaging', 'verify_helper_manifest.py'), 'utf8');
+const electronChromiumProvenance = fs.readFileSync(
+  path.join(desktop, '..', 'packaging',
+    'stage_electron_chromium_provenance.py'), 'utf8');
+const electronChromiumLock = JSON.parse(fs.readFileSync(
+  path.join(desktop, '..', 'packaging',
+    'electron-chromium-provenance.lock.json'), 'utf8'));
 const workerSource = fs.readFileSync(
   path.join(desktop, '..', 'webapp', 'worker', 'src', 'index.js'), 'utf8');
 const engineSpec = fs.readFileSync(
@@ -115,6 +121,59 @@ assert.ok(helperWorkflow.includes('STAGE=$(realpath "$STAGE")'));
 assert.ok(helperWorkflow.includes(
   '"$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs"'));
 assert.ok(!helperWorkflow.includes('"$GITHUB_WORKSPACE/$STAGE/creative-runtime'));
+assert.ok(helperWorkflow.includes(
+  'stage_electron_chromium_provenance.py stage'));
+assert.ok(helperWorkflow.includes(
+  'stage_electron_chromium_provenance.py verify'));
+assert.ok(helperWorkflow.includes('--product helper'));
+assert.ok(helperWorkflow.includes('--browser-dir "$STAGE/browser"'));
+assert.ok(!helperWorkflow.includes('browser ensure'));
+const helperProvenanceStageAt = helperWorkflow.indexOf(
+  'stage_electron_chromium_provenance.py stage');
+const helperRenderProbeAt = helperWorkflow.indexOf(
+  '- name: Render real HyperFrames and Remotion probes');
+const helperProvenanceVerifyAt = helperWorkflow.indexOf(
+  'stage_electron_chromium_provenance.py verify');
+const helperManifestGenerationAt = helperWorkflow.indexOf(
+  'python packaging/generate_helper_manifest.py');
+assert.ok(helperProvenanceStageAt >= 0);
+assert.ok(helperRenderProbeAt > helperProvenanceStageAt);
+assert.ok(helperProvenanceVerifyAt > helperRenderProbeAt);
+assert.ok(helperManifestGenerationAt > helperProvenanceVerifyAt);
+assert.ok(workflow.includes('Stage hash-locked Electron and Chromium notices'));
+assert.ok(workflow.includes('stage_electron_chromium_provenance.py stage'));
+assert.ok(workflow.includes('stage_electron_chromium_provenance.py verify'));
+assert.ok(workflow.includes('--product pse'));
+const pseProvenanceStageAt = workflow.indexOf(
+  'stage_electron_chromium_provenance.py stage');
+const pseProvenanceVerifyAt = workflow.indexOf(
+  'stage_electron_chromium_provenance.py verify');
+const pseManifestGenerationAt = workflow.indexOf(
+  '- name: Generate byte-verifiable product runtime manifest');
+assert.ok(pseProvenanceStageAt >= 0);
+assert.ok(pseProvenanceVerifyAt > pseProvenanceStageAt);
+assert.ok(pseManifestGenerationAt > pseProvenanceStageAt);
+assert.ok(pseProvenanceVerifyAt > pseManifestGenerationAt);
+assert.ok(electronChromiumProvenance.includes(
+  'Electron npm package SHA-512 integrity drifted'));
+assert.ok(electronChromiumProvenance.includes(
+  'Chrome Headless Shell archive'));
+assert.strictEqual(electronChromiumLock.provenance_status, 'complete');
+assert.strictEqual(electronChromiumLock.electron.version, '43.3.0');
+assert.strictEqual(electronChromiumLock.electron.source.commit,
+  '1aa21d231aeaf5634880a6e60187256e9f2fd4f9');
+assert.strictEqual(electronChromiumLock.electron.chromium.commit,
+  '69bf1c67cb894365d151bd020bb0171fd583633a');
+assert.strictEqual(electronChromiumLock.chrome_headless_shell.version,
+  '152.0.7928.2');
+assert.strictEqual(electronChromiumLock.chrome_headless_shell.source.commit,
+  '8e122fd6ce1b7bb7bcef0fd0b2e96018ff110c4d');
+for (const product of ['electron', 'chrome_headless_shell']) {
+  assert.deepStrictEqual(Object.keys(electronChromiumLock[product].archives).sort(),
+    ['mac-arm64', 'mac-x64', 'windows-x64']);
+  assert.ok(Object.values(electronChromiumLock[product].archives).every(
+    (archive) => /^[0-9a-f]{64}$/.test(archive.sha256)));
+}
 assert.ok(helperWorkflow.includes('Get-AuthenticodeSignature'));
 assert.ok(helperWorkflow.includes('kind=azure'));
 assert.ok(helperWorkflow.includes('WIN_PFX_CERT_THUMBPRINT'));
