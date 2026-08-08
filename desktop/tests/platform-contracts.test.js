@@ -148,7 +148,10 @@ for (const releaseSource of [workflow, helperWorkflow]) {
   assert.ok(releaseSource.includes('brew fetch --force "$FORMULA"'));
   assert.ok(releaseSource.includes('HOMEBREW_NO_AUTO_UPDATE=1'));
   assert.ok(releaseSource.includes('HOMEBREW_NO_INSTALL_CLEANUP=1'));
-  assert.ok(releaseSource.includes("grep -Fx 'Homebrew 6.0.15'"));
+  assert.ok(releaseSource.includes('BREW_VERSION=$(brew --version)'));
+  assert.ok(releaseSource.includes(
+    'test "${BREW_VERSION%%$\'\\n\'*}" = \'Homebrew 6.0.15\''));
+  assert.ok(!releaseSource.includes('| head'));
   assert.ok(releaseSource.includes(
     'brew reinstall --force-bottle "$FORMULA"'));
   assert.ok(releaseSource.includes('brew reinstall --force-bottle ffmpeg'));
@@ -653,7 +656,10 @@ for (const unsignedJob of [helperUnsigned, pseUnsigned]) {
   const safetyAt = unsignedJob.indexOf(
     '- name: Run safety tests against the verified platform FFmpeg');
   const ffmpegAt = unsignedJob.indexOf('Bundle verified FFmpeg and FFprobe');
+  const desktopInstallAt = unsignedJob.indexOf('npm ci --prefix desktop');
   assert.ok(ffmpegAt > 0);
+  assert.ok(desktopInstallAt > ffmpegAt);
+  assert.ok(safetyAt > desktopInstallAt);
   assert.ok(safetyAt > ffmpegAt);
   const safetyStep = unsignedJob.slice(safetyAt,
     unsignedJob.indexOf('\n      - ', safetyAt + 8));
