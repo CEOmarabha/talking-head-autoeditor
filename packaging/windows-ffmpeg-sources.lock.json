@@ -1,0 +1,231 @@
+{
+  "license_expression": "GPL-2.0-or-later",
+  "link_closure": {
+    "evidence": [
+      "lld-map",
+      "lld-reproducer",
+      "lld-verbose"
+    ],
+    "status": "input-classification-unverified"
+  },
+  "schema": "autoeditor-windows-ffmpeg-sources/v2",
+  "source_date_epoch": 1785458830,
+  "sources": [
+    {
+      "archive": "ffmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b.tar.gz",
+      "archive_bytes": 16903934,
+      "archive_sha256": "7e779215eae16ad7e93ddad59bd82822bd3d34e4dc61f9996f9481b2c0605bc3",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b"
+      },
+      "git_ref": {
+        "commit": "9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b",
+        "kind": "commit",
+        "object": "9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b",
+        "tree": "d3beee09bdb9ccb2ab7f71a1e72210be2a93e5f6"
+      },
+      "id": "ffmpeg",
+      "license": [
+        "GPL-2.0-or-later",
+        "COPYING.GPLv2"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "runtime",
+      "version": "n8.1.2-34-g9b6c8969e0"
+    },
+    {
+      "archive": "llvm-mingw-170b7e1ec4ad1d9264e6ba320cd4d02f96299c60.tar.gz",
+      "archive_bytes": 70880,
+      "archive_sha256": "be6c80d7a8ac205b2b7da676030a4fd4e0a7f40e95cd3fdba772f325639c6117",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/mstorsjo/llvm-mingw/tar.gz/170b7e1ec4ad1d9264e6ba320cd4d02f96299c60"
+      },
+      "git_ref": {
+        "commit": "170b7e1ec4ad1d9264e6ba320cd4d02f96299c60",
+        "kind": "commit",
+        "object": "170b7e1ec4ad1d9264e6ba320cd4d02f96299c60",
+        "tree": "bc5f7040c389e8862daaee41c2fb837b2f1cad5a"
+      },
+      "id": "llvm-mingw",
+      "license": [
+        "ISC",
+        "LICENSE.txt"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "build-tool-source",
+      "version": "20260616"
+    },
+    {
+      "archive": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1.tar.gz",
+      "archive_bytes": 258325313,
+      "archive_sha256": "9dd0aba32a0c2b9e8e808e9b67502cc977f22220f67268bbfd937fa07e5ee6ce",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/llvm/llvm-project/tar.gz/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1"
+      },
+      "git_ref": {
+        "commit": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
+        "kind": "annotated-tag",
+        "object": "e013073558445169e8732e25fa86e9913bfdd24e",
+        "tree": "1e4fdb95266974a0cbca9ec4c6f740488322f238"
+      },
+      "id": "llvm-project",
+      "license": [
+        "Apache-2.0 WITH LLVM-exception",
+        "LICENSE.TXT",
+        "compiler-rt/LICENSE.TXT"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "toolchain-runtime-source",
+      "version": "llvmorg-22.1.8"
+    },
+    {
+      "archive": "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz",
+      "archive_bytes": 15766022,
+      "archive_sha256": "f07cfc452676fe1061c4b6c062335903dbe0d5d18cda6ab8ee6d94637d32a87a",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/mingw-w64/mingw-w64/tar.gz/c28e9555bb8800c53449f42a465ad9a5676fce88"
+      },
+      "git_ref": {
+        "commit": "c28e9555bb8800c53449f42a465ad9a5676fce88",
+        "kind": "commit",
+        "object": "c28e9555bb8800c53449f42a465ad9a5676fce88",
+        "tree": "16044fc7a8a2b36978b82ce8572f7280ba581268"
+      },
+      "id": "mingw-w64",
+      "license": [
+        "LicenseRef-MinGW-w64-runtime",
+        "COPYING",
+        "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "toolchain-runtime-source",
+      "version": "c28e9555bb8800c53449f42a465ad9a5676fce88"
+    },
+    {
+      "archive": "nasm-3.01.tar.xz",
+      "archive_bytes": 1499136,
+      "archive_sha256": "b7324cbe86e767b65f26f467ed8b12ad80e124e3ccb89076855c98e43a9eddd4",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md",
+        "packaging/patch_nasm_coff_timestamp.py"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://www.nasm.us/pub/nasm/releasebuilds/3.01/nasm-3.01.tar.xz"
+      },
+      "git_ref": {
+        "commit": "e9fac2faa62647bb50f1a61c26212c63c87090ae",
+        "kind": "annotated-tag",
+        "object": "19fd1bb434f2fed19b0eb82b1b42c5608b601134",
+        "tree": "f780f92b74638c0d3daf5ffffdb3c36c2ad8cc25"
+      },
+      "id": "nasm",
+      "license": [
+        "BSD-2-Clause",
+        "LICENSE"
+      ],
+      "patches": [
+        "packaging/patch_nasm_coff_timestamp.py"
+      ],
+      "role": "build-tool",
+      "version": "3.01"
+    },
+    {
+      "archive": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.gz",
+      "archive_bytes": 1040667,
+      "archive_sha256": "d0967a1348c85dfde363bb52610403be898171493100561efa0dd05d5fd1ae50",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/mirror/x264/tar.gz/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee"
+      },
+      "git_ref": {
+        "commit": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
+        "kind": "commit",
+        "object": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
+        "tree": "0b8e15dd14ad8d2fb8905df7785003b475236315"
+      },
+      "id": "x264",
+      "license": [
+        "GPL-2.0-or-later",
+        "COPYING"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "runtime-static-library",
+      "version": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee"
+    },
+    {
+      "archive": "zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca.tar.gz",
+      "archive_bytes": 1571579,
+      "archive_sha256": "33356dac6140d584347fe46bcf7083bd949dec49ac4b52417ae334ec70e3dbc3",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/madler/zlib/tar.gz/e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca"
+      },
+      "git_ref": {
+        "commit": "e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca",
+        "kind": "commit",
+        "object": "e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca",
+        "tree": "28feaf0a47eef3165c49b4ddbb1563aabb01ac68"
+      },
+      "id": "zlib",
+      "license": [
+        "Zlib",
+        "LICENSE"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "runtime-static-library",
+      "version": "e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca"
+    }
+  ],
+  "target": {
+    "arch": "x64",
+    "os": "windows",
+    "triple": "x86_64-w64-mingw32"
+  },
+  "toolchain": {
+    "image": "docker.io/mstorsjo/llvm-mingw:20260616",
+    "image_digest": "sha256:a6371b0e370e2e9839a147a8a23195ed986772f99ebf43123e31dbe20bfe2146",
+    "source_id": "llvm-mingw"
+  }
+}

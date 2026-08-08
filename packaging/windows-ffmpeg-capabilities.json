@@ -1,0 +1,312 @@
+{
+  "build": {
+    "configure_args": [
+      "--prefix=/opt/autoeditor-ffmpeg",
+      "--target-os=mingw32",
+      "--arch=x86_64",
+      "--enable-cross-compile",
+      "--cross-prefix=x86_64-w64-mingw32-",
+      "--cc=x86_64-w64-mingw32-clang",
+      "--cxx=x86_64-w64-mingw32-clang++",
+      "--ar=x86_64-w64-mingw32-ar",
+      "--ranlib=x86_64-w64-mingw32-ranlib",
+      "--nm=x86_64-w64-mingw32-nm",
+      "--strip=x86_64-w64-mingw32-strip",
+      "--windres=x86_64-w64-mingw32-windres",
+      "--x86asmexe=/opt/nasm-3.01/bin/nasm",
+      "--pkg-config=pkg-config",
+      "--pkg-config-flags=--static",
+      "--extra-cflags=-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -I/build/autoeditor-media/prefix/include",
+      "--extra-ldflags=-Wl,--nxcompat,--dynamicbase,--high-entropy-va,--no-insert-timestamp -L/build/autoeditor-media/prefix/lib",
+      "--extra-version=autoeditor.n8.1.2-34-g9b6c8969e0",
+      "--enable-gpl",
+      "--enable-static",
+      "--disable-shared",
+      "--enable-libx264",
+      "--enable-zlib",
+      "--disable-autodetect",
+      "--disable-network",
+      "--disable-protocols",
+      "--enable-protocol=file",
+      "--enable-protocol=pipe",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-stripping",
+      "--disable-ffplay",
+      "--disable-sdl2",
+      "--disable-indevs",
+      "--enable-indev=lavfi",
+      "--disable-outdevs",
+      "--disable-hwaccels",
+      "--disable-pthreads",
+      "--disable-mediafoundation",
+      "--disable-amf",
+      "--disable-cuda-llvm",
+      "--disable-cuvid",
+      "--disable-ffnvcodec",
+      "--disable-nvdec",
+      "--disable-nvenc",
+      "--disable-d3d11va",
+      "--disable-d3d12va",
+      "--disable-dxva2",
+      "--disable-opencl",
+      "--disable-vulkan",
+      "--disable-schannel",
+      "--disable-bzlib",
+      "--disable-iconv",
+      "--disable-lzma"
+    ],
+    "container_image": "docker.io/mstorsjo/llvm-mingw:20260616@sha256:a6371b0e370e2e9839a147a8a23195ed986772f99ebf43123e31dbe20bfe2146",
+    "environment": {
+      "COMMON_CFLAGS": "-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media",
+      "COMMON_LDFLAGS": "-Wl,--nxcompat,--dynamicbase,--high-entropy-va,--no-insert-timestamp",
+      "LC_ALL": "C",
+      "PATH_PREFIX": "/opt/nasm-3.01/bin",
+      "PREFIX": "/build/autoeditor-media/prefix",
+      "SOURCE_DATE_EPOCH": "1785458830",
+      "TARGET": "x86_64-w64-mingw32",
+      "TZ": "UTC",
+      "ZERO_AR_DATE": "1"
+    },
+    "link_evidence": {
+      "closure_status": "input-classification-unverified",
+      "formats": [
+        "lld-map",
+        "lld-reproducer",
+        "lld-verbose"
+      ],
+      "programs": [
+        "ffmpeg",
+        "ffprobe"
+      ]
+    },
+    "make": {
+      "jobs": 2,
+      "targets": [
+        "ffmpeg.exe",
+        "ffprobe.exe"
+      ]
+    },
+    "source_lock_sha256": "c4f222982b5f0d61f0a612108705802fa5aad139d195bc24561721c2320ad6ff",
+    "strip": {
+      "arguments": [
+        "--strip-all"
+      ],
+      "program": "x86_64-w64-mingw32-strip"
+    }
+  },
+  "forbidden": {
+    "buildconf_tokens": [
+      "--enable-shared",
+      "--enable-network",
+      "--enable-pthreads",
+      "--enable-schannel",
+      "--enable-nvenc",
+      "--enable-amf",
+      "--enable-mediafoundation"
+    ],
+    "pe_import_patterns": [
+      "(?:^|lib)x264(?:-[0-9]+)?\\.dll",
+      "(?:zlib1?|libz(?:lib)?1?)\\.dll",
+      "(?:^|lib)(?:win)?pthread(?:-[0-9]+)?\\.dll",
+      "libgcc[^/\\\\]*\\.dll",
+      "libstdc\\+\\+[^/\\\\]*\\.dll",
+      "libc\\+\\+[^/\\\\]*\\.dll",
+      "(?:lib)?clang[^/\\\\]*\\.dll",
+      "libunwind[^/\\\\]*\\.dll"
+    ],
+    "protocols": [
+      "async",
+      "cache",
+      "concat",
+      "concatf",
+      "crypto",
+      "data",
+      "fd",
+      "ftp",
+      "gopher",
+      "gophers",
+      "hls",
+      "http",
+      "httpproxy",
+      "https",
+      "icecast",
+      "ipfs",
+      "ipns",
+      "md5",
+      "mmsh",
+      "mmst",
+      "prompeg",
+      "rist",
+      "rtmp",
+      "rtmps",
+      "rtmpt",
+      "rtmpts",
+      "rtp",
+      "sctp",
+      "srtp",
+      "subfile",
+      "tcp",
+      "tee",
+      "tls",
+      "udp",
+      "udplite",
+      "unix"
+    ]
+  },
+  "license_expression": "GPL-2.0-or-later",
+  "required": {
+    "decoders": [
+      "aac",
+      "av1",
+      "flac",
+      "h264",
+      "hevc",
+      "mjpeg",
+      "mp3",
+      "mpeg4",
+      "opus",
+      "pcm_s16le",
+      "png",
+      "prores",
+      "rawvideo",
+      "vorbis",
+      "vp8",
+      "vp9"
+    ],
+    "demuxers": [
+      "aac",
+      "image2",
+      "matroska",
+      "mov",
+      "mp3",
+      "mpegts",
+      "ogg",
+      "wav",
+      "webm"
+    ],
+    "encoders": [
+      "aac",
+      "libx264",
+      "pcm_f32le",
+      "pcm_s16le",
+      "png",
+      "rawvideo",
+      "wrapped_avframe"
+    ],
+    "filters": [
+      "adelay",
+      "alphaextract",
+      "alphamerge",
+      "amix",
+      "anoisesrc",
+      "aresample",
+      "asetpts",
+      "asplit",
+      "atrim",
+      "blackdetect",
+      "chromakey",
+      "color",
+      "concat",
+      "crop",
+      "cropdetect",
+      "despill",
+      "dilation",
+      "drawbox",
+      "erosion",
+      "format",
+      "fps",
+      "huesaturation",
+      "loudnorm",
+      "null",
+      "overlay",
+      "pad",
+      "scale",
+      "setpts",
+      "setsar",
+      "sidechaincompress",
+      "silencedetect",
+      "sine",
+      "split",
+      "testsrc2",
+      "trim",
+      "volume",
+      "zoompan"
+    ],
+    "input_devices": [
+      "lavfi"
+    ],
+    "muxers": [
+      "f32le",
+      "hash",
+      "image2",
+      "mov",
+      "mp4",
+      "null",
+      "rawvideo",
+      "s16le",
+      "wav"
+    ],
+    "output_devices": [],
+    "programs": [
+      "ffmpeg.exe",
+      "ffprobe.exe"
+    ],
+    "protocols": {
+      "input": [
+        "file",
+        "pipe"
+      ],
+      "output": [
+        "file",
+        "pipe"
+      ]
+    }
+  },
+  "runtime_notices": [
+    {
+      "archive_member": "FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/COPYING.GPLv2",
+      "filename": "FFmpeg-COPYING.GPLv2",
+      "license_expression": "GPL-2.0-or-later",
+      "source_id": "ffmpeg"
+    },
+    {
+      "archive_member": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/LICENSE.TXT",
+      "filename": "LLVM-LICENSE.TXT",
+      "license_expression": "Apache-2.0 WITH LLVM-exception",
+      "source_id": "llvm-project"
+    },
+    {
+      "archive_member": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/compiler-rt/LICENSE.TXT",
+      "filename": "LLVM-compiler-rt-LICENSE.TXT",
+      "license_expression": "Apache-2.0 WITH LLVM-exception",
+      "source_id": "llvm-project"
+    },
+    {
+      "archive_member": "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt",
+      "filename": "MinGW-w64-runtime-NOTICES.txt",
+      "license_expression": "LicenseRef-MinGW-w64-runtime",
+      "source_id": "mingw-w64"
+    },
+    {
+      "archive_member": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING",
+      "filename": "x264-COPYING",
+      "license_expression": "GPL-2.0-or-later",
+      "source_id": "x264"
+    },
+    {
+      "archive_member": "zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca/LICENSE",
+      "filename": "zlib-LICENSE",
+      "license_expression": "Zlib",
+      "source_id": "zlib"
+    }
+  ],
+  "schema": "autoeditor-windows-ffmpeg-capabilities/v1",
+  "target": {
+    "arch": "x64",
+    "machine": "AMD64",
+    "os": "windows",
+    "triple": "x86_64-w64-mingw32"
+  },
+  "version_marker": "autoeditor.n8.1.2-34-g9b6c8969e0"
+}
