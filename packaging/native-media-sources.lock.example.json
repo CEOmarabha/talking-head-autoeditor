@@ -1,0 +1,23 @@
+{
+  "provenance_status": "complete",
+  "schema": "autoeditor-native-media-sources/v1",
+  "sources": [
+    {
+      "archive": "example-codec-1.2.3.tar.xz",
+      "build": [
+        "BUILDING.md#reproducible-release-build"
+      ],
+      "id": "example-codec",
+      "license": [
+        "SPDX:MIT",
+        "LICENSE"
+      ],
+      "patches": [
+        "none"
+      ],
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "source_url": "https://sources.example.invalid/example-codec-1.2.3.tar.xz",
+      "version": "1.2.3"
+    }
+  ]
+}
