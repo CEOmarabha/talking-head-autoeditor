@@ -98,6 +98,7 @@ assert.ok(helperMain.includes("PYTHONIOENCODING: 'utf-8'"));
 for (const spec of [engineSpec, helperDaemonSpec]) {
   assert.ok(spec.includes('options = [("X utf8", None, "OPTION")]'));
   assert.ok(spec.includes('EXE(pyz, a.scripts, options'));
+  assert.match(spec, /excludes=\[[^\]]*"av"/s);
 }
 assert.ok(helperMain.includes('AUTOEDITOR_CREATIVE_SMOKE_TEST'));
 assert.ok(helperMain.includes('validateProviderKeys'));
@@ -206,9 +207,17 @@ assert.ok(helperWorkflow.includes('R2_CANDIDATE_ACCESS_KEY_ID'));
 assert.ok(!helperWorkflow.includes('R2_RELEASE_ACCESS_KEY_ID'));
 assert.ok(helperPromotion.includes('R2_RELEASE_ACCESS_KEY_ID'));
 assert.ok(helperWorkflow.includes('"$ENGINE" --self-test'));
-for (const nativeMediaRuntime of ['PyAV', 'Electron', 'Remotion compositor']) {
+assert.ok(helperWorkflow.includes('"$ENGINE" --audio-decoder-self-test'));
+assert.ok(workflow.includes('"$ENGINE" --audio-decoder-self-test'));
+assert.ok(helperWorkflow.includes(
+  'python -m unittest tests.test_safety tests.test_asr'));
+assert.ok(workflow.includes(
+  'python -m unittest tests.test_safety tests.test_asr'));
+for (const nativeMediaRuntime of ['Electron', 'Remotion compositor']) {
   assert.ok(thirdPartyNotices.includes(nativeMediaRuntime));
 }
+assert.ok(thirdPartyNotices.includes('PyAV remains a build-environment dependency'));
+assert.ok(thirdPartyNotices.includes('excluded from the frozen engine'));
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/client-s3'],
   '3.1106.0');
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/lib-storage'],

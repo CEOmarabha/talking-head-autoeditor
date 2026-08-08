@@ -87,6 +87,12 @@ def smoke_test() -> int:
         not getattr(sys, "frozen", False) or sys.flags.utf8_mode == 1
     )
     try:
+        from autoeditor import asr
+
+        checks["pyav_not_bundled"] = asr.pyav_payload_absent()
+    except Exception:
+        checks["pyav_not_bundled"] = False
+    try:
         checks["typed_deepseek_revision_contract"] = revision_contract_check()
     except Exception:
         checks["typed_deepseek_revision_contract"] = False

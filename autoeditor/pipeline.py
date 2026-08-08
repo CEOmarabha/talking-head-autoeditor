@@ -21,7 +21,10 @@ FFMPEG = (os.environ.get("AUTOEDITOR_FFMPEG")
           or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg")
 FFPROBE = (os.environ.get("AUTOEDITOR_FFPROBE")
            or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe")
-VENV_PY = Path(sys.executable).resolve()
+# Preserve the interpreter path exactly as Python reports it. Resolving a
+# symlinked virtual-environment executable escapes the environment and drops
+# its installed ASR dependencies when source-mode workers are spawned.
+VENV_PY = Path(sys.executable)
 
 GOLD = "&H00A7C7E8"   # ASS BGR for brand gold (#E8C7A7-ish warm gold)
 WHITE = "&H00FFFFFF"
@@ -1701,22 +1704,26 @@ def apply_cuts(src: Path, cuts: list, workdir: Path) -> Path:
 def transcribe(video: Path, workdir: Path) -> list[dict]:
     log("phase 3: faster-whisper word-level transcript")
     script = workdir / "_whisper.py"
+    source_root = Path(__file__).resolve().parent.parent
     script.write_text(
         "import json,os,sys\n"
-        "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_SMALL','small'),"
+        f"sys.path.insert(0,{str(source_root)!r})\n"
+        "from autoeditor.asr import create_model,transcribe\n"
+        "m=create_model(os.getenv('AUTOEDITOR_WHISPER_SMALL','small'),"
         "device='cpu',compute_type='int8')\n"
-        "segs,_=m.transcribe(sys.argv[1],word_timestamps=True)\n"
+        "segs,_=transcribe(m,sys.argv[1],word_timestamps=True)\n"
         "words=[{'w':w.word.strip(),'s':round(w.start,3),'e':round(w.end,3),"
         "'p':round(w.probability,2)}\n"
         "       for s in segs for w in (s.words or [])]\n"
-        "json.dump(words,open(sys.argv[2],'w'))\n")
+        "json.dump(words,open(sys.argv[2],'w',encoding='utf-8'))\n",
+        encoding="utf-8",
+    )
     wj = workdir / "words.json"
     command = ([VENV_PY, "--asr-words", video, wj]
                if getattr(sys, "frozen", False)
                else [VENV_PY, script, video, wj])
     run(command, timeout=1800)
-    return json.loads(wj.read_text())
+    return json.loads(wj.read_text(encoding="utf-8"))
 
 def script_correct(words: list[dict], script_path: Path) -> list[dict]:
     """2026-07-24: you reads from a teleprompter script, that script is
@@ -1837,6 +1844,7 @@ def _secondary_asr_text(master: Path, start: float, end: float,
     clip = workdir / "secondary_asr.wav"
     result_file = workdir / "secondary_asr.json"
     script_file = workdir / "_secondary_asr.py"
+    source_root = Path(__file__).resolve().parent.parent
     run([
         FFMPEG, "-y", "-ss", f"{max(0.0, start - 2.0):.3f}",
         "-t", f"{max(1.0, end - start + 5.0):.3f}", "-i", master,
@@ -1844,19 +1852,23 @@ def _secondary_asr_text(master: Path, start: float, end: float,
     ])
     script_file.write_text(
         "import json,os,sys\n"
-        "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_MEDIUM','medium'),"
+        f"sys.path.insert(0,{str(source_root)!r})\n"
+        "from autoeditor.asr import create_model,transcribe\n"
+        "m=create_model(os.getenv('AUTOEDITOR_WHISPER_MEDIUM','medium'),"
         "device='cpu',compute_type='int8')\n"
-        "s,_=m.transcribe(sys.argv[1],beam_size=5,vad_filter=False,"
+        "s,_=transcribe(m,sys.argv[1],beam_size=5,vad_filter=False,"
         "condition_on_previous_text=False)\n"
         "json.dump({'text':' '.join(x.text.strip() for x in s)},"
-        "open(sys.argv[2],'w'))\n"
+        "open(sys.argv[2],'w',encoding='utf-8'))\n",
+        encoding="utf-8",
     )
     command = ([VENV_PY, "--asr-secondary", clip, result_file]
                if getattr(sys, "frozen", False)
                else [VENV_PY, script_file, clip, result_file])
     run(command, timeout=900)
-    return str(json.loads(result_file.read_text()).get("text", ""))
+    return str(json.loads(result_file.read_text(encoding="utf-8")).get(
+        "text", ""
+    ))
 
 
 def script_integrity(final_words: list[dict], script_path: Path,

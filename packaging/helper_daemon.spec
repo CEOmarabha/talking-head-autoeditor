@@ -26,7 +26,7 @@ a = Analysis(
         "autoeditor", "autoeditor.providers", "autoeditor.premium",
         "autoeditor.config", "autoeditor.creative_contract",
     ],
-    excludes=["tkinter", "matplotlib", "pytest"],
+    excludes=["tkinter", "matplotlib", "pytest", "av"],
 )
 pyz = PYZ(a.pure)
 options = [("X utf8", None, "OPTION")]

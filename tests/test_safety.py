@@ -669,6 +669,8 @@ class SafetyContracts(unittest.TestCase):
         receipt = json.loads(stdout.getvalue())
         self.assertEqual(result, 0, receipt)
         self.assertTrue(receipt["checks"]["utf8_mode"])
+        self.assertTrue(receipt["checks"]["ffmpeg_audio_decoder"])
+        self.assertTrue(receipt["checks"]["pyav_not_bundled"])
         self.assertTrue(receipt["checks"]["in_process_low_speech_cutter"])
         self.assertTrue(receipt["checks"]["creative_contract_sha256"])
 
@@ -1887,8 +1889,9 @@ class SafetyContracts(unittest.TestCase):
         self.assertIn(".talking-head-autoeditor-root", installer)
 
     def test_canonical_runtime_does_not_require_an_uninstalled_legacy_venv(self):
-        self.assertEqual(pipeline.VENV_PY, Path(pipeline.sys.executable).resolve())
+        self.assertEqual(pipeline.VENV_PY, Path(pipeline.sys.executable))
         source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("Path(sys.executable).resolve()", source)
         self.assertNotIn(
             'VENV_PY = EDIT_VENV / "bin" / "python"', source
         )
