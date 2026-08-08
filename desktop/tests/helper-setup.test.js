@@ -57,6 +57,8 @@ const helperMain = fs.readFileSync(
   path.join(__dirname, '..', 'helper', 'main.js'), 'utf8');
 const helperHtml = fs.readFileSync(
   path.join(__dirname, '..', 'helper', 'renderer', 'index.html'), 'utf8');
+const friendSiteHtml = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'webapp', 'site', 'index.html'), 'utf8');
 assert.ok(helperMain.includes(
   "['pexels-mode', 'pixabay-mode', 'eleven-mode']"));
 assert.ok(!helperMain.includes(
@@ -64,6 +66,12 @@ assert.ok(!helperMain.includes(
 assert.ok(helperHtml.includes(
   'HyperFrames and Remotion stay on for every edit'));
 assert.ok(!helperHtml.includes('For every other account below, choose Skip'));
+assert.ok(friendSiteHtml.includes(
+  'HyperFrames and Remotion\n      are required and already included'));
+assert.ok(friendSiteHtml.includes(
+  'Remotion stays enabled and asks you to choose the free or paid license'));
+assert.ok(!friendSiteHtml.includes(
+  'paid Remotion account are only needed for the resources you choose'));
 assert.ok(helperMain.includes(
   'preflight({ checkKeystore: !screenshotMode })'));
 assert.ok(helperMain.includes(
