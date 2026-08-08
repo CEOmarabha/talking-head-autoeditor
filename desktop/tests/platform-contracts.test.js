@@ -245,9 +245,15 @@ assert.ok(helperWorkflow.includes('PYTHONIOENCODING: utf-8'));
 assert.ok(helperWorkflow.includes(
   'requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt'));
 assert.ok(helperWorkflow.includes(
-  '8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331'));
+  'uses: ./.github/workflows/windows-ffmpeg.yml'));
+assert.ok(helperWorkflow.includes(
+  'artifact-ids: ${{ needs.windows_ffmpeg.outputs.artifact_id }}'));
+assert.ok(helperWorkflow.includes('verify_windows_ffmpeg.py verify-receipt'));
+assert.ok(helperWorkflow.includes('verify_windows_ffmpeg.py assert-promotable'));
+assert.ok(!helperWorkflow.includes('BtbN'));
+assert.ok(!helperWorkflow.includes('FFMPEG-GPL-3.0.txt'));
+assert.ok(workflow.includes('FFMPEG-GPL-3.0.txt'));
 for (const releaseSource of [workflow, helperWorkflow]) {
-  assert.ok(releaseSource.includes('FFMPEG-GPL-3.0.txt'));
   assert.ok(releaseSource.includes('FFMPEG_FORMULAE.txt'));
   assert.ok(releaseSource.includes('verify_macos_ffmpeg_formulae.py'));
   assert.ok(releaseSource.includes(
@@ -880,7 +886,10 @@ assert.ok(helperPromotion.includes('actions: read'));
 assert.ok(releaseWorkflow.includes('contents: write'));
 
 // Frozen engines are built only from the platform and architecture hash lock.
-for (const unsignedJob of [helperUnsigned, pseUnsigned]) {
+for (const [unsignedJob, ffmpegStep] of [
+  [helperUnsigned, 'Stage accepted source-built Windows FFmpeg'],
+  [pseUnsigned, 'Bundle verified FFmpeg and FFprobe'],
+]) {
   assert.ok(unsignedJob.includes(
     'requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt'));
   assert.ok(unsignedJob.includes('python -m pip install --require-hashes'));
@@ -888,7 +897,7 @@ for (const unsignedJob of [helperUnsigned, pseUnsigned]) {
   assert.ok(!unsignedJob.includes('pip install --upgrade pip'));
   const safetyAt = unsignedJob.indexOf(
     '- name: Run safety tests against the verified platform FFmpeg');
-  const ffmpegAt = unsignedJob.indexOf('Bundle verified FFmpeg and FFprobe');
+  const ffmpegAt = unsignedJob.indexOf(ffmpegStep);
   const desktopInstallAt = unsignedJob.indexOf('npm ci --prefix desktop');
   assert.ok(ffmpegAt > 0);
   assert.ok(desktopInstallAt > ffmpegAt);

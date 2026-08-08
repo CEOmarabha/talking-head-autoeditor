@@ -32,7 +32,7 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 ELECTRON_CHROMIUM_SCHEMA = "autoeditor-electron-chromium-provenance/v1"
 RUNTIME_BUILD_SCHEMA = "autoeditor-helper-runtime/v1"
-WINDOWS_FFMPEG_BUILD_SCHEMA = "autoeditor-windows-ffmpeg-build/v3"
+WINDOWS_FFMPEG_BUILD_SCHEMA = "autoeditor-windows-ffmpeg-build/v4"
 SOURCE_BUNDLE_SCHEMA = "autoeditor-corresponding-source-bundle/v1"
 
 
@@ -98,6 +98,7 @@ class GeneratorInputs:
     windows_ffmpeg_source_bundle_sha256: str | None = None
     windows_ffmpeg_license_dir: Path | None = None
     windows_ffmpeg_link_evidence_dir: Path | None = None
+    windows_ffmpeg_linkage_dir: Path | None = None
     windows_ffmpeg_repository_commit: str | None = None
     mac_normalization_receipt: Path | None = None
     mac_normalization_receipt_sha256: str | None = None
@@ -961,6 +962,7 @@ def _validate_windows_ffmpeg_build(
     app_root: Path,
     license_dir: Path,
     link_evidence_dir: Path,
+    linkage_dir: Path,
     repository_commit: str,
 ) -> dict[str, Any]:
     _prevalidate_link_member_paths(authenticated.payload)
@@ -972,7 +974,7 @@ def _validate_windows_ffmpeg_build(
             else ""
         )
         raise MissingProducerContractError(
-            "exact shared verify_windows_ffmpeg.py v3 verifier is unavailable"
+            "exact shared verify_windows_ffmpeg.py v4 verifier is unavailable"
             + detail
         )
     required_api = (
@@ -987,7 +989,7 @@ def _validate_windows_ffmpeg_build(
     missing_api = [name for name in required_api if not hasattr(verifier, name)]
     if missing_api or verifier.RECEIPT_SCHEMA != WINDOWS_FFMPEG_BUILD_SCHEMA:
         raise MissingProducerContractError(
-            "shared Windows FFmpeg verifier has an incompatible v3 API: "
+            "shared Windows FFmpeg verifier has an incompatible v4 API: "
             + ", ".join(missing_api or [str(verifier.RECEIPT_SCHEMA)])
         )
     try:
@@ -1019,6 +1021,7 @@ def _validate_windows_ffmpeg_build(
             ffprobe=app_root / "resources/bin/ffprobe.exe",
             license_dir=license_dir,
             link_evidence_dir=link_evidence_dir,
+            linkage_dir=linkage_dir,
             source_bundle=source_archive.path,
             source_manifest=source_manifest.path,
             repository_commit=repository_commit,
@@ -1029,7 +1032,7 @@ def _validate_windows_ffmpeg_build(
         raise
     except Exception as exc:
         raise AllowlistGenerationError(
-            f"shared Windows FFmpeg v3 verification failed: {exc}"
+            f"shared Windows FFmpeg v4 verification failed: {exc}"
         ) from exc
     if recomputed_raw != authenticated.raw:
         raise AllowlistGenerationError(
@@ -1051,7 +1054,7 @@ def _validate_windows_ffmpeg_build(
         "closure_status"
     ) != "verified":
         raise AllowlistGenerationError(
-            "Windows FFmpeg v3 link input closure is not verified for promotion"
+            "Windows FFmpeg v4 link input closure is not verified for promotion"
         )
     return recomputed
 
@@ -1573,6 +1576,10 @@ def _load_producers(
             inputs.windows_ffmpeg_link_evidence_dir,
             "Windows FFmpeg link evidence directory",
         ),
+        linkage_dir=_require_path(
+            inputs.windows_ffmpeg_linkage_dir,
+            "Windows FFmpeg linkage directory",
+        ),
         repository_commit=_require_text(
             inputs.windows_ffmpeg_repository_commit,
             "Windows FFmpeg repository commit",
@@ -1857,6 +1864,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--windows-ffmpeg-source-bundle-sha256")
     parser.add_argument("--windows-ffmpeg-license-dir", type=Path)
     parser.add_argument("--windows-ffmpeg-link-evidence-dir", type=Path)
+    parser.add_argument("--windows-ffmpeg-linkage-dir", type=Path)
     parser.add_argument("--windows-ffmpeg-repository-commit")
     parser.add_argument("--mac-normalization-receipt", type=Path)
     parser.add_argument("--mac-normalization-receipt-sha256")
@@ -1903,6 +1911,7 @@ def main() -> None:
         windows_ffmpeg_link_evidence_dir=(
             args.windows_ffmpeg_link_evidence_dir
         ),
+        windows_ffmpeg_linkage_dir=args.windows_ffmpeg_linkage_dir,
         windows_ffmpeg_repository_commit=(
             args.windows_ffmpeg_repository_commit
         ),

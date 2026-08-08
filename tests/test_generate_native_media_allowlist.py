@@ -647,7 +647,11 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                     authenticated, app_root, "windows-x64"
                 )
 
-    def test_windows_ffmpeg_requires_exact_shared_v3_artifact_verifier(self):
+    def test_windows_ffmpeg_requires_exact_shared_v4_artifact_verifier(self):
+        self.assertEqual(
+            generator.WINDOWS_FFMPEG_BUILD_SCHEMA,
+            generator.windows_ffmpeg_verifier.RECEIPT_SCHEMA,
+        )
         source = self._authenticated({"source": True}, compact=True)
         payload = self._ffmpeg_build_receipt(source.sha256)
         authenticated = self._authenticated(payload)
@@ -693,6 +697,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             "app_root": Path("final-app"),
             "license_dir": Path("licenses"),
             "link_evidence_dir": Path("link-evidence"),
+            "linkage_dir": Path("linkage"),
             "repository_commit": "e" * 40,
         }
         with mock.patch.object(
@@ -709,10 +714,21 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                 ),
                 payload,
             )
-        fake.create_receipt.assert_called_once()
         self.assertEqual(
-            fake.create_receipt.call_args.kwargs["ffmpeg"],
-            Path("final-app/resources/bin/ffmpeg.exe"),
+            fake.create_receipt.call_args.kwargs,
+            {
+                "source_lock_path": source_lock.path,
+                "capabilities_path": capabilities.path,
+                "ffmpeg": Path("final-app/resources/bin/ffmpeg.exe"),
+                "ffprobe": Path("final-app/resources/bin/ffprobe.exe"),
+                "license_dir": Path("licenses"),
+                "link_evidence_dir": Path("link-evidence"),
+                "linkage_dir": Path("linkage"),
+                "source_bundle": source_archive.path,
+                "source_manifest": source.path,
+                "repository_commit": "e" * 40,
+                "repo_root": ROOT,
+            },
         )
         fake.validate_receipt_against_contracts.assert_called_once()
 
@@ -761,7 +777,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             generator.MissingProducerContractError,
-            "exact shared verify_windows_ffmpeg.py v3 verifier is unavailable",
+            "exact shared verify_windows_ffmpeg.py v4 verifier is unavailable",
         ):
             with mock.patch.object(
                 generator, "windows_ffmpeg_verifier", None
@@ -1230,6 +1246,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         self.assertIn("--windows-ffmpeg-source-lock-sha256", help_text)
         self.assertIn("--windows-ffmpeg-capabilities-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-bundle-sha256", help_text)
+        self.assertIn("--windows-ffmpeg-linkage-dir", help_text)
         self.assertIn("--windows-ffmpeg-repository-commit", help_text)
         self.assertNotIn("--producer", help_text)
 

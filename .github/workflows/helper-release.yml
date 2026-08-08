@@ -24,7 +24,11 @@ env:
   WHISPER_MEDIUM_REVISION: 08e178d48790749d25932bbc082711ddcfdfbc4f
 
 jobs:
+  windows_ffmpeg:
+    uses: ./.github/workflows/windows-ffmpeg.yml
+
   build:
+    needs: windows_ffmpeg
     strategy:
       fail-fast: false
       matrix:
@@ -273,30 +277,120 @@ jobs:
             exit 1
           fi
 
-      - name: Bundle verified FFmpeg and FFprobe on Windows
+      - name: Download the accepted source-built Windows FFmpeg
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.windows_ffmpeg.outputs.artifact_id }}
+          path: ${{ runner.temp }}/windows-ffmpeg-accepted
+
+      - name: Stage accepted source-built Windows FFmpeg
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_FFMPEG_ARTIFACT_ID: ${{ needs.windows_ffmpeg.outputs.artifact_id }}
+          WINDOWS_FFMPEG_ARTIFACT_NAME: ${{ needs.windows_ffmpeg.outputs.artifact_name }}
+          WINDOWS_FFMPEG_ARTIFACT_DIGEST: ${{ needs.windows_ffmpeg.outputs.artifact_digest }}
         run: |
-          $asset = "ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
-          $release = Invoke-RestMethod `
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
-          $metadata = $release.assets | Where-Object { $_.name -eq $asset }
-          if (-not $metadata) { throw "Pinned FFmpeg release asset is missing" }
-          Invoke-WebRequest $metadata.browser_download_url -OutFile ffmpeg.zip
-          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          $expected = "8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331"
-          $published = $metadata.digest.Replace("sha256:", "").ToLower()
-          if ($published -ne $expected) {
-            throw "BtbN latest changed from the audited FFmpeg archive. Review and repin before releasing"
+          $source = Join-Path $env:RUNNER_TEMP "windows-ffmpeg-accepted"
+          $expectedName = "windows-ffmpeg-accepted-$env:GITHUB_SHA"
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_ID -notmatch '^[1-9][0-9]*$') {
+            throw "Accepted Windows FFmpeg artifact ID is invalid"
           }
-          if ($actual -ne $expected) { throw "FFmpeg archive digest does not match the audited digest" }
-          Expand-Archive ffmpeg.zip -DestinationPath fftmp
-          Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/helper-staging/bin/"
-          Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/helper-staging/bin/"
-          Copy-Item "fftmp/*/LICENSE.txt" `
-            "desktop/helper-staging/licenses/FFMPEG-GPL-3.0.txt"
-          Set-Content "desktop/helper-staging/licenses/FFMPEG_BUILD.txt" `
-            "asset=$asset`nsha256=$actual`nbytes=$($metadata.size)`nrelease_id=$($release.id)`npublished_at=$($release.published_at)`nsource=$($metadata.browser_download_url)"
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_NAME -ne $expectedName) {
+            throw "Accepted Windows FFmpeg artifact name is not bound to this commit"
+          }
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_DIGEST `
+              -notmatch '^sha256:[0-9a-f]{64}$') {
+            throw "Accepted Windows FFmpeg artifact digest is invalid"
+          }
+          $expectedRoot = @(
+            "ffmpeg.exe"
+            "ffprobe.exe"
+            "licenses"
+            "link-evidence"
+            "linkage"
+            "windows-ffmpeg-build-receipt.json"
+            "windows-ffmpeg-corresponding-source.manifest.json"
+            "windows-ffmpeg-corresponding-source.tar"
+          ) | Sort-Object
+          $actualRoot = @(
+            Get-ChildItem -LiteralPath $source -Force | ForEach-Object Name
+          ) | Sort-Object
+          $rootDrift = @(Compare-Object $expectedRoot $actualRoot)
+          if ($rootDrift.Count -ne 0) {
+            throw "Accepted Windows FFmpeg artifact root set drifted"
+          }
+          python packaging/verify_windows_ffmpeg.py verify-receipt `
+            --receipt "$source\windows-ffmpeg-build-receipt.json" `
+            --ffmpeg "$source\ffmpeg.exe" `
+            --ffprobe "$source\ffprobe.exe" `
+            --license-dir "$source\licenses" `
+            --link-evidence-dir "$source\link-evidence" `
+            --linkage-dir "$source\linkage" `
+            --source-bundle "$source\windows-ffmpeg-corresponding-source.tar" `
+            --source-manifest "$source\windows-ffmpeg-corresponding-source.manifest.json" `
+            --repository-commit "$env:GITHUB_SHA" `
+            --repo-root "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt verification failed"
+          }
+          python packaging/verify_windows_ffmpeg.py assert-promotable `
+            --receipt "$source\windows-ffmpeg-build-receipt.json"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt is not promotable"
+          }
+
+          $stage = Join-Path $env:GITHUB_WORKSPACE "desktop/helper-staging"
+          $provenance = Join-Path $stage "licenses/windows-ffmpeg"
+          $notices = Join-Path $provenance "runtime-notices"
+          $linkReceipts = Join-Path $provenance "linkage"
+          New-Item -ItemType Directory -Force -Path `
+            $notices, $linkReceipts | Out-Null
+          Copy-Item -LiteralPath "$source\ffmpeg.exe" `
+            -Destination "$stage\bin\ffmpeg.exe"
+          Copy-Item -LiteralPath "$source\ffprobe.exe" `
+            -Destination "$stage\bin\ffprobe.exe"
+          foreach ($notice in @(
+              "FFmpeg-COPYING.GPLv2",
+              "LLVM-LICENSE.TXT",
+              "LLVM-compiler-rt-LICENSE.TXT",
+              "MinGW-w64-runtime-NOTICES.txt",
+              "x264-COPYING",
+              "zlib-LICENSE")) {
+            Copy-Item -LiteralPath "$source\licenses\$notice" `
+              -Destination "$notices\$notice"
+          }
+          foreach ($evidence in @(
+              "windows-ffmpeg-build-receipt.json",
+              "windows-ffmpeg-corresponding-source.manifest.json",
+              "windows-ffmpeg-corresponding-source.tar")) {
+            Copy-Item -LiteralPath "$source\$evidence" `
+              -Destination "$provenance\$evidence"
+          }
+          foreach ($receipt in @(
+              "ffmpeg-linkage-receipt.json",
+              "ffprobe-linkage-receipt.json")) {
+            Copy-Item -LiteralPath "$source\linkage\$receipt" `
+              -Destination "$linkReceipts\$receipt"
+          }
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-sources.lock.json" `
+            -Destination "$provenance\windows-ffmpeg-sources.lock.json"
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-capabilities.json" `
+            -Destination "$provenance\windows-ffmpeg-capabilities.json"
+          $artifactReceipt = @(
+            "artifact_id=$env:WINDOWS_FFMPEG_ARTIFACT_ID"
+            "artifact_name=$env:WINDOWS_FFMPEG_ARTIFACT_NAME"
+            "artifact_digest=$env:WINDOWS_FFMPEG_ARTIFACT_DIGEST"
+            "repository_commit=$env:GITHUB_SHA"
+          ) -join "`n"
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+            "$provenance\WINDOWS_FFMPEG_ACCEPTED_ARTIFACT.txt",
+            "$artifactReceipt`n",
+            $utf8)
 
       - name: Verify required FFmpeg capabilities
         shell: bash
@@ -476,9 +570,6 @@ jobs:
           rm -rf packaging/dist packaging/build \
             build/autoeditor-engine build/autoeditor-helper-daemon \
             "$HOME/.cache/huggingface" "$HOME/.cache/hyperframes"
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            rm -rf ffmpeg.zip fftmp
-          fi
           python -m pip cache purge >/dev/null || true
           npm cache clean --force >/dev/null 2>&1 || true
           test -s desktop/helper-staging/models/faster-whisper-small/model.bin
