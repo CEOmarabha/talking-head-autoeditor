@@ -96,14 +96,24 @@ class SafetyContracts(unittest.TestCase):
             patch_globals["INETC_SHA256"] = hashlib.sha256(
                 plugin.read_bytes()
             ).hexdigest()
-            patch_globals["ORIGINAL_HASHES"] = {
+            original_hashes = {
                 name: hashlib.sha256((include / name).read_bytes()).hexdigest()
                 for name in ("installer.nsh", "webPackage.nsh")
             }
+            self.assertEqual(original_hashes, namespace["ORIGINAL_HASHES"])
             installer_text = (include / "installer.nsh").read_text(
                 encoding="utf-8"
             )
             web_text = (include / "webPackage.nsh").read_text(encoding="utf-8")
+            self.assertIn(
+                'MessageBox MB_OK|MB_ICONSTOP "The AutoEditor runtime package '
+                'failed its security check. Nothing was installed." /SD IDOK',
+                namespace["INSTALLER_PATCHED"],
+            )
+            self.assertNotIn(
+                "MessageBox MB_OK|MB_ICONSTOP /SD IDOK",
+                namespace["INSTALLER_PATCHED"],
+            )
             expected = {
                 "installer.nsh": installer_text.replace(
                     namespace["INSTALLER_ORIGINAL"],
@@ -113,10 +123,11 @@ class SafetyContracts(unittest.TestCase):
                     "inetc::get", "AutoEditorINetC::get"
                 ).encode("utf-8"),
             }
-            patch_globals["PATCHED_HASHES"] = {
+            patched_hashes = {
                 name: hashlib.sha256(data).hexdigest()
                 for name, data in expected.items()
             }
+            self.assertEqual(patched_hashes, namespace["PATCHED_HASHES"])
             with mock.patch.object(sys, "argv", [
                 "patch_nsis_web_integrity.py",
                 "--node-modules", str(node_modules),
