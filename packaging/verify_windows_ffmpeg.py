@@ -30,7 +30,7 @@ EXPECTED_SOURCE_LOCK_SHA256 = (
     "e0aa5a65142d0d9c70fe6cdad7e147662b038f1f6a39d733c64c1a1d25407cd8"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "c1eb5452bcc23514dab8c2ac0b8c3419757951f8e8a14d23d84bd9be65e1152d"
+    "dc070e461ab436c0ebe0e9b18ecabcc32f84a2086bf91565001267f925195f0e"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -815,7 +815,7 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
     _exact_fields(
         environment,
         {
-            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "PATH_PREFIX",
+            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "NASMENV", "PATH_PREFIX",
             "PREFIX", "SOURCE_DATE_EPOCH", "TARGET", "TZ", "ZERO_AR_DATE",
         },
         "build.environment",
@@ -824,6 +824,8 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
         raise WindowsFFmpegError("build SOURCE_DATE_EPOCH drifted")
     if environment["LC_ALL"] != "C" or environment["TZ"] != "UTC":
         raise WindowsFFmpegError("build locale or timezone drifted")
+    if environment["NASMENV"] != "--reproducible":
+        raise WindowsFFmpegError("NASM reproducible-output mode drifted")
     link_evidence = build["link_evidence"]
     if not isinstance(link_evidence, dict):
         raise WindowsFFmpegError("build.link_evidence must be an object")
@@ -1895,7 +1897,7 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
     _exact_fields(
         environment,
         {
-            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "PATH_PREFIX",
+            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "NASMENV", "PATH_PREFIX",
             "PREFIX", "SOURCE_DATE_EPOCH", "TARGET", "TZ", "ZERO_AR_DATE",
         },
         "receipt build.environment",

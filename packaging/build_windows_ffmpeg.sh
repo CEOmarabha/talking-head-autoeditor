@@ -57,6 +57,7 @@ inside_container() {
   export PREFIX=/build/autoeditor-media/prefix
   export SOURCE_DATE_EPOCH=1785458830
   export ZERO_AR_DATE=1
+  export NASMENV=--reproducible
   export TZ=UTC
   export LC_ALL=C
   export COMMON_CFLAGS='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media'

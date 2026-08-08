@@ -1005,6 +1005,11 @@ print(json.dumps({"streams": [
         self.assertIn("verify-configure-help", text)
         self.assertIn("verify-makefile", text)
         self.assertIn("verify-link-evidence", text)
+        self.assertIn("export NASMENV=--reproducible", text)
+        self.assertEqual(
+            self.capability_value["build"]["environment"]["NASMENV"],
+            "--reproducible",
+        )
         self.assertIn("make -j2 ffmpeg.exe ffprobe.exe", text)
         self.assertIn("--Map=/artifact/link-evidence/", text)
         self.assertIn("--verbose", text)

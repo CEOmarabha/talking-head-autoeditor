@@ -61,6 +61,7 @@
       "COMMON_CFLAGS": "-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media",
       "COMMON_LDFLAGS": "-Wl,--nxcompat,--dynamicbase,--high-entropy-va,--no-insert-timestamp",
       "LC_ALL": "C",
+      "NASMENV": "--reproducible",
       "PATH_PREFIX": "/opt/nasm-3.01/bin",
       "PREFIX": "/build/autoeditor-media/prefix",
       "SOURCE_DATE_EPOCH": "1785458830",
