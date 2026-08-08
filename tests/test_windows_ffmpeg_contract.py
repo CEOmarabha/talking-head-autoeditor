@@ -18,6 +18,7 @@ SCRIPT = ROOT / "packaging" / "verify_windows_ffmpeg.py"
 SOURCE_LOCK = ROOT / "packaging" / "windows-ffmpeg-sources.lock.json"
 CAPABILITIES = ROOT / "packaging" / "windows-ffmpeg-capabilities.json"
 BUILD_SCRIPT = ROOT / "packaging" / "build_windows_ffmpeg.sh"
+GIT_ATTRIBUTES = ROOT / ".gitattributes"
 SPEC = importlib.util.spec_from_file_location("verify_windows_ffmpeg", SCRIPT)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load {SCRIPT}")
@@ -167,6 +168,17 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         self.assertEqual(capabilities.sha256, verifier.EXPECTED_CAPABILITIES_SHA256)
         self.assertEqual(SOURCE_LOCK.read_bytes(), canonical(self.source_value))
         self.assertEqual(CAPABILITIES.read_bytes(), canonical(self.capability_value))
+
+    def test_windows_checkout_preserves_canonical_contract_line_endings(self):
+        attributes = GIT_ATTRIBUTES.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "/packaging/windows-ffmpeg-capabilities.json text eol=lf",
+            attributes,
+        )
+        self.assertIn(
+            "/packaging/windows-ffmpeg-sources.lock.json text eol=lf",
+            attributes,
+        )
 
     def test_source_pins_match_the_audited_commits_trees_and_archives(self):
         records = {item["id"]: item for item in self.source_value["sources"]}
