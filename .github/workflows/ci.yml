@@ -35,9 +35,6 @@ jobs:
             -r packaging/requirements-linux-x64.txt
           python -m pip check
 
-      - name: Run the safety and web suites
-        run: python -m pytest -q tests webapp/tests
-
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -47,13 +44,16 @@ jobs:
             desktop/package-lock.json
             webapp/worker/package-lock.json
 
+      - name: Install desktop packaging dependencies for safety contracts
+        run: npm ci --prefix desktop
+
+      - name: Run the safety and web suites
+        run: python -m pytest -q tests webapp/tests
+
       - name: Run Worker integration contracts
         run: |
           npm ci --prefix webapp/worker
           npm test --prefix webapp/worker
 
       - name: Run desktop platform contracts
-        working-directory: desktop
-        run: |
-          npm ci
-          npm test
+        run: npm test --prefix desktop

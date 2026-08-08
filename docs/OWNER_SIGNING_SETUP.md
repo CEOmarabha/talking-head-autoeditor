@@ -35,6 +35,14 @@ the environment and stay unavailable until configured protection rules pass.
 The tag ruleset separately prevents unapproved creation, replacement, or
 deletion of a matching release tag.
 
+PSE is a separate product channel. If PSE releases remain active, create
+`pse-windows-signing` and `pse-macos-signing` with the same required-reviewer
+rule, but allow only `pse-v*` tags. Put `WIN_CSC_LINK`,
+`WIN_CSC_KEY_PASSWORD`, and `WIN_PFX_CERT_THUMBPRINT` only in
+`pse-windows-signing`. Put the Apple certificate and notarization secrets only
+in `pse-macos-signing`. The PSE Windows workflow rejects any trusted signature
+whose leaf thumbprint does not match that approved PFX.
+
 - [GitHub deployment environments and secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
 - [GitHub branch and tag ruleset controls](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 
@@ -223,7 +231,15 @@ need a Cloudflare account.
    this token.
 8. Copy the second token's Access Key ID and Secret Access Key, then copy the
    Cloudflare account ID from the dashboard.
-9. In each GitHub signing environment, add these three environment secrets for
+9. Open [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens),
+   choose **Create Custom Token**, and give it one account permission:
+   **Workers R2 Storage**, **Read**. Under **Account Resources**, include only
+   the Cloudflare account that owns `autoeditor-releases`. Create the token and
+   copy its bearer-token value while it is shown. This dedicated
+   `Workers R2 Storage Read` token can inspect bucket configuration, but cannot
+   change lock rules or release objects. It is separate from both pairs of R2
+   Access Key ID and Secret Access Key credentials above.
+10. In each GitHub signing environment, add these three environment secrets for
    signed candidate upload. Add them to both `helper-windows-signing` and
    `helper-macos-signing`; do not add repository-level copies:
 
@@ -231,10 +247,10 @@ need a Cloudflare account.
    - `R2_CANDIDATE_SECRET_ACCESS_KEY`: candidate token Secret Access Key.
    - `CLOUDFLARE_ACCOUNT_ID`: account ID from step 8.
 
-10. Protect the repository's default branch with a branch protection rule or
+11. Protect the repository's default branch with a branch protection rule or
     ruleset. Do not allow direct, unreviewed changes to the release workflow on
     that branch.
-11. Open **Settings**, **Environments**, create `helper-live-release`, and add
+12. Open **Settings**, **Environments**, create `helper-live-release`, and add
     Omar as a required reviewer. Under **Deployment branches and tags**, choose
     **Selected branches and tags**, then add only the exact protected default
     branch name. Do not allow every branch, tags, or wildcard patterns. Put only
@@ -243,13 +259,16 @@ need a Cloudflare account.
     - `R2_RELEASE_ACCESS_KEY_ID`: promotion token Access Key ID.
     - `R2_RELEASE_SECRET_ACCESS_KEY`: promotion token Secret Access Key.
     - `CLOUDFLARE_ACCOUNT_ID`: account ID from step 8.
+    - `CLOUDFLARE_R2_LOCKS_READ_TOKEN`: dedicated read-only bearer token from
+      step 9, scoped to the account permission `Workers R2 Storage Read`.
 
     Do not put Apple, Windows, Azure, candidate-bucket, or user-media secrets in
     this environment. The promotion workflow has no reason to receive them.
 
 Each signed platform job uploads its installer under a content-addressed key in
 the candidate bucket, records its byte count and SHA-256 digest, and adds a
-seven-day signed-candidate artifact to that Actions run. The tagged build ends
+seven-day signed-candidate artifact to that Actions run. Windows also uploads
+the separately hash-bound `.nsis.7z` runtime package. The tagged build ends
 there. It has no live-release credentials and cannot change `current.json`.
 
 After every signed candidate from that exact run passes physical acceptance,
@@ -257,12 +276,27 @@ open **Actions**, choose **Promote accepted AutoEditor Helper release**, enter
 the accepted tag, build run ID, and 40-character commit SHA, check the physical
 acceptance box, then press **Run workflow**. The protected promotion job rejects
 version downgrades and same-version provenance changes. It verifies all three
-receipt-bound candidates, copies them to the live bucket, and creates or
+receipt-bound candidates, copies all three installers and the Windows runtime
+package to the live bucket, and creates or
 refreshes a metadata-only GitHub release. One conditional `current.json` write
 exposes all three platforms together at the end. A failed build or promotion
 can leave expiring, unreferenced candidates, but it cannot partially change live
 downloads or access user footage. The large installers are never attached to
 GitHub Releases because a single GitHub release asset must remain under 2 GiB.
+
+Before any copy, checksum write, GitHub Release change, or `current.json`
+write, promotion fetches the exact public
+`/download/helper/runtime/contract` route and requires the Helper runtime and
+release v2 schemas. It then uses Cloudflare's official bucket-lock GET API to
+require exactly two enabled, indefinite rules, one for
+`dist/helper/objects/` and one for `dist/helper/checksums/`. A missing token,
+older live Worker, API error, disabled rule, extra rule, changed prefix, or
+non-indefinite condition stops promotion before live release state changes.
+
+Cloudflare references:
+
+- [Get Bucket Lock Rules API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/locks/methods/get/)
+- [R2 API token permissions](https://developers.cloudflare.com/r2/api/tokens/#permissions)
 
 ## Secret safety check
 
@@ -271,6 +305,6 @@ list --env helper-windows-signing` and `gh secret list --env
 helper-macos-signing`. Confirm that the signing and candidate-upload names are
 present only in their intended environments, then run `gh secret list` and
 remove any repository-level duplicates. Before promotion, run `gh secret list
---env helper-live-release` for the three promotion names. Never paste a secret
+--env helper-live-release` for the four promotion names. Never paste a secret
 into an issue, commit, workflow input, chat message, screenshot, log, or friend
 guide.

@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
@@ -118,7 +122,6 @@ jobs:
           test -f "$LOCK"
           python -m pip install --require-hashes -r "$LOCK"
           python -m pip check
-          python -m unittest tests.test_safety
           pyinstaller packaging/engine.spec --distpath packaging/dist
           test -d packaging/dist/autoeditor-engine
           ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
@@ -267,6 +270,21 @@ jobs:
           & desktop/staging/bin/ffprobe.exe -version | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe did not start" }
 
+      - name: Run safety tests against the verified platform FFmpeg
+        shell: bash
+        run: |
+          FFMPEG=desktop/staging/bin/ffmpeg
+          FFPROBE=desktop/staging/bin/ffprobe
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            FFMPEG="${FFMPEG}.exe"
+            FFPROBE="${FFPROBE}.exe"
+          fi
+          test -x "$FFMPEG" || test -f "$FFMPEG"
+          test -x "$FFPROBE" || test -f "$FFPROBE"
+          export AUTOEDITOR_FFMPEG="$FFMPEG"
+          export AUTOEDITOR_FFPROBE="$FFPROBE"
+          python -m unittest tests.test_safety
+
       - name: Fetch digest-pinned open-license font
         shell: bash
         run: |
@@ -299,10 +317,14 @@ jobs:
           receipt = runpy.run_path(
               "packaging/generate_helper_manifest.py"
           )["directory_receipt"]
+          normalize_windows = os.environ["TARGET_OS"] == "windows"
           allowed = ("engine", "bin", "lib", "profiles", "fonts", "licenses")
           components = {}
           for name in allowed:
-              value = receipt(stage / name)
+              value = receipt(
+                  stage / name,
+                  normalize_windows_executables=normalize_windows,
+              )
               if value["files"]:
                   components[name] = value
           required = {"engine", "bin", "profiles", "fonts", "licenses"}
@@ -322,6 +344,10 @@ jobs:
                   "os": os.environ["TARGET_OS"],
                   "arch": os.environ["TARGET_ARCH"],
               },
+              "receiptAlgorithm": (
+                  "pe-authenticode-content-v1"
+                  if normalize_windows else "raw-sha256-v1"
+              ),
               "components": components,
           }
           product_path.write_text(
@@ -437,12 +463,24 @@ jobs:
           receipt = runpy.run_path(
               "packaging/generate_helper_manifest.py"
           )["directory_receipt"]
-          actual = {name: receipt(root / name) for name in components}
+          normalize_windows = target["os"] == "windows"
+          expected_algorithm = (
+              "pe-authenticode-content-v1"
+              if normalize_windows else "raw-sha256-v1"
+          )
+          actual = {
+              name: receipt(
+                  root / name,
+                  normalize_windows_executables=normalize_windows,
+              )
+              for name in components
+          }
           valid = (
               product.get("id") == product_id
               and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
               and runtime.get("version") == version
               and runtime.get("target") == target
+              and runtime.get("receiptAlgorithm") == expected_algorithm
               and components == actual
           )
           if not valid:
@@ -551,12 +589,24 @@ jobs:
           receipt = runpy.run_path(
               "packaging/generate_helper_manifest.py"
           )["directory_receipt"]
-          actual = {name: receipt(root / name) for name in components}
+          normalize_windows = target["os"] == "windows"
+          expected_algorithm = (
+              "pe-authenticode-content-v1"
+              if normalize_windows else "raw-sha256-v1"
+          )
+          actual = {
+              name: receipt(
+                  root / name,
+                  normalize_windows_executables=normalize_windows,
+              )
+              for name in components
+          }
           valid = (
               product.get("id") == product_id
               and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
               and runtime.get("version") == version
               and runtime.get("target") == target
+              and runtime.get("receiptAlgorithm") == expected_algorithm
               and components == actual
           )
           if not valid:
@@ -641,10 +691,12 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_PFX_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
-          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" || {
-            echo "A tagged Windows PSE release requires WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" && \
+            test -n "$WIN_PFX_CERT_THUMBPRINT" || {
+            echo "A tagged Windows PSE release requires WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD, and WIN_PFX_CERT_THUMBPRINT" >&2
             exit 1
           }
           VERSION="${GITHUB_REF_NAME#pse-v}"
@@ -656,12 +708,44 @@ jobs:
             --win --x64 --publish never
       - name: Verify installed PSE Windows signatures and payload
         shell: pwsh
+        env:
+          WIN_PFX_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
         run: |
+          function Normalize-Thumbprint([string]$value) {
+            return ($value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+          }
+          function Assert-ApprovedSigner([string]$file, [string]$thumbprint) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") {
+              throw "$file signature is $($signature.Status)"
+            }
+            if (-not $signature.SignerCertificate) {
+              throw "$file has no Authenticode signer certificate"
+            }
+            $actual = Normalize-Thumbprint $signature.SignerCertificate.Thumbprint
+            if (-not $actual -or $actual -ne $thumbprint) {
+              throw "$file signer does not match the approved PSE certificate"
+            }
+            $eku = $signature.SignerCertificate.Extensions | Where-Object {
+              $_.Oid.Value -eq "2.5.29.37"
+            } | Select-Object -First 1
+            if (-not $eku) { throw "$file signer has no enhanced key usage" }
+            $decoded = New-Object `
+              System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension
+            $decoded.CopyFrom($eku)
+            $values = @($decoded.EnhancedKeyUsages | ForEach-Object { $_.Value })
+            if ($values -notcontains "1.3.6.1.5.5.7.3.3") {
+              throw "$file signer lacks the code-signing EKU"
+            }
+          }
+          $approvedThumbprint = Normalize-Thumbprint $env:WIN_PFX_CERT_THUMBPRINT
+          if (-not $approvedThumbprint) {
+            throw "WIN_PFX_CERT_THUMBPRINT is required for PSE signing"
+          }
           $installers = @(Get-ChildItem "$env:DESKTOP_DIST/*.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected one signed PSE installer" }
           $installer = $installers[0]
-          $signature = Get-AuthenticodeSignature $installer.FullName
-          if ($signature.Status -ne "Valid") { throw "Installer signature is $($signature.Status)" }
+          Assert-ApprovedSigner $installer.FullName $approvedThumbprint
           $install = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA "Programs/PSE AutoEditor"
@@ -669,13 +753,19 @@ jobs:
           $uninstaller = Join-Path $root "Uninstall PSE AutoEditor.exe"
           foreach ($file in @($app, $uninstaller)) {
             if (-not (Test-Path $file)) { throw "Installed file is missing: $file" }
-            $signature = Get-AuthenticodeSignature $file
-            if ($signature.Status -ne "Valid") { throw "$file signature is $($signature.Status)" }
+            Assert-ApprovedSigner $file $approvedThumbprint
           }
           $staged = (Get-FileHash desktop/staging/product.json -Algorithm SHA256).Hash
           $resources = Join-Path $root "resources"
           $installed = (Get-FileHash (Join-Path $resources "product.json") -Algorithm SHA256).Hash
           if ($staged -ne $installed) { throw "Installed product manifest is not byte-identical to staging" }
+          $resourceExecutables = @(Get-ChildItem $resources -Recurse -Filter *.exe -File)
+          if ($resourceExecutables.Count -eq 0) {
+            throw "Signed PSE runtime contains no executable payloads"
+          }
+          foreach ($file in $resourceExecutables) {
+            Assert-ApprovedSigner $file.FullName $approvedThumbprint
+          }
           $verifyManifest = @'
           import json
           import runpy
@@ -690,12 +780,19 @@ jobs:
           receipt = runpy.run_path(
               "packaging/generate_helper_manifest.py"
           )["directory_receipt"]
-          actual = {name: receipt(root / name) for name in components or {}}
+          actual = {
+              name: receipt(
+                  root / name,
+                  normalize_windows_executables=True,
+              )
+              for name in components or {}
+          }
           valid = (
               product.get("id") == "pse"
               and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
               and runtime.get("version") == sys.argv[2]
               and runtime.get("target") == target
+              and runtime.get("receiptAlgorithm") == "pe-authenticode-content-v1"
               and components == actual
           )
           if not valid:
@@ -843,6 +940,7 @@ jobs:
               and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
               and runtime.get("version") == sys.argv[2]
               and runtime.get("target") == target
+              and runtime.get("receiptAlgorithm") == "raw-sha256-v1"
               and components == actual
           )
           if not valid:

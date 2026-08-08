@@ -75,7 +75,13 @@ assert.ok(!friendSiteHtml.includes(
 assert.ok(helperMain.includes(
   'preflight({ checkKeystore: !screenshotMode })'));
 assert.ok(helperMain.includes(
-  'const checks = preflight({ checkKeystore: false })'));
+  'const checks = preflight({ checkKeystore: false, checkDisk: false })'));
+assert.ok(helperMain.includes(
+  'function preflight({ checkKeystore = true, checkDisk = true } = {})'));
+assert.ok(helperMain.includes('if (checkDisk)'));
+assert.ok(helperMain.includes(
+  'Number(stat.bavail) * Number(stat.bsize) >= MIN_FREE_BYTES'));
+assert.ok(helperMain.includes('const ready = preflight()'));
 assert.ok(helperMain.includes(
   'safeStorage.isEncryptionAvailable() : true'));
 assert.ok(helperMain.includes(

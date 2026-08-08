@@ -23,6 +23,10 @@ the exact Windows `.exe` and Mac `.dmg` files friends will download.
   `CLOUDFLARE_ACCOUNT_ID`: put these only in the protected
   `helper-live-release` GitHub environment. That environment is used by the
   separate manual promotion workflow and never receives signing credentials.
+- `CLOUDFLARE_R2_LOCKS_READ_TOKEN`: a separate Cloudflare bearer token in
+  `helper-live-release`, scoped only to the account permission
+  `Workers R2 Storage Read`. Promotion uses it only with Cloudflare's official
+  bucket-lock GET API. Do not reuse either R2 Secret Access Key as this token.
 - Indefinite R2 bucket locks on `dist/helper/objects/` and
   `dist/helper/checksums/` in `autoeditor-releases`. Keep only
   `dist/helper/current.json` mutable.
@@ -63,15 +67,18 @@ Each platform must:
 8. Run a real Remotion MP4 render with the bundled browser.
 9. Write `runtime-manifest.json` with component file counts, sizes, and hashes.
 10. Build the installer, install or mount it, and run the packaged Helper smoke
-    test from its installed resource paths.
+    test from its installed resource paths. Windows must produce exactly one
+    signed web-bootstrap EXE and one required `.nsis.7z` runtime package smaller
+    than 4,294,967,295 bytes. Every adjacent, explicit, or downloaded package
+    path must verify the EXE's embedded SHA-512 before extraction.
 11. Verify Authenticode for tagged Windows releases.
 12. Verify codesign, Gatekeeper assessment, notarization, and stapled tickets
     for tagged Mac releases.
 13. Verify the installed or freshly mounted resources against every component
     receipt in `runtime-manifest.json`.
-14. Multipart-upload each signed installer to a content-addressed R2 candidate
-    key, then upload the same signed installer and its receipt as a seven-day
-    GitHub Actions artifact for physical acceptance.
+14. Multipart-upload each signed installer, plus the Windows runtime package,
+    to content-addressed R2 candidate keys. Upload the same signed files and
+    receipts as seven-day GitHub Actions artifacts for physical acceptance.
 15. Stop. A successful tagged build must not publish a GitHub release, copy an
     object to the live bucket, or write `dist/helper/current.json`.
 
@@ -83,14 +90,20 @@ release` workflow must:
 17. Prove that run was a successful tag-push execution of
     `helper-release.yml`, resolve the tag to the same commit, recover the exact
     run attempt, and download exactly the three receipt artifacts from that run.
-18. Require all receipts to bind the same tag, commit, run ID, and run attempt.
-    Stream-hash each candidate object before and after its content-addressed
-    copy into the live bucket.
-19. Publish and reread the metadata-only GitHub release, then expose all three
+18. Before any release mutation, fetch the exact public
+    `/download/helper/runtime/contract` route and require the Helper runtime and
+    release v2 schemas. Then GET the official Cloudflare lock endpoint and
+    require exactly two enabled `Indefinite` rules for
+    `dist/helper/objects/` and `dist/helper/checksums/`.
+19. Require all receipts to bind the same tag, commit, run ID, and run attempt.
+    Stream-hash all four candidate objects, three installers plus the Windows
+    runtime package, before and after their content-addressed copies into the
+    live bucket.
+20. Publish and reread the metadata-only GitHub release, then expose all three
     platforms together by conditionally writing `dist/helper/current.json`
     last. A rerun may succeed only when the existing release has the same
     provenance and installer receipts.
-20. Confirm the live object and checksum prefixes are protected by Cloudflare
+21. Confirm the live object and checksum prefixes are protected by Cloudflare
     R2 bucket locks, so a later token mistake cannot overwrite referenced
     installer bytes.
 

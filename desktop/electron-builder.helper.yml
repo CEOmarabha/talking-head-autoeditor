@@ -90,7 +90,10 @@ afterAllArtifactBuild: scripts/notarize-artifacts.js
 win:
   icon: build/icon.ico
   target:
-    - target: nsis
+    # The required offline runtime is larger than NSIS's 2 GiB embedded-data
+    # ceiling. Friends still receive one signed EXE; it downloads the exact
+    # SHA-512-bound runtime package on first install.
+    - target: nsis-web
 
 nsis:
   oneClick: true
@@ -98,3 +101,7 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  include: helper-installer.nsh
+
+nsisWeb:
+  differentialPackage: false

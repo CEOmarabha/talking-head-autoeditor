@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from webapp.render_worker_compat import aes_gcm_decrypt  # noqa: E402
 from webapp.render_worker_compat import (  # noqa: E402
     canonical_json_bytes, http_get, http_json, http_put, http_put_range,
+    safe_local_upload_name,
 )
 
 HERE = Path(__file__).resolve()
@@ -270,12 +271,14 @@ def run_engine(args: list[str], env_extra: dict, job_id: str,
                claim_token: str, phase_status: dict) -> dict | None:
     """Run the engine, stream phases as progress, return the result event."""
     env = {**os.environ, **env_extra,
-           "AUTOEDITOR_PACKAGED": "1", "AUTOEDITOR_PROGRESS_JSON": "1"}
+           "AUTOEDITOR_PACKAGED": "1", "AUTOEDITOR_PROGRESS_JSON": "1",
+           "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     cmd = ([ENGINE_PATH, *args] if ENGINE_PATH
            else [*shlex.split(ENGINE), *args])
     proc = subprocess.Popen(cmd, cwd=INSTALL_ROOT, env=env,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace")
     result = None
     for line in proc.stdout:
         line = line.rstrip()
@@ -325,7 +328,7 @@ def handle_make(job, project, uploads, key, preset,
         progress(job["id"], claim_token, status="transcribing",
                  detail="preparing footage")
         clips = [download(job["id"], claim_token, u["r2_key"],
-                          work / f"in{i}_{u['filename']}")
+                          work / safe_local_upload_name(u["filename"], i))
                  for i, u in enumerate(uploads)]
         src = join_clips(clips, work)
         payload = json.loads(job.get("payload_json") or "{}")

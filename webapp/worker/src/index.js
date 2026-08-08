@@ -507,17 +507,41 @@ const HELPER_DOWNLOAD_ROUTES = {
   },
 };
 
-async function helperDownloads(env) {
+const HELPER_RELEASE_SCHEMA = 'autoeditor-helper-release/v2';
+const HELPER_TAG_PATTERN =
+  /^helper-v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][A-Za-z0-9.-]+)?$/;
+const HELPER_RUNTIME_ROUTE_PATTERN = new RegExp(
+  '^/download/helper/runtime/windows-x64/' +
+  '(helper-v[0-9]+\\.[0-9]+\\.[0-9]+(?:[.-][A-Za-z0-9.-]+)?)/' +
+  '([a-f0-9]{40})$',
+);
+const MAX_NSIS_WEB_PACKAGE_BYTES = 4_294_967_295;
+const HELPER_RUNTIME_CONTRACT = Object.freeze({
+  schema: 'autoeditor-helper-runtime-route/v2',
+  release_schema: HELPER_RELEASE_SCHEMA,
+  route: '/download/helper/runtime/windows-x64/{tag}/{commit}',
+  max_package_bytes: MAX_NSIS_WEB_PACKAGE_BYTES - 1,
+});
+const WINDOWS_RUNTIME_PACKAGE = {
+  filename: 'AutoEditor-Helper-Windows.nsis.7z',
+  type: 'application/x-7z-compressed',
+};
+
+async function helperRelease(env) {
   const pointer = await env.RELEASES.get('dist/helper/current.json');
   if (!pointer) return null;
   let release;
   try { release = JSON.parse(await pointer.text()); } catch (_) { release = null; }
-  if (!release || release.schema !== 'autoeditor-helper-release/v1' ||
-      !/^helper-v[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.-]*$/.test(release.tag) ||
-      typeof release.platforms !== 'object') {
+  if (!release || release.schema !== HELPER_RELEASE_SCHEMA ||
+      !HELPER_TAG_PATTERN.test(release.tag) ||
+      release.version !== release.tag.slice('helper-v'.length) ||
+      !release.source ||
+      !/^[a-f0-9]{40}$/.test(release.source.commit) ||
+      typeof release.platforms !== 'object' ||
+      Array.isArray(release.platforms)) {
     throw new Error('invalid helper release pointer');
   }
-  return Object.fromEntries(Object.entries(HELPER_DOWNLOAD_ROUTES)
+  const downloads = Object.fromEntries(Object.entries(HELPER_DOWNLOAD_ROUTES)
     .map(([route, item]) => {
       const selected = release.platforms[item.platform];
       const expected = `dist/helper/objects/${selected?.sha256}/` +
@@ -527,9 +551,36 @@ async function helperDownloads(env) {
           !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
         throw new Error(`invalid helper release entry: ${item.platform}`);
       }
+      if (item.platform !== 'windows-x64' &&
+          Object.hasOwn(selected, 'runtime_package')) {
+        throw new Error(`invalid helper release entry: ${item.platform}`);
+      }
       return [route, { ...item, key: selected.key, bytes: selected.bytes,
         sha256: selected.sha256 }];
     }));
+  const runtime = release.platforms['windows-x64'].runtime_package;
+  const expectedRuntimeKey = `dist/helper/objects/${runtime?.sha256}/` +
+    `windows-x64/${WINDOWS_RUNTIME_PACKAGE.filename}`;
+  if (!runtime || runtime.key !== expectedRuntimeKey ||
+      runtime.filename !== WINDOWS_RUNTIME_PACKAGE.filename ||
+      runtime.content_type !== WINDOWS_RUNTIME_PACKAGE.type ||
+      !/^[a-f0-9]{64}$/.test(runtime.sha256) ||
+      !Number.isSafeInteger(runtime.bytes) || runtime.bytes <= 0 ||
+      runtime.bytes >= MAX_NSIS_WEB_PACKAGE_BYTES) {
+    throw new Error('invalid Windows runtime package release entry');
+  }
+  return {
+    tag: release.tag,
+    commit: release.source.commit,
+    downloads,
+    runtimePackage: {
+      key: runtime.key,
+      bytes: runtime.bytes,
+      sha256: runtime.sha256,
+      filename: runtime.filename,
+      type: runtime.content_type,
+    },
+  };
 }
 
 function releaseObjectMatches(object, item) {
@@ -537,13 +588,32 @@ function releaseObjectMatches(object, item) {
     object.customMetadata?.sha256 === item.sha256;
 }
 
-async function verifiedHelperDownloads(env) {
-  const downloads = await helperDownloads(env);
-  if (!downloads) return null;
-  const verified = await Promise.all(Object.values(downloads)
+function normalizedR2Range(object) {
+  const range = object?.range;
+  if (!range) return null;
+  let offset;
+  let length;
+  if (range.suffix !== undefined) {
+    length = Math.min(range.suffix, object.size);
+    offset = object.size - length;
+  } else {
+    offset = range.offset ?? 0;
+    length = range.length ?? object.size - offset;
+  }
+  return { offset, length };
+}
+
+async function verifiedHelperRelease(env) {
+  let release;
+  try { release = await helperRelease(env); } catch (_) { return null; }
+  if (!release) return null;
+  const releaseObjects = [
+    ...Object.values(release.downloads), release.runtimePackage,
+  ];
+  const verified = await Promise.all(releaseObjects
     .map(async (item) => releaseObjectMatches(
       await env.RELEASES.head(item.key), item)));
-  return verified.every(Boolean) ? downloads : null;
+  return verified.every(Boolean) ? release : null;
 }
 
 // ------------------------------------------------------------- router
@@ -552,11 +622,58 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
     try {
+      if (p === '/download/helper/runtime/contract') {
+        return j(HELPER_RUNTIME_CONTRACT);
+      }
+      if (p.startsWith('/download/helper/runtime/')) {
+        const route = HELPER_RUNTIME_ROUTE_PATTERN.exec(p);
+        if (!route) return new Response('Not found', { status: 404,
+          headers: { 'cache-control': 'no-store',
+            ...BASE_SECURITY_HEADERS } });
+        const release = await verifiedHelperRelease(env);
+        if (!release || route[1] !== release.tag ||
+            route[2] !== release.commit) {
+          return new Response('Not found', { status: 404,
+            headers: { 'cache-control': 'no-store',
+              ...BASE_SECURITY_HEADERS } });
+        }
+        const item = release.runtimePackage;
+        const rangeRequested = req.headers.has('range');
+        const obj = rangeRequested
+          ? await env.RELEASES.get(item.key, { range: req.headers })
+          : await env.RELEASES.get(item.key);
+        if (!releaseObjectMatches(obj, item)) {
+          return new Response('Not found', { status: 404,
+            headers: { 'cache-control': 'no-store',
+              ...BASE_SECURITY_HEADERS } });
+        }
+        const headers = {
+          'content-type': item.type,
+          'content-disposition': `attachment; filename="${item.filename}"`,
+          // The path is immutable, but the live pointer is the authorization
+          // boundary. Do not let a cache keep serving it after promotion.
+          'cache-control': 'no-store',
+          'accept-ranges': 'bytes',
+          ...BASE_SECURITY_HEADERS,
+        };
+        if (obj.httpEtag) headers.etag = obj.httpEtag;
+        const servedRange = rangeRequested ? normalizedR2Range(obj) : null;
+        if (servedRange) {
+          headers['content-range'] =
+            `bytes ${servedRange.offset}-` +
+            `${servedRange.offset + servedRange.length - 1}` +
+            `/${obj.size}`;
+          headers['content-length'] = String(servedRange.length);
+          return new Response(obj.body, { status: 206, headers });
+        }
+        headers['content-length'] = String(obj.size);
+        return new Response(obj.body, { headers });
+      }
       if (p === '/download/helper/availability') {
         if (!(await auth(req, env))) return bad('sign in first', 401);
-        const downloads = await verifiedHelperDownloads(env);
+        const release = await verifiedHelperRelease(env);
         const entries = Object.keys(HELPER_DOWNLOAD_ROUTES)
-          .map((route) => [route, !!downloads]);
+          .map((route) => [route, !!release]);
         return new Response(JSON.stringify(Object.fromEntries(entries)), {
           headers: { 'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store', ...BASE_SECURITY_HEADERS },
@@ -564,13 +681,13 @@ export default {
       }
       if (HELPER_DOWNLOAD_ROUTES[p]) {
         if (!(await auth(req, env))) return bad('sign in first', 401);
-        const downloads = await verifiedHelperDownloads(env);
-        if (!downloads) {
+        const release = await verifiedHelperRelease(env);
+        if (!release) {
           return new Response('Installer is not uploaded yet', { status: 503,
             headers: { 'cache-control': 'no-store',
               ...BASE_SECURITY_HEADERS } });
         }
-        const item = downloads[p];
+        const item = release.downloads[p];
         const rangeRequested = req.headers.has('range');
         const obj = rangeRequested
           ? await env.RELEASES.get(item.key, { range: req.headers })
@@ -590,11 +707,13 @@ export default {
           ...BASE_SECURITY_HEADERS,
         };
         if (obj.httpEtag) headers.etag = obj.httpEtag;
-        if (rangeRequested && obj.range) {
+        const servedRange = rangeRequested ? normalizedR2Range(obj) : null;
+        if (servedRange) {
           headers['content-range'] =
-            `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}` +
+            `bytes ${servedRange.offset}-` +
+            `${servedRange.offset + servedRange.length - 1}` +
             `/${obj.size}`;
-          headers['content-length'] = String(obj.range.length);
+          headers['content-length'] = String(servedRange.length);
           return new Response(obj.body, { status: 206, headers });
         }
         headers['content-length'] = String(obj.size);
