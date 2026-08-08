@@ -388,7 +388,9 @@ assert.ok(onnxRuntimeNodePruner.includes(
   'autoeditor-onnxruntime-node-target-prune/v2'));
 assert.ok(onnxRuntimeNodePruner.includes('shutil.copytree'));
 assert.ok(onnxRuntimeNodePruner.includes('published-package'));
-assert.ok(onnxRuntimeNodePruner.includes('SetFileInformationByHandle'));
+assert.ok(onnxRuntimeNodePruner.includes('NtSetInformationFile'));
+assert.ok(onnxRuntimeNodePruner.includes('FILE_RENAME_INFORMATION = 10'));
+assert.ok(!onnxRuntimeNodePruner.includes('SetFileInformationByHandle'));
 assert.ok(onnxRuntimeNodePruner.includes('NtCreateFile'));
 assert.ok(onnxRuntimeNodePruner.includes('dir_fd=self.transaction_fd'));
 assert.ok(onnxRuntimeNodePruner.includes('def verify_gate('));
