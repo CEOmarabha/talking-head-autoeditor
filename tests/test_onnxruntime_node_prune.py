@@ -301,10 +301,17 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
                 with self.assertRaisesRegex(PRUNER.GateError, "unavailable"):
                     PRUNER._DirectoryRenamer(package_parent, transaction)
 
-    def test_windows_rename_buffer_includes_required_structure_padding(self):
-        class FileRenameInfoEx(ctypes.Structure):
+    def test_windows_handle_relative_rename_uses_classic_information_contract(self):
+        class FileRenameMode(ctypes.Union):
             _fields_ = [
+                ("ReplaceIfExists", ctypes.c_byte),
                 ("Flags", ctypes.c_uint32),
+            ]
+
+        class FileRenameInfo(ctypes.Structure):
+            _anonymous_ = ("Mode",)
+            _fields_ = [
+                ("Mode", FileRenameMode),
                 ("RootDirectory", ctypes.c_void_p),
                 ("FileNameLength", ctypes.c_uint32),
                 ("FileName", ctypes.c_uint16 * 1),
@@ -312,17 +319,41 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
 
         target = "published-package"
         target_bytes = target.encode("utf-16-le")
-        required_size = ctypes.sizeof(FileRenameInfoEx) + len(target_bytes)
+        required_size = ctypes.sizeof(FileRenameInfo) + len(target_bytes)
 
         class Kernel32:
             def __init__(self):
+                self.rename_class = None
                 self.rename_size = None
+                self.rename_information = None
 
             def SetFileInformationByHandle(
                 self, _handle, _information_class, _information, size
             ):
+                information = ctypes.cast(
+                    _information,
+                    ctypes.POINTER(FileRenameInfo),
+                ).contents
+                filename = ctypes.string_at(
+                    ctypes.addressof(information) + FileRenameInfo.FileName.offset,
+                    information.FileNameLength,
+                )
+                self.rename_class = _information_class
                 self.rename_size = size
-                return size >= required_size
+                self.rename_information = {
+                    "replace_if_exists": information.ReplaceIfExists,
+                    "root_directory": information.RootDirectory,
+                    "filename_length": information.FileNameLength,
+                    "filename": filename,
+                }
+                return (
+                    _information_class == 3
+                    and information.ReplaceIfExists == 0
+                    and information.RootDirectory == 2
+                    and information.FileNameLength == len(target_bytes)
+                    and filename == target_bytes
+                    and size >= required_size
+                )
 
             def CloseHandle(self, _handle):
                 return True
@@ -333,7 +364,7 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
         operations.ctypes = ctypes
         operations.wintypes = SimpleNamespace(HANDLE=ctypes.c_void_p)
         operations.kernel32 = Kernel32()
-        operations.FileRenameInfoEx = FileRenameInfoEx
+        operations.FileRenameInfo = FileRenameInfo
         operations._open_relative = mock.Mock(side_effect=(101, 202))
         operations._handle_identity = mock.Mock(return_value=(7, 11))
         operations._last_error = mock.Mock(
@@ -342,12 +373,22 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
 
         operations._rename(1, "target-package", 2, target)
 
-        self.assertEqual(FileRenameInfoEx.FileName.offset, 20)
-        self.assertEqual(ctypes.sizeof(FileRenameInfoEx), 24)
+        self.assertEqual(FileRenameInfo.FileName.offset, 20)
+        self.assertEqual(ctypes.sizeof(FileRenameInfo), 24)
+        self.assertEqual(operations.kernel32.rename_class, 3)
         self.assertEqual(operations.kernel32.rename_size, required_size)
+        self.assertEqual(
+            operations.kernel32.rename_information,
+            {
+                "replace_if_exists": 0,
+                "root_directory": 2,
+                "filename_length": len(target_bytes),
+                "filename": target_bytes,
+            },
+        )
         self.assertGreater(
             operations.kernel32.rename_size,
-            FileRenameInfoEx.FileName.offset + len(target_bytes),
+            FileRenameInfo.FileName.offset + len(target_bytes),
         )
         operations._last_error.assert_not_called()
 

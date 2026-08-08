@@ -470,7 +470,7 @@ class _WindowsDirectoryOperations:
     FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
     FILE_OPEN_REPARSE_POINT = 0x00200000
     OBJ_CASE_INSENSITIVE = 0x00000040
-    FILE_RENAME_INFO_EX = 22
+    FILE_RENAME_INFO = 3
 
     def __init__(
         self,
@@ -526,9 +526,16 @@ class _WindowsDirectoryOperations:
                 ("Information", ctypes.c_size_t),
             ]
 
-        class FileRenameInfoEx(ctypes.Structure):
+        class FileRenameMode(ctypes.Union):
             _fields_ = [
+                ("ReplaceIfExists", wintypes.BOOLEAN),
                 ("Flags", wintypes.DWORD),
+            ]
+
+        class FileRenameInfo(ctypes.Structure):
+            _anonymous_ = ("Mode",)
+            _fields_ = [
+                ("Mode", FileRenameMode),
                 ("RootDirectory", wintypes.HANDLE),
                 ("FileNameLength", wintypes.DWORD),
                 ("FileName", wintypes.WCHAR * 1),
@@ -538,7 +545,7 @@ class _WindowsDirectoryOperations:
         self.UnicodeString = UnicodeString
         self.ObjectAttributes = ObjectAttributes
         self.IoStatusBlock = IoStatusBlock
-        self.FileRenameInfoEx = FileRenameInfoEx
+        self.FileRenameInfo = FileRenameInfo
 
         self.kernel32.CreateFileW.argtypes = [
             wintypes.LPCWSTR,
@@ -718,12 +725,12 @@ class _WindowsDirectoryOperations:
         try:
             source_identity = self._handle_identity(source_handle)
             target_bytes = target.encode("utf-16-le")
-            offset = self.FileRenameInfoEx.FileName.offset
+            offset = self.FileRenameInfo.FileName.offset
             # Windows requires the full structure plus the variable name bytes.
-            size = self.ctypes.sizeof(self.FileRenameInfoEx) + len(target_bytes)
+            size = self.ctypes.sizeof(self.FileRenameInfo) + len(target_bytes)
             raw = self.ctypes.create_string_buffer(size)
-            information = self.FileRenameInfoEx.from_buffer(raw)
-            information.Flags = 0
+            information = self.FileRenameInfo.from_buffer(raw)
+            information.ReplaceIfExists = False
             information.RootDirectory = self.wintypes.HANDLE(target_root)
             information.FileNameLength = len(target_bytes)
             self.ctypes.memmove(
@@ -733,11 +740,11 @@ class _WindowsDirectoryOperations:
             )
             if not self.kernel32.SetFileInformationByHandle(
                 self.wintypes.HANDLE(source_handle),
-                self.FILE_RENAME_INFO_EX,
+                self.FILE_RENAME_INFO,
                 self.ctypes.byref(raw),
                 size,
             ):
-                raise self._last_error("SetFileInformationByHandle(FileRenameInfoEx)")
+                raise self._last_error("SetFileInformationByHandle(FileRenameInfo)")
             target_handle = self._open_relative(
                 target_root,
                 target,
