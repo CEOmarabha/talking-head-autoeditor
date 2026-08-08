@@ -1,0 +1,152 @@
+name: Build source-pinned Windows FFmpeg
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ffmpeg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify source-build contracts
+        run: |
+          python -m unittest -v tests.test_windows_ffmpeg_contract
+          python packaging/verify_windows_ffmpeg.py contracts
+          bash -n packaging/build_windows_ffmpeg.sh
+          git diff --check
+
+  build:
+    needs: contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        build_id: [one, two]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build from pinned source without container networking
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/windows-ffmpeg
+        run: |
+          packaging/build_windows_ffmpeg.sh \
+            --output-dir "$OUTPUT_DIR" \
+            --repository-commit "$GITHUB_SHA"
+      - name: Upload clean build
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ffmpeg-${{ matrix.build_id }}
+          path: ${{ runner.temp }}/windows-ffmpeg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  receipt:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        build_id: [one, two]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Download clean build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-${{ matrix.build_id }}
+          path: ${{ runner.temp }}/windows-ffmpeg
+      - name: Execute capability checks and create receipt
+        shell: pwsh
+        env:
+          ARTIFACT: ${{ runner.temp }}/windows-ffmpeg
+        run: |
+          python packaging/verify_windows_ffmpeg.py create-receipt `
+            --ffmpeg "$env:ARTIFACT\ffmpeg.exe" `
+            --ffprobe "$env:ARTIFACT\ffprobe.exe" `
+            --source-bundle "$env:ARTIFACT\windows-ffmpeg-corresponding-source.tar" `
+            --source-manifest "$env:ARTIFACT\windows-ffmpeg-corresponding-source.manifest.json" `
+            --repository-commit "$env:GITHUB_SHA" `
+            --repo-root "$env:GITHUB_WORKSPACE" `
+            --output "$env:ARTIFACT\windows-ffmpeg-build-receipt.json"
+          python packaging/verify_windows_ffmpeg.py verify-receipt `
+            --receipt "$env:ARTIFACT\windows-ffmpeg-build-receipt.json" `
+            --ffmpeg "$env:ARTIFACT\ffmpeg.exe" `
+            --ffprobe "$env:ARTIFACT\ffprobe.exe" `
+            --source-bundle "$env:ARTIFACT\windows-ffmpeg-corresponding-source.tar" `
+            --source-manifest "$env:ARTIFACT\windows-ffmpeg-corresponding-source.manifest.json" `
+            --repository-commit "$env:GITHUB_SHA" `
+            --repo-root "$env:GITHUB_WORKSPACE"
+      - name: Upload verified receipt
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ffmpeg-receipt-${{ matrix.build_id }}
+          path: ${{ runner.temp }}/windows-ffmpeg/windows-ffmpeg-build-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
+  compare:
+    needs: receipt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Download first receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-receipt-one
+          path: ${{ runner.temp }}/receipt-one
+      - name: Download second receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-receipt-two
+          path: ${{ runner.temp }}/receipt-two
+      - name: Download accepted build candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-one
+          path: ${{ runner.temp }}/accepted
+      - name: Require reproducible executable and source receipts
+        run: |
+          python packaging/verify_windows_ffmpeg.py compare-receipts \
+            --first "${RUNNER_TEMP}/receipt-one/windows-ffmpeg-build-receipt.json" \
+            --second "${RUNNER_TEMP}/receipt-two/windows-ffmpeg-build-receipt.json"
+          cp \
+            "${RUNNER_TEMP}/receipt-one/windows-ffmpeg-build-receipt.json" \
+            "${RUNNER_TEMP}/accepted/windows-ffmpeg-build-receipt.json"
+      - name: Upload accepted source-built runtime
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ffmpeg-accepted-${{ github.sha }}
+          path: ${{ runner.temp }}/accepted
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
