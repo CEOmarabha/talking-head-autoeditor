@@ -258,6 +258,24 @@ const pseWindows = jobSlice(workflow, '\n  sign-windows:', '\n  sign-macos:');
 const pseMac = jobSlice(workflow, '\n  sign-macos:', '\n  release:');
 const releaseWorkflow = jobSlice(workflow, '\n  release:', null);
 
+// The runner context is unavailable while GitHub evaluates job-level env.
+// Resolve native temp paths from RUNNER_TEMP at runtime so the workflows are
+// accepted by GitHub and still build outside File Provider workspaces.
+assert.ok(!workflow.includes('DESKTOP_DIST: ${{ runner.temp }}'));
+assert.ok(!helperWorkflow.includes('HELPER_DIST: ${{ runner.temp }}'));
+assert.ok(pseUnsigned.includes(
+  'echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-dist" >> "$GITHUB_ENV"'));
+for (const signedJob of [pseWindows, pseMac]) {
+  assert.ok(signedJob.includes(
+    'echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-signed-dist" >> "$GITHUB_ENV"'));
+}
+assert.ok(helperUnsigned.includes(
+  'echo "HELPER_DIST=$RUNNER_TEMP/helper-dist" >> "$GITHUB_ENV"'));
+for (const signedJob of [helperWindows, helperMac]) {
+  assert.ok(signedJob.includes(
+    'echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"'));
+}
+
 const helperUnsignedWindowsGate = jobSlice(
   helperUnsigned,
   '\n      - name: Smoke-test installed Windows app and signature',

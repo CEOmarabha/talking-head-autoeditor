@@ -41,15 +41,15 @@ jobs:
             electron_target: mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
-    env:
-      # FileProvider-backed workspaces can attach FinderInfo after signing.
-      # Build outside the checkout and use this path for every artifact gate.
-      HELPER_DIST: ${{ runner.temp }}/helper-dist
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "HELPER_DIST=$RUNNER_TEMP/helper-dist" >> "$GITHUB_ENV"
 
       - name: Resolve version and release policy
         id: release
@@ -631,12 +631,14 @@ jobs:
     permissions:
       contents: read
     environment: helper-windows-signing
-    env:
-      HELPER_DIST: ${{ runner.temp }}/helper-signed-dist
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -920,12 +922,14 @@ jobs:
     permissions:
       contents: read
     environment: helper-macos-signing
-    env:
-      HELPER_DIST: ${{ runner.temp }}/helper-signed-dist
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
