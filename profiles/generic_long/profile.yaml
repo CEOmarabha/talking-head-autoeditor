@@ -1,0 +1,42 @@
+# Generic long talking-head profile.
+
+meta:
+  display_name: "Long Talking Head"
+  status: "approved"
+  description: "Generic long-form talk, explanation, or YouTube lesson"
+
+brand:
+  accent: "#E8C7A7"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans"
+  caption_scale: 0.045
+  caption_words: 4
+
+rules:
+  min_pause_long: 0.90
+  min_pause_short: 0.55
+  pad_head: 0.30
+  pad_tail: 0.35
+  retake_min_words: 3
+  retake_max_gap: 14.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "long"
+  long_cap_scale: 0.045
+  long_cap_words: 4
+  long_cap_margin: 0.10
+
+creative:
+  mode: "generic long talking-head video"
+  opening: "Open on the strongest spoken claim and establish the subject without a decorative intro."
+  performance: "Keep the speaker authoritative and let complete thoughts retain enough breathing room."
+  punch_ins: "Use restrained punch-ins on verdicts, transitions, and authentic emphasis."
+  broll: "Use literal footage or grounded explanatory visuals that match the nearby spoken claim."
+  graphics: "Use concise cards for supported numbers, definitions, comparisons, or named ideas."
+  sound: "Keep sound design sparse under clear speech."
+  avoid: "No decorative montage, invented framework labels, or visuals that compete with the explanation."

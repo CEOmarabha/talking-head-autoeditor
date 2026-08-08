@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import ast
 import argparse
+import contextlib
 import hashlib
 import http.client
+import io
 import json
 import os
+import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +24,555 @@ from autoeditor import (
 
 
 class SafetyContracts(unittest.TestCase):
+    def test_macos_ffmpeg_formula_path_mapping(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "verify_macos_ffmpeg_formulae.py")
+        )
+        identify = namespace["formula_version_from_cellar"]
+        self.assertEqual(
+            identify(
+                Path("/opt/homebrew/Cellar/x264/r3222/lib/libx264.165.dylib"),
+                Path("/opt/homebrew/Cellar"),
+            ),
+            ("x264", "r3222"),
+        )
+        self.assertEqual(
+            identify(
+                Path("/opt/homebrew/Cellar/ffmpeg/8.1.2_1"),
+                Path("/opt/homebrew/Cellar"),
+            ),
+            ("ffmpeg", "8.1.2_1"),
+        )
+        error = namespace["FormulaInventoryError"]
+        with self.assertRaisesRegex(error, "outside Homebrew Cellar"):
+            identify(
+                Path("/usr/local/lib/libunexpected.dylib"),
+                Path("/opt/homebrew/Cellar"),
+            )
+
+    def test_macos_ffmpeg_formula_inventory_comparison_fails_closed(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "verify_macos_ffmpeg_formulae.py")
+        )
+        compare = namespace["compare_inventories"]
+        error = namespace["FormulaInventoryError"]
+        record = namespace["BottleRecord"]
+        expected = {
+            "ffmpeg": record(
+                "ffmpeg", "8.1.2_1", "arm64_sequoia", 0, "a" * 64
+            ),
+            "x264": record(
+                "x264", "r3222", "arm64_sequoia", 0, "b" * 64
+            ),
+        }
+        compare({"ffmpeg": "8.1.2_1", "x264": "r3222"}, expected)
+        with self.assertRaisesRegex(error, "missing formulae: x264"):
+            compare({"ffmpeg": "8.1.2_1"}, expected)
+        with self.assertRaisesRegex(error, "unexpected formulae: libextra"):
+            compare({**expected, "libextra": "1.0"}, expected)
+        with self.assertRaisesRegex(
+            error, "x264 expected r3222, found r9999"
+        ):
+            compare({"ffmpeg": "8.1.2_1", "x264": "r9999"}, expected)
+        verify_archive = namespace["verify_bottle_archive"]
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / (
+                "cache--ffmpeg--8.1.2_1.arm64_sequoia.bottle.tar.gz"
+            )
+            archive.write_bytes(b"exact bottle")
+            exact = record(
+                "ffmpeg", "8.1.2_1", "arm64_sequoia", 0,
+                hashlib.sha256(b"exact bottle").hexdigest(),
+            )
+            verify_archive(archive, exact)
+            with self.assertRaisesRegex(error, "bottle SHA-256 drifted"):
+                verify_archive(archive, record(
+                    "ffmpeg", "8.1.2_1", "arm64_sequoia", 0, "0" * 64
+                ))
+            with self.assertRaisesRegex(error, "unexpected bottle filename"):
+                verify_archive(archive, record(
+                    "ffmpeg", "8.1.2_1", "arm64_sequoia", 1,
+                    exact.bottle_sha256,
+                ))
+
+    def test_helper_manifest_ignores_packaging_placeholders_and_verifies(self):
+        root = Path(__file__).resolve().parent.parent
+        generator = root / "packaging" / "generate_helper_manifest.py"
+        verifier = root / "packaging" / "verify_helper_manifest.py"
+        components = (
+            "helper", "engine", "bin", "lib", "models", "profiles",
+            "fonts", "certs", "node", "creative-runtime", "browser",
+            "creative", "licenses",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            stage = Path(td)
+            for component in components:
+                folder = stage / component
+                folder.mkdir()
+                (folder / "payload.bin").write_bytes(component.encode())
+                (folder / ".gitkeep").write_text("")
+                (folder / ".DS_Store").write_bytes(b"finder")
+                (folder / "._payload.bin").write_bytes(b"appledouble")
+            manifest = stage / "runtime-manifest.json"
+            subprocess.run([
+                sys.executable, str(generator), "--stage", str(stage),
+                "--output", str(manifest), "--target-os", "mac",
+                "--target-arch", "arm64", "--version", "0.1.0",
+            ], check=True)
+            expected_manifest = stage / "expected-runtime-manifest.json"
+            shutil.copy2(manifest, expected_manifest)
+            payload = json.loads(manifest.read_text())
+            self.assertTrue(all(
+                receipt["files"] == 1
+                for receipt in payload["components"].values()
+            ))
+            self.assertIn(
+                "in_process_low_speech_cutter",
+                payload["required_local_capabilities"],
+            )
+            self.assertIn(
+                "typed_deepseek_revision_contract",
+                payload["required_local_capabilities"],
+            )
+            self.assertEqual(
+                payload["account_capabilities"]["remotion"],
+                "required: free-license eligibility or paid key",
+            )
+            subprocess.run([
+                sys.executable, str(verifier), "--resources", str(stage),
+                "--expected-manifest", str(expected_manifest),
+                "--target-os", "mac", "--target-arch", "arm64",
+                "--version", "0.1.0",
+            ], check=True, capture_output=True, text=True)
+            valid_manifest = manifest.read_bytes()
+            missing = json.loads(valid_manifest)
+            missing["required_local_capabilities"].remove(
+                "in_process_low_speech_cutter"
+            )
+            missing_bytes = (
+                json.dumps(missing, indent=2, sort_keys=True) + "\n"
+            ).encode()
+            manifest.write_bytes(missing_bytes)
+            expected_manifest.write_bytes(missing_bytes)
+            capability_failure = subprocess.run([
+                sys.executable, str(verifier), "--resources", str(stage),
+                "--expected-manifest", str(expected_manifest),
+                "--target-os", "mac", "--target-arch", "arm64",
+                "--version", "0.1.0",
+            ], capture_output=True, text=True)
+            self.assertNotEqual(capability_failure.returncode, 0)
+            self.assertIn(
+                "in_process_low_speech_cutter", capability_failure.stderr
+            )
+            manifest.write_bytes(valid_manifest)
+            expected_manifest.write_bytes(valid_manifest)
+            (stage / "engine" / "payload.bin").write_bytes(b"changed")
+            failed = subprocess.run([
+                sys.executable, str(verifier), "--resources", str(stage),
+                "--expected-manifest", str(expected_manifest),
+                "--target-os", "mac", "--target-arch", "arm64",
+                "--version", "0.1.0",
+            ], capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("engine", failed.stderr)
+
+    def test_helper_release_metadata_requires_all_three_exact_candidates(self):
+        root = Path(__file__).resolve().parent.parent
+        script = root / "packaging" / "helper_release_metadata.py"
+        targets = (
+            ("windows", "x64"), ("mac", "arm64"), ("mac", "x64"),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            for target_os, arch in targets:
+                folder = work / f"{target_os}-{arch}"
+                folder.mkdir()
+                installer = folder / ("helper.exe" if target_os == "windows"
+                                      else "helper.dmg")
+                installer.write_bytes(f"{target_os}-{arch}".encode())
+                runtime = folder / f"runtime-manifest-{target_os}-{arch}.json"
+                runtime.write_text(json.dumps({
+                    "target": {"os": target_os, "arch": arch},
+                    "version": "1.2.3",
+                }))
+                receipt = folder / f"candidate-{target_os}-{arch}.json"
+                subprocess.run([
+                    sys.executable, str(script), "candidate",
+                    "--file", str(installer),
+                    "--runtime-manifest", str(runtime),
+                    "--target-os", target_os, "--arch", arch,
+                    "--tag", "helper-v1.2.3", "--commit", "a" * 40,
+                    "--run-id", "123", "--run-attempt", "2",
+                    "--signing-status", "verified",
+                    "--notarization-status",
+                    "not-applicable" if target_os == "windows" else "verified",
+                    "--output", str(receipt),
+                ], check=True)
+                data = json.loads(receipt.read_text())
+                head = folder / "head.json"
+                head.write_text(json.dumps({
+                    "ContentLength": data["bytes"],
+                    "Metadata": {"sha256": data["sha256"]},
+                }))
+                subprocess.run([
+                    sys.executable, str(script), "verify-head",
+                    "--receipt", str(receipt), "--head", str(head),
+                    "--tag", "helper-v1.2.3",
+                ], check=True)
+            output = work / "release"
+            subprocess.run([
+                sys.executable, str(script), "assemble",
+                "--receipts", str(work), "--tag", "helper-v1.2.3",
+                "--commit", "a" * 40, "--run-id", "123",
+                "--run-attempt", "2",
+                "--output", str(output),
+            ], check=True)
+            pointer = json.loads((output / "current.json").read_text())
+            self.assertEqual(pointer["schema"],
+                             "autoeditor-helper-release/v1")
+            self.assertEqual(set(pointer["platforms"]), {
+                "windows-x64", "mac-arm64", "mac-x64",
+            })
+            self.assertEqual(pointer["source"], {
+                "commit": "a" * 40, "run_id": "123", "run_attempt": "2",
+            })
+            self.assertEqual(
+                pointer["verification"]["windows-x64"]["notarization"],
+                "not-applicable",
+            )
+            self.assertEqual(
+                pointer["verification"]["mac-arm64"]["notarization"],
+                "verified",
+            )
+            self.assertEqual(
+                len((output / "SHA256SUMS.txt").read_text().splitlines()), 3
+            )
+            github_assets = json.loads(
+                (output / "github-assets.json").read_text()
+            )
+            self.assertEqual(
+                github_assets["schema"],
+                "autoeditor-helper-github-assets/v1",
+            )
+            self.assertEqual(len(github_assets["assets"]), 6)
+            emitted_assets = subprocess.run([
+                sys.executable, str(script), "github-assets",
+                "--plan", str(output / "github-assets.json"),
+            ], check=True, capture_output=True).stdout.rstrip(b"\0").split(b"\0")
+            self.assertEqual(len(emitted_assets), 6)
+            for release in pointer["platforms"].values():
+                self.assertIn(
+                    f"dist/helper/objects/{release['sha256']}/",
+                    release["key"],
+                )
+            extra_manifest = work / "extra" / "runtime-manifest-unused.json"
+            extra_manifest.parent.mkdir()
+            extra_manifest.write_text("{}")
+            extra_manifest_failure = subprocess.run([
+                sys.executable, str(script), "assemble",
+                "--receipts", str(work), "--tag", "helper-v1.2.3",
+                "--commit", "a" * 40, "--run-id", "123",
+                "--run-attempt", "2",
+                "--output", str(work / "extra-manifest-release"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(extra_manifest_failure.returncode, 0)
+            self.assertIn(
+                "unreferenced or missing runtime manifest",
+                extra_manifest_failure.stderr,
+            )
+            extra_manifest.unlink()
+            current = work / "current-newer.json"
+            newer = {**pointer, "tag": "helper-v2.0.0", "version": "2.0.0"}
+            current.write_text(json.dumps(newer))
+            downgrade = subprocess.run([
+                sys.executable, str(script), "guard",
+                "--candidate", str(output / "current.json"),
+                "--current", str(current),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(downgrade.returncode, 0)
+            self.assertIn("downgrade blocked", downgrade.stderr)
+            mismatched_receipt = (
+                work / "windows-x64" / "candidate-windows-x64.json"
+            )
+            mismatched = json.loads(mismatched_receipt.read_text())
+            mismatched["source"]["run_attempt"] = "3"
+            mismatched_receipt.write_text(json.dumps(mismatched))
+            provenance_failure = subprocess.run([
+                sys.executable, str(script), "assemble",
+                "--receipts", str(work), "--tag", "helper-v1.2.3",
+                "--commit", "a" * 40, "--run-id", "123",
+                "--run-attempt", "2", "--output", str(work / "bad-release"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(provenance_failure.returncode, 0)
+            self.assertIn("different workflow runs", provenance_failure.stderr)
+
+    def test_release_requirements_are_exact_and_hashed(self):
+        root = Path(__file__).resolve().parent.parent
+        for filename in (
+            "requirements-windows-x64.txt",
+            "requirements-mac-arm64.txt",
+            "requirements-mac-x64.txt",
+        ):
+            lines = (root / "packaging" / filename).read_text().splitlines()
+            requirements = [line for line in lines if line and not line.startswith("#")]
+            self.assertGreaterEqual(len(requirements), 40)
+            self.assertTrue(all("==" in line for line in requirements))
+            self.assertTrue(all(" --hash=sha256:" in line for line in requirements))
+            self.assertFalse(any(">=" in line or "~=" in line for line in requirements))
+            self.assertFalse(any(
+                line.startswith("auto-editor==") for line in requirements
+            ))
+
+    def test_engine_self_test_executes_frozen_runtime_contracts(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(str(root / "packaging" / "engine_entry.py"))
+        stdout = io.StringIO()
+        missing_source = (
+            root / "missing-pyinstaller-source" / "creative_contract.py"
+        )
+        with mock.patch.object(
+                creative_contract, "__file__", str(missing_source)), \
+                contextlib.redirect_stdout(stdout):
+            result = namespace["_self_test"]()
+        receipt = json.loads(stdout.getvalue())
+        self.assertEqual(result, 0, receipt)
+        self.assertTrue(receipt["checks"]["in_process_low_speech_cutter"])
+        self.assertTrue(receipt["checks"]["creative_contract_sha256"])
+
+    def test_helper_daemon_self_test_executes_revision_contract(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "helper_daemon_entry.py"))
+        self.assertTrue(namespace["revision_contract_check"]())
+
+    def test_under_ten_words_cuts_only_safe_source_time_silence(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            src = work / "source.mp4"
+            src.write_bytes(b"source-video")
+            rendered = work / "rendered.mp4"
+            words = [
+                {"w": "one", "s": 0.5, "e": 0.8, "p": 0.9},
+                {"w": "two", "s": 3.0, "e": 3.5, "p": 0.9},
+                {"w": "three", "s": 8.0, "e": 8.2, "p": 0.9},
+            ]
+            analyzed = subprocess.CompletedProcess(
+                [], 0, b"", b"silence_start: 2.0\nsilence_end: 6.0\n"
+            )
+            captured_cuts = []
+
+            def fake_apply(_src, cuts, _workdir):
+                captured_cuts.extend(cuts)
+                rendered.write_bytes(b"rendered-video")
+                return rendered
+
+            def fake_duration(path):
+                return 7.45 if Path(path) == rendered else 10.0
+
+            with mock.patch.object(
+                pipeline, "transcribe", return_value=words
+            ), mock.patch.object(
+                pipeline, "_dur", side_effect=fake_duration
+            ), mock.patch.object(
+                pipeline, "_resolve_low_speech_ffmpeg",
+                return_value=Path("/bundle/bin/ffmpeg"),
+            ), mock.patch.object(
+                pipeline, "run", return_value=analyzed
+            ) as analyzer, mock.patch.object(
+                pipeline, "apply_cuts", side_effect=fake_apply
+            ) as renderer:
+                output, ratio, raw_words = pipeline.word_guarded_cut(src, work)
+
+            self.assertEqual(output, rendered)
+            self.assertAlmostEqual(ratio, 0.745)
+            self.assertEqual(raw_words, words)
+            analyzer.assert_called_once()
+            renderer.assert_called_once()
+            self.assertEqual(captured_cuts, [
+                {"s": 2.15, "e": 2.7,
+                 "why": "confirmed silence outside protected words"},
+                {"s": 3.85, "e": 5.85,
+                 "why": "confirmed silence outside protected words"},
+            ])
+            for cut in captured_cuts:
+                self.assertFalse(cut["s"] < 3.85 and cut["e"] > 2.7)
+
+    def test_under_ten_words_no_safe_cut_is_explicitly_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            src = work / "source.mp4"
+            src.write_bytes(b"source-video")
+            analyzed = subprocess.CompletedProcess([], 0, b"", b"")
+            events = []
+            with mock.patch.object(
+                pipeline, "transcribe", return_value=[]
+            ), mock.patch.object(
+                pipeline, "_dur", return_value=10.0
+            ), mock.patch.object(
+                pipeline, "_resolve_low_speech_ffmpeg",
+                return_value=Path("/bundle/bin/ffmpeg"),
+            ), mock.patch.object(
+                pipeline, "run", return_value=analyzed
+            ), mock.patch.object(
+                pipeline, "apply_cuts"
+            ) as renderer, mock.patch.object(
+                pipeline, "emit", side_effect=events.append
+            ):
+                output, ratio, _ = pipeline.word_guarded_cut(src, work)
+            self.assertEqual(output.read_bytes(), src.read_bytes())
+            self.assertEqual(ratio, 1.0)
+            renderer.assert_not_called()
+            self.assertEqual(events[-1]["event"], "low_speech_no_safe_cut")
+            self.assertIn("no confirmed", events[-1]["reason"])
+
+    def test_low_speech_retention_guard_preserves_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            src = work / "source.mp4"
+            src.write_bytes(b"source-video")
+            analyzed = subprocess.CompletedProcess(
+                [], 0, b"", b"silence_start: 0\nsilence_end: 10\n"
+            )
+            with mock.patch.object(
+                pipeline, "_dur", return_value=10.0
+            ), mock.patch.object(
+                pipeline, "_resolve_low_speech_ffmpeg",
+                return_value=Path("/bundle/bin/ffmpeg"),
+            ), mock.patch.object(
+                pipeline, "run", return_value=analyzed
+            ) as analyzer, mock.patch.object(
+                pipeline, "apply_cuts"
+            ) as renderer:
+                output, ratio = pipeline.silence_cut(src, work, words=[])
+            self.assertEqual(output.read_bytes(), src.read_bytes())
+            self.assertEqual(ratio, 1.0)
+            self.assertEqual(analyzer.call_count, 3)
+            renderer.assert_not_called()
+
+    def test_low_speech_analysis_failure_blocks_instead_of_copying(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            src = work / "source.mp4"
+            src.write_bytes(b"source-video")
+            failed = subprocess.CompletedProcess([], 1, b"", b"decode failed")
+            with mock.patch.object(
+                pipeline, "_dur", return_value=10.0
+            ), mock.patch.object(
+                pipeline, "_resolve_low_speech_ffmpeg",
+                return_value=Path("/bundle/bin/ffmpeg"),
+            ), mock.patch.object(pipeline, "run", return_value=failed):
+                with self.assertRaisesRegex(
+                    pipeline.LowSpeechCutError, "analysis failed"
+                ):
+                    pipeline.silence_cut(src, work, words=[])
+            self.assertFalse((work / "cut.mp4").exists())
+
+    def test_low_speech_render_failure_blocks_instead_of_copying(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            src = work / "source.mp4"
+            src.write_bytes(b"source-video")
+            analyzed = subprocess.CompletedProcess(
+                [], 0, b"", b"silence_start: 2\nsilence_end: 5\n"
+            )
+            render_error = subprocess.CalledProcessError(1, ["ffmpeg"])
+            with mock.patch.object(
+                pipeline, "_dur", return_value=10.0
+            ), mock.patch.object(
+                pipeline, "_resolve_low_speech_ffmpeg",
+                return_value=Path("/bundle/bin/ffmpeg"),
+            ), mock.patch.object(
+                pipeline, "run", return_value=analyzed
+            ), mock.patch.object(
+                pipeline, "apply_cuts", side_effect=render_error
+            ):
+                with self.assertRaisesRegex(
+                    pipeline.LowSpeechCutError, "render failed"
+                ):
+                    pipeline.silence_cut(src, work, words=[])
+            self.assertFalse((work / "cut.mp4").exists())
+
+    def test_frozen_low_speech_requires_verified_ffmpeg_path(self):
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.dict(os.environ, {}, clear=True), \
+                self.assertRaisesRegex(
+                    pipeline.LowSpeechCutError, "AUTOEDITOR_FFMPEG"
+                ):
+            pipeline._resolve_low_speech_ffmpeg()
+
+    def test_release_receipts_credit_builder(self):
+        source = Path(pipeline.__file__).read_text()
+        self.assertIn('"built_by": "Omar Marabha (@CEOmarabha)"', source)
+
+    def test_remotion_render_forwards_selected_license_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            project = root / "remotion"
+            project.mkdir()
+            fonts = root / "fonts"
+            fonts.mkdir()
+            (project / "package.json").write_text("{}")
+            calls = []
+
+            def fake_run(command, **_kwargs):
+                calls.append(command)
+                Path(command[5]).write_bytes(b"video")
+
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_REQUIRE_REMOTION": "1",
+                "AUTOEDITOR_NODE": "/bundle/node",
+                "AUTOEDITOR_REMOTION_CLI": "/bundle/remotion-cli.js",
+                "AUTOEDITOR_BROWSER": "/bundle/chrome",
+                "AUTOEDITOR_BUNDLED_FONTS": str(fonts),
+                "REMOTION_LICENSE_KEY": "free-license",
+            }), mock.patch.object(
+                premium, "REMOTION_PROJ", project
+            ), mock.patch.object(
+                premium, "BROLL_CACHE", root / "cache"
+            ), mock.patch.object(
+                premium, "_run", side_effect=fake_run
+            ), mock.patch.object(
+                premium, "_validated_cached", return_value=None
+            ), mock.patch.object(
+                premium, "_valid_video_asset", return_value=True
+            ):
+                output = premium._remotion_viz(
+                    {"template": "flow", "title": "TEST", "items": ["ONE"]},
+                    2.5, 320, 568,
+                )
+            self.assertTrue(output)
+            self.assertIn("--license-key=free-license", calls[0])
+            self.assertIn(f"--public-dir={fonts}", calls[0])
+            self.assertIn("--bundle-cache=false", calls[0])
+
+    def test_creative_renderers_use_bundled_work_sans(self):
+        premium_source = Path(premium.__file__).read_text()
+        remotion_root = (
+            Path(__file__).resolve().parent.parent / "templates" /
+            "remotion-viz" / "src" / "Root.tsx"
+        ).read_text()
+        self.assertIn("WorkSans-Variable.ttf", premium_source)
+        self.assertIn("AUTOEDITOR_BUNDLED_FONTS", premium_source)
+        self.assertIn("staticFile('WorkSans-Variable.ttf')", remotion_root)
+
+    def test_packaged_skip_does_not_read_old_account_key_or_cached_sfx(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old_key = root / "elevenlabs.key"
+            old_key.write_text("old-secret")
+            (root / "eleven_boom.wav").write_bytes(b"old-generated-audio")
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }), mock.patch.object(
+                premium, "ELEVEN_KEY_FILE", old_key
+            ), mock.patch.object(premium, "SFX_DIR", root):
+                self.assertEqual(
+                    premium._api_key("ELEVENLABS_API_KEY", old_key), ""
+                )
+                self.assertEqual(premium._resolve_sfx("boom"), root / "boom.wav")
+
     def test_premium_media_checks_use_packaged_ffmpeg_paths(self):
         probe_result = mock.Mock(
             stdout=json.dumps({
@@ -350,6 +903,136 @@ class SafetyContracts(unittest.TestCase):
         self.assertIn("LATE_MARKER", payload)
         self.assertEqual(json.loads(payload)[-1]["i"], 1599)
         self.assertNotIn("[:6000]", Path(premium.__file__).read_text())
+
+    def test_heuristic_hook_leaves_short_edit_sync_windows(self):
+        duration = 11.0
+        words = [
+            {"w": f"word{index}", "s": index * 0.4,
+             "e": index * 0.4 + 0.28}
+            for index in range(27)
+        ]
+        edl = premium.heuristic_edl(
+            words, [], duration, style="short"
+        )
+        self.assertEqual(len(edl["punch_ins"]), 1)
+        hook = edl["punch_ins"][0]
+        self.assertLessEqual(hook["e"] - hook["s"], 2.5)
+
+        scheduled = premium._heuristic_sync_probe_schedule(
+            words, edl, duration
+        )
+        self.assertGreaterEqual(len(scheduled), 4)
+
+    def test_heuristic_drops_later_punch_that_starves_sync_probes(self):
+        duration = 10.8
+        words = []
+        for index in range(26):
+            token = f"word{index}"
+            if index == 12:
+                token += "."
+            if index == 13:
+                token = "50%"
+            words.append({
+                "w": token,
+                "s": index * 0.4,
+                "e": index * 0.4 + 0.28,
+            })
+        edl = premium.heuristic_edl(
+            words, [], duration, style="short"
+        )
+        self.assertEqual(edl["punch_ins"], [
+            {"s": 0.0, "e": 2.5, "scale": 1.1}
+        ])
+
+        scheduled = premium._heuristic_sync_probe_schedule(
+            words, edl, duration
+        )
+        self.assertGreaterEqual(len(scheduled), 4)
+
+    def test_heuristic_reserve_matches_gate5_group_scheduling(self):
+        def make_words(duration, sentence_seconds, offset):
+            words = []
+            words_per_sentence = 10
+            word_step = sentence_seconds / words_per_sentence
+            index = 0
+            while offset + index * word_step < duration - 0.3:
+                token = (
+                    "plain"
+                    if index % words_per_sentence != words_per_sentence - 1
+                    else f"{index // words_per_sentence + 1}."
+                )
+                start = offset + index * word_step
+                words.append({
+                    "w": token,
+                    "s": round(start, 3),
+                    "e": round(min(
+                        duration - 0.02, start + word_step * 0.7
+                    ), 3),
+                })
+                index += 1
+            return words
+
+        cases = (
+            (10.8, 7.0, 0.4),
+            (25.0, 4.0, 0.2),
+        )
+        for duration, sentence_seconds, offset in cases:
+            with self.subTest(duration=duration):
+                words = make_words(duration, sentence_seconds, offset)
+                edl = premium.heuristic_edl(
+                    words, [], duration, style="short"
+                )
+                word_mids = [
+                    (word["s"] + word["e"]) / 2
+                    for word in words
+                ]
+                avoid = [
+                    (event["s"] - 1.0, event["e"] + 1.0)
+                    for layer in ("broll", "graphics", "punch_ins")
+                    for event in edl[layer]
+                ]
+                groups = pipeline._probe_candidate_groups(
+                    word_mids,
+                    avoid,
+                    duration,
+                    min(word_mids),
+                    max(word_mids),
+                )
+                tried = set()
+                expected = []
+                for group in groups:
+                    for timestamp in group:
+                        key = round(timestamp, 3)
+                        if key in tried:
+                            continue
+                        tried.add(key)
+                        expected.append(timestamp)
+                        break
+
+                scheduled = premium._heuristic_sync_probe_schedule(
+                    words, edl, duration
+                )
+                self.assertEqual(
+                    [round(value, 3) for value in scheduled],
+                    [round(value, 3) for value in expected],
+                )
+                self.assertGreaterEqual(len(scheduled), 4)
+
+    def test_creative_contract_hash_does_not_require_module_source(self):
+        source_hash = creative_contract.contract_sha256()
+        self.assertEqual(
+            source_hash,
+            "b95e53c789c1e0cc9c745dd101275f1844ce951db266cc67c2e99756d9a8157f",
+        )
+        missing_source = (
+            Path("/pyinstaller") / "autoeditor" / "creative_contract.py"
+        )
+        with mock.patch.object(
+                creative_contract, "__file__", str(missing_source)):
+            frozen_hash = creative_contract.contract_sha256()
+        self.assertEqual(frozen_hash, source_hash)
+        self.assertEqual(len(frozen_hash), 64)
+        self.assertEqual(len(bytes.fromhex(frozen_hash)), 32)
 
     def test_creative_contract_anchors_times_to_spoken_words(self):
         spoken = (
@@ -967,6 +1650,10 @@ class SafetyContracts(unittest.TestCase):
             portrait = work / "portrait.mp4"
             pillared = work / "pillared.mp4"
             bad_audio = work / "bad_audio.mp4"
+            bad_sar = work / "bad_sar.mp4"
+            black_background = work / "black_background.mp4"
+            low_res_9x16 = work / "low_res_9x16.mp4"
+            low_res_16x9 = work / "low_res_16x9.mp4"
             subprocess.run([
                 pipeline.FFMPEG, "-v", "error", "-y",
                 "-f", "lavfi", "-i",
@@ -980,7 +1667,7 @@ class SafetyContracts(unittest.TestCase):
                 pipeline.FFMPEG, "-v", "error", "-y",
                 "-i", str(landscape), "-vf",
                 "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),"
-                "scale=1080:1920",
+                "scale=1080:1920,setsar=1",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-c:a", "copy", str(cropped),
             ], check=True)
@@ -1001,14 +1688,61 @@ class SafetyContracts(unittest.TestCase):
                 "-i", str(portrait), "-filter_complex",
                 "[0:v]split=2[a][b];"
                 "[a]scale=64:36,scale=1920:1080:flags=bicubic,"
-                "crop=1920:1080[bg];"
-                "[b]scale=-2:1080[fg];"
-                "[bg][fg]overlay=(W-w)/2:0",
+                "crop=1920:1080,setsar=1[bg];"
+                "[b]scale=608:1080,setsar=1[fg];"
+                "[bg][fg]overlay=(W-w)/2:0,setsar=1",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-c:a", "copy", str(pillared),
             ], check=True)
             pillar_result = pipeline.verify_aspect_derivative(
                 pillared, portrait, "portrait_pillarbox_16x9", {}, 3.0
+            )
+            fit_result = pipeline.verify_aspect_derivative(
+                pillared, portrait, "fit_blur_16x9", {}, 3.0
+            )
+            wrong_geometry = pipeline.verify_aspect_derivative(
+                landscape, landscape, "center_crop_9x16", {}, 3.0
+            )
+            subprocess.run([
+                pipeline.FFMPEG, "-v", "error", "-y",
+                "-i", str(cropped), "-vf", "setsar=2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-c:a", "copy", str(bad_sar),
+            ], check=True)
+            bad_sar_result = pipeline.verify_aspect_derivative(
+                bad_sar, landscape, "center_crop_9x16", {}, 3.0
+            )
+            subprocess.run([
+                pipeline.FFMPEG, "-v", "error", "-y",
+                "-i", str(cropped), "-vf", "scale=540:960,setsar=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-c:a", "copy", str(low_res_9x16),
+            ], check=True)
+            low_res_9x16_result = pipeline.verify_aspect_derivative(
+                low_res_9x16, landscape, "center_crop_9x16", {}, 3.0
+            )
+            subprocess.run([
+                pipeline.FFMPEG, "-v", "error", "-y",
+                "-f", "lavfi", "-i",
+                "color=black:size=1920x1080:rate=30:duration=3",
+                "-i", str(portrait), "-filter_complex",
+                "[0:v]setsar=1[bg];[1:v]scale=608:1080,setsar=1[fg];"
+                "[bg][fg]overlay=(W-w)/2:0,setsar=1[v]",
+                "-map", "[v]", "-map", "1:a", "-c:v", "libx264",
+                "-preset", "veryfast", "-crf", "18", "-c:a", "copy",
+                str(black_background),
+            ], check=True)
+            black_background_result = pipeline.verify_aspect_derivative(
+                black_background, portrait, "fit_blur_16x9", {}, 3.0
+            )
+            subprocess.run([
+                pipeline.FFMPEG, "-v", "error", "-y",
+                "-i", str(pillared), "-vf", "scale=960:540,setsar=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-c:a", "copy", str(low_res_16x9),
+            ], check=True)
+            low_res_16x9_result = pipeline.verify_aspect_derivative(
+                low_res_16x9, portrait, "fit_blur_16x9", {}, 3.0
             )
             subprocess.run([
                 pipeline.FFMPEG, "-v", "error", "-y",
@@ -1023,6 +1757,16 @@ class SafetyContracts(unittest.TestCase):
             )
         self.assertTrue(crop_result["ok"])
         self.assertTrue(pillar_result["ok"])
+        self.assertTrue(fit_result["ok"])
+        self.assertFalse(wrong_geometry["ok"])
+        self.assertIn("1080x1920", wrong_geometry["note"])
+        self.assertFalse(bad_sar_result["ok"])
+        self.assertIn("square pixels", bad_sar_result["note"])
+        self.assertFalse(low_res_9x16_result["ok"])
+        self.assertIn("1080x1920", low_res_9x16_result["note"])
+        self.assertFalse(black_background_result["ok"])
+        self.assertFalse(low_res_16x9_result["ok"])
+        self.assertIn("1920x1080", low_res_16x9_result["note"])
         self.assertFalse(rejected["ok"])
         self.assertFalse(rejected["audio_hash_match"])
 
@@ -1265,6 +2009,69 @@ class SafetyContracts(unittest.TestCase):
         self.assertTrue(all(groups[index] for index in range(4)))
         self.assertEqual(pipeline.SOURCE_SYNC_MAX_GAP_SECONDS, 30.0)
 
+    def test_source_audio_locator_uses_the_exact_window_energy(self):
+        import numpy as np
+
+        raw_audio = np.zeros(64, dtype=np.float64)
+        raw_audio[0] = 1.0
+        locator = pipeline._normalized_audio_window_locator(
+            raw_audio, window_length=16, sample_rate=16
+        )
+        raw_time, best, second = locator(raw_audio[:16] * 2.0 + 3.0)
+
+        self.assertEqual(raw_time, 0.0)
+        self.assertGreater(best, 0.999)
+        self.assertLessEqual(best, 1.0)
+        self.assertEqual(second, -1.0)
+
+    def test_source_audio_locator_rejects_zero_energy_evidence(self):
+        import numpy as np
+
+        locator = pipeline._normalized_audio_window_locator(
+            np.zeros(64, dtype=np.float64),
+            window_length=16,
+            sample_rate=16,
+        )
+        self.assertEqual(locator(np.ones(16)), (0.0, -1.0, -1.0))
+
+    def test_source_audio_locator_ignores_a_near_silent_decoy(self):
+        import numpy as np
+
+        rng = np.random.default_rng(20260807)
+        target = rng.normal(size=32)
+        raw_audio = np.zeros(256, dtype=np.float64)
+        raw_audio[96:128] = target
+        raw_audio[192:224] = target * 1e-8
+        locator = pipeline._normalized_audio_window_locator(
+            raw_audio, window_length=32, sample_rate=32
+        )
+        raw_time, best, _second = locator(target * 0.4 + 0.2)
+
+        self.assertEqual(raw_time, 3.0)
+        self.assertGreater(best, 0.999)
+        self.assertLessEqual(best, 1.0)
+
+    def test_source_audio_locator_exposes_an_ambiguous_duplicate(self):
+        import numpy as np
+
+        rng = np.random.default_rng(20260807)
+        target = rng.normal(size=32)
+        raw_audio = np.zeros(256, dtype=np.float64)
+        raw_audio[64:96] = target
+        raw_audio[160:192] = target
+        locator = pipeline._normalized_audio_window_locator(
+            raw_audio, window_length=32, sample_rate=32
+        )
+        raw_time, best, second = locator(target * 0.4 + 0.2)
+
+        # Equal peaks may resolve to either duplicate depending on the FFT and
+        # NumPy implementation. The contract is that both remain visible as
+        # ambiguous, not which tied peak wins argmax.
+        self.assertIn(raw_time, (2.0, 5.0))
+        self.assertGreater(best, 0.999)
+        self.assertGreater(second, 0.999)
+        self.assertLess(best - second, 0.08)
+
     def test_ignored_option_combinations_fail_instead_of_changing_modes(self):
         base = {
             "no_premium": False,
@@ -1305,6 +2112,102 @@ class SafetyContracts(unittest.TestCase):
         self.assertTrue(burned["ok"])
         self.assertFalse(missing_burn["ok"])
         self.assertTrue(sidecar_mode["ok"])
+
+    def test_caption_safe_area_blocks_unsafe_burned_layout(self):
+        words = [{"w": "hello", "s": 0.0, "e": 0.3}]
+        fake_ffmpeg = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"",
+            stderr=b'{"input_i":"-14.0"}',
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rendered = root / "unsafe.UNVERIFIED.mp4"
+            rendered.write_bytes(b"rendered")
+            sidecar = root / "captions.srt"
+            sidecar.write_text("caption")
+            with mock.patch.object(
+                    pipeline, "run", return_value=fake_ffmpeg):
+                qa = pipeline.qa_and_release(
+                    {"9x16": rendered}, True, words, root,
+                    captions_burn_requested=True,
+                    caption_inputs_rendered=True,
+                    caption_layout_safe=False,
+                    caption_sidecar=sidecar,
+                )
+        self.assertFalse(qa["checks"]["caption_safe_area"]["ok"])
+        self.assertFalse(qa["pass"])
+
+    def test_caption_band_stays_inside_portrait_and_crop_safe_areas(self):
+        from PIL import Image
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        words = [
+            {"w": "pauses,", "s": 0.0, "e": 0.4},
+            {"w": "adds", "s": 0.4, "e": 0.8},
+            {"w": "captions", "s": 0.8, "e": 1.2},
+        ]
+        cases = (
+            (720, 1560, 720.0, 0.060),
+            (1080, 1350, 1350.0 * 9.0 / 16.0, 0.060),
+            (1280, 720, 720.0 * 9.0 / 16.0, 0.060),
+        )
+        for vid_w, vid_h, safe_width, scale in cases:
+            with self.subTest(vid_w=vid_w), tempfile.TemporaryDirectory() as td:
+                preferred_size = max(28, int(vid_h * scale))
+                chunks = pipeline._caption_chunks(
+                    words, str(font_file), preferred_size, vid_w, 3,
+                    safe_width,
+                )
+                self.assertGreaterEqual(len(chunks), 2)
+                band = pipeline.build_caption_band(
+                    words, Path(td), str(font_file), vid_w, vid_h,
+                    "10", 1.3, scale=scale, max_words=3,
+                    safe_width=safe_width,
+                )
+                self.assertTrue(band["layout_safe"])
+                states = sorted((Path(td) / "capband").glob("state_*.png"))
+                self.assertTrue(states)
+                left, right = pipeline._caption_safe_bounds(
+                    vid_w, safe_width
+                )
+                for state in states:
+                    bounds = Image.open(state).getchannel("A").getbbox()
+                    if bounds:
+                        self.assertGreaterEqual(bounds[0], int(left) - 1)
+                        self.assertLessEqual(bounds[2], int(right) + 2)
+
+    def test_caption_band_fails_closed_on_an_unreadable_long_token(self):
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        with tempfile.TemporaryDirectory() as td:
+            band = pipeline.build_caption_band(
+                [{"w": "i" * 1000, "s": 0.0, "e": 0.8}],
+                Path(td), str(font_file), 720, 1560, "10", 1.0,
+                scale=0.060, max_words=3, safe_width=720.0,
+            )
+        self.assertFalse(band["layout_safe"])
+
+    def test_caption_band_accepts_an_empty_transcript_without_indexing(self):
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        with tempfile.TemporaryDirectory() as td:
+            band = pipeline.build_caption_band(
+                [], Path(td), str(font_file), 720, 1560, "10", 1.0
+            )
+        self.assertIsNone(band)
+
+    def test_tall_portrait_caption_position_survives_the_final_crop(self):
+        _left, top, width, height = pipeline._delivery_viewport(
+            720, 1920, "9x16"
+        )
+        self.assertEqual((top, width, height), (320.0, 720.0, 1280.0))
+        caption_height = 200
+        caption_y = pipeline._caption_overlay_y(
+            top, height, caption_height, 0.10
+        )
+        self.assertGreaterEqual(caption_y, top)
+        self.assertLessEqual(caption_y + caption_height, top + height)
 
     def test_source_gate_reconstructs_spatial_normalization(self):
         module_text = Path(pipeline.__file__).read_text()

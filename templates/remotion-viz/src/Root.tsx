@@ -1,5 +1,5 @@
 import React from 'react';
-import {Composition} from 'remotion';
+import {Composition, staticFile} from 'remotion';
 import {FlowViz} from './templates/FlowViz';
 import {StepsViz} from './templates/StepsViz';
 import {StatViz} from './templates/StatViz';
@@ -24,6 +24,12 @@ const defaults = {
 
 export const Root: React.FC = () => (
   <>
+    <style>{`@font-face {
+      font-family: "Work Sans";
+      src: url("${staticFile('WorkSans-Variable.ttf')}") format("truetype");
+      font-weight: 100 900;
+      font-display: block;
+    }`}</style>
     <Composition id="FlowViz" component={FlowViz} fps={30}
       durationInFrames={120} width={1080} height={1920}
       defaultProps={defaults} calculateMetadata={meta} />

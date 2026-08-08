@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "id": "autoeditor-helper-objects-indefinite",
+      "enabled": true,
+      "prefix": "dist/helper/objects/",
+      "condition": {
+        "type": "Indefinite"
+      }
+    },
+    {
+      "id": "autoeditor-helper-checksums-indefinite",
+      "enabled": true,
+      "prefix": "dist/helper/checksums/",
+      "condition": {
+        "type": "Indefinite"
+      }
+    }
+  ]
+}

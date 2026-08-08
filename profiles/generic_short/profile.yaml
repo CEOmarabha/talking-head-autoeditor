@@ -1,0 +1,43 @@
+# Generic social short/reel profile. Timing and caption geometry retain the
+# measured social-skit baseline without carrying a creator's name or identity.
+
+meta:
+  display_name: "Social Short / Reel"
+  status: "approved"
+  description: "Generic vertical social video with performance-first pacing"
+
+brand:
+  accent: "#FFFFFF"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.058
+  caption_words: 3
+
+rules:
+  min_pause_long: 0.85
+  min_pause_short: 0.52
+  pad_head: 0.28
+  pad_tail: 0.32
+  retake_min_words: 3
+  retake_max_gap: 12.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.062
+  short_cap_words: 3
+  short_cap_margin: 0.26
+
+creative:
+  mode: "generic social short or reel"
+  opening: "Open on the spoken premise, action, or strongest immediate reaction."
+  performance: "Keep the speaker, dialogue, reactions, and intentional pauses primary."
+  punch_ins: "Use restrained punch-ins on the hook, strongest reaction, reveal, or punchline."
+  broll: "Use supplied scene footage first. Use transcript-grounded stock only when it directly explains the spoken beat."
+  graphics: "Use short premise, number, or verdict cards only when every displayed word is supported by speech."
+  sound: "Keep dialogue forward and use sparse cues around real transitions or reveals."
+  avoid: "No invented labels, unrelated stock, constant motion, or edits that erase performance timing."

@@ -1,0 +1,100 @@
+appId: com.marabha.autoeditor.helper
+productName: AutoEditor Helper
+artifactName: "AutoEditor-Helper-${version}-${os}-${arch}.${ext}"
+copyright: "Copyright © 2026 Omar Marabha (@CEOmarabha)"
+directories:
+  output: helper-dist
+  buildResources: build
+extraMetadata:
+  main: helper/main.js
+  author: Omar Marabha
+  description: "Private local video rendering engine built by Omar Marabha"
+
+files:
+  - helper/**
+  - lib/process-tree.js
+
+extraResources:
+  - from: helper-staging/helper
+    to: helper
+  - from: helper-staging/engine
+    to: engine
+  - from: helper-staging/bin
+    to: bin
+  - from: helper-staging/lib
+    to: lib
+  - from: helper-staging/models
+    to: models
+  - from: helper-staging/profiles
+    to: profiles
+  - from: helper-staging/fonts
+    to: fonts
+  - from: helper-staging/certs
+    to: certs
+  - from: helper-staging/node
+    to: node
+  - from: helper-staging/creative-runtime
+    to: creative-runtime
+    filter:
+      - "**/*"
+  # electron-builder prunes node_modules from extraResources directories that
+  # carry a package.json, which silently dropped HyperFrames and Remotion from
+  # the installed app (2026-08 Mac acceptance failure). List node_modules as
+  # its own explicit file set so the creative runtime always ships complete.
+  # CI additionally fails the build if the packed app is missing either CLI.
+  - from: helper-staging/creative-runtime/node_modules
+    to: creative-runtime/node_modules
+    filter:
+      - "**/*"
+  - from: helper-staging/browser
+    to: browser
+  - from: helper-staging/creative
+    to: creative
+  - from: helper-staging/licenses
+    to: licenses
+  - from: helper-staging/runtime-manifest.json
+    to: runtime-manifest.json
+
+mac:
+  category: public.app-category.video
+  icon: build/icon.icns
+  target:
+    - target: dmg
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  minimumSystemVersion: "12.0"
+
+# Keep the DMG plain: no background image and no custom volume icon. In
+# dmg-builder, a null background selects its bundled default image. An explicit
+# color is the supported no-image path and avoids shipping .background.tiff.
+# CI re-verifies the app from a fresh DMG mount.
+dmg:
+  backgroundColor: "#0b0d10"
+  icon: null
+  writeUpdateInfo: false
+  contents:
+    - x: 130
+      y: 160
+      type: file
+    - x: 400
+      y: 160
+      type: link
+      path: /Applications
+
+afterSign: scripts/notarize.js
+afterAllArtifactBuild: scripts/notarize-artifacts.js
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

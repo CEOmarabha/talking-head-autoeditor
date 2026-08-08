@@ -1,0 +1,343 @@
+name: Promote accepted AutoEditor Helper release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact signed-candidate tag, for example helper-v0.1.0
+        required: true
+        type: string
+      build_run_id:
+        description: Successful Build AutoEditor Helper installers run ID
+        required: true
+        type: string
+      expected_commit:
+        description: Exact 40-character commit SHA shown by that build run
+        required: true
+        type: string
+      physical_acceptance:
+        description: I physically accepted all three signed candidates from this exact run
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: autoeditor-helper-live-promotion
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Require dispatch from the protected default branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REF_TYPE: ${{ github.ref_type }}
+          DISPATCH_REF_PROTECTED: ${{ github.ref_protected }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test -n "$DEFAULT_BRANCH" || {
+            echo "GitHub did not provide the repository default branch" >&2
+            exit 1
+          }
+          EXPECTED_REF="refs/heads/$DEFAULT_BRANCH"
+          test "$DISPATCH_REF_TYPE" = branch || {
+            echo "Live promotion must be dispatched from a branch, not $DISPATCH_REF_TYPE" >&2
+            exit 1
+          }
+          test "$DISPATCH_REF" = "$EXPECTED_REF" || {
+            echo "Live promotion must be dispatched from the default branch: $EXPECTED_REF" >&2
+            exit 1
+          }
+          test "$DISPATCH_REF_PROTECTED" = true || {
+            echo "The default branch must be protected before live promotion" >&2
+            exit 1
+          }
+
+  promote:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    environment: helper-live-release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.expected_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked-out promotion code matches the accepted commit
+        env:
+          ACCEPTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+          test "$ACTUAL_COMMIT" = "$ACCEPTED_COMMIT" || {
+            echo "Checked-out promotion code does not match the accepted commit" >&2
+            exit 1
+          }
+
+      - name: Bind owner acceptance to the exact successful signed-candidate run
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTED_TAG: ${{ inputs.tag }}
+          ACCEPTED_RUN_ID: ${{ inputs.build_run_id }}
+          ACCEPTED_COMMIT: ${{ inputs.expected_commit }}
+          PHYSICAL_ACCEPTANCE: ${{ inputs.physical_acceptance }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$PHYSICAL_ACCEPTANCE" = true || {
+            echo "Live promotion requires explicit physical acceptance" >&2
+            exit 1
+          }
+          [[ "$ACCEPTED_TAG" =~ ^helper-v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+            echo "Invalid Helper release tag: $ACCEPTED_TAG" >&2
+            exit 1
+          }
+          [[ "$ACCEPTED_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Build run ID must be a positive integer" >&2
+            exit 1
+          }
+          [[ "$ACCEPTED_COMMIT" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Expected commit must be an exact 40-character Git SHA" >&2
+            exit 1
+          }
+          RUN_JSON="$RUNNER_TEMP/helper-build-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ACCEPTED_RUN_ID" \
+            > "$RUN_JSON"
+          python - "$RUN_JSON" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              run = json.load(handle)
+          expected = {
+              "event": "push",
+              "status": "completed",
+              "conclusion": "success",
+              "path": ".github/workflows/helper-release.yml",
+              "head_branch": os.environ["ACCEPTED_TAG"],
+              "head_sha": os.environ["ACCEPTED_COMMIT"],
+          }
+          for field, value in expected.items():
+              if run.get(field) != value:
+                  raise SystemExit(
+                      f"signed-candidate run {field} does not match: "
+                      f"{run.get(field)!r} != {value!r}"
+                  )
+          repository = (run.get("head_repository") or {}).get("full_name")
+          if repository != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("signed-candidate run came from a different repository")
+          attempt = str(run.get("run_attempt", ""))
+          if not re.fullmatch(r"[1-9][0-9]*", attempt):
+              raise SystemExit("signed-candidate run attempt is invalid")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run_attempt={attempt}\n")
+          PY
+          TAG_COMMIT=$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$ACCEPTED_TAG" --jq .sha)
+          test "$TAG_COMMIT" = "$ACCEPTED_COMMIT" || {
+            echo "Release tag no longer resolves to the accepted commit" >&2
+            exit 1
+          }
+          PROTECTED=$(gh api \
+            "repos/$GITHUB_REPOSITORY/branches/$DEFAULT_BRANCH" --jq .protected)
+          test "$PROTECTED" = true || {
+            echo "The repository default branch is no longer protected" >&2
+            exit 1
+          }
+          ANCESTRY=$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$ACCEPTED_COMMIT...$DEFAULT_BRANCH" \
+            --jq .status)
+          case "$ANCESTRY" in
+            identical|ahead) ;;
+            *)
+              echo "Accepted release commit is not on the protected default branch" >&2
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-receipt-helper-*
+          path: release-assets
+          merge-multiple: false
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Require promotion-only private download credentials
+        env:
+          R2_RELEASE_ACCESS_KEY: ${{ secrets.R2_RELEASE_ACCESS_KEY_ID }}
+          R2_RELEASE_SECRET_KEY: ${{ secrets.R2_RELEASE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$R2_RELEASE_ACCESS_KEY" && \
+            test -n "$R2_RELEASE_SECRET_KEY" && \
+            test -n "$R2_ACCOUNT" || {
+            echo "Live promotion requires its isolated R2 keys and account id" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install the pinned multipart and R2 client
+        run: npm ci --prefix desktop --ignore-scripts
+
+      - name: Verify accepted provenance, candidates, and staged live objects
+        env:
+          ACCEPTED_TAG: ${{ inputs.tag }}
+          ACCEPTED_RUN_ID: ${{ inputs.build_run_id }}
+          ACCEPTED_COMMIT: ${{ inputs.expected_commit }}
+          ACCEPTED_RUN_ATTEMPT: ${{ steps.provenance.outputs.run_attempt }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_RELEASE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python packaging/helper_release_metadata.py assemble \
+            --receipts release-assets --tag "$ACCEPTED_TAG" \
+            --commit "$ACCEPTED_COMMIT" --run-id "$ACCEPTED_RUN_ID" \
+            --run-attempt "$ACCEPTED_RUN_ATTEMPT" \
+            --output release-metadata
+          if node desktop/scripts/r2-release-storage.js get \
+              --bucket autoeditor-releases --key dist/helper/current.json \
+              --etag-output release-metadata/current-existing.etag \
+              > release-metadata/current-existing.json; then
+            true
+          else
+            STATUS=$?
+            test "$STATUS" = 4 || exit "$STATUS"
+            : > release-metadata/current-existing.json
+          fi
+          python packaging/helper_release_metadata.py guard \
+            --candidate release-metadata/current.json \
+            --current release-metadata/current-existing.json
+          while IFS= read -r RECEIPT; do
+            KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
+            SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
+            BYTES=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytes"])' "$RECEIPT")
+            node desktop/scripts/r2-release-storage.js copy \
+              --source-bucket autoeditor-release-candidates \
+              --destination-bucket autoeditor-releases --key "$KEY" \
+              --bytes "$BYTES" --sha256 "$SHA"
+          done < <(find release-assets -type f -name 'candidate-*.json' | sort)
+          CHECKSUM_KEY=$(python -c 'import json; print(json.load(open("release-metadata/current.json"))["checksums"]["key"])')
+          CHECKSUM_SHA=$(python -c 'import json; print(json.load(open("release-metadata/current.json"))["checksums"]["sha256"])')
+          node desktop/scripts/r2-release-storage.js put \
+            --bucket autoeditor-releases --key "$CHECKSUM_KEY" \
+            --file release-metadata/SHA256SUMS.txt --content-type text/plain \
+            --sha256 "$CHECKSUM_SHA" --if-none-match '*'
+
+      - name: Publish the verified metadata-only GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTED_TAG: ${{ inputs.tag }}
+        run: |
+          python packaging/helper_release_metadata.py github-assets \
+            --plan release-metadata/github-assets.json \
+            > release-metadata/github-assets.nul
+          mapfile -d '' FILES < release-metadata/github-assets.nul
+          FILES+=(release-metadata/SHA256SUMS.txt release-metadata/current.json)
+          test "${#FILES[@]}" -gt 0
+          declare -A EXPECTED_SET=()
+          for file in "${FILES[@]}"; do
+            name=$(basename "$file")
+            [[ -z "${EXPECTED_SET[$name]+x}" ]] || {
+              echo "Duplicate GitHub metadata asset name: $name" >&2
+              exit 1
+            }
+            EXPECTED_SET[$name]=1
+            test "$(stat -c '%s' "$file")" -lt 2147483648 || {
+              echo "GitHub release metadata exceeds the 2 GiB asset limit: $file" >&2
+              exit 1
+            }
+          done
+          EXPECTED_NAMES=$(printf '%s\n' "${FILES[@]##*/}" | LC_ALL=C sort)
+
+          verify_github_release() {
+            local remote_names verify_dir file
+            remote_names=$(gh release view "$ACCEPTED_TAG" \
+              --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' | LC_ALL=C sort)
+            [[ "$remote_names" == "$EXPECTED_NAMES" ]] || {
+              echo "GitHub metadata assets do not exactly match the expected set" >&2
+              return 1
+            }
+            verify_dir=$(mktemp -d "$RUNNER_TEMP/helper-github-verify.XXXXXX")
+            gh release download "$ACCEPTED_TAG" \
+              --repo "$GITHUB_REPOSITORY" --dir "$verify_dir" --clobber
+            for file in "${FILES[@]}"; do
+              cmp -s "$file" "$verify_dir/$(basename "$file")" || {
+                echo "GitHub asset differs from the verified local receipt: $file" >&2
+                return 1
+              }
+            done
+            rm -rf "$verify_dir"
+          }
+
+          if gh release view "$ACCEPTED_TAG" --repo "$GITHUB_REPOSITORY" \
+              >/dev/null 2>&1; then
+            WAS_DRAFT=$(gh release view "$ACCEPTED_TAG" \
+              --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            if [[ "$WAS_DRAFT" != true ]]; then
+              verify_github_release
+            fi
+          else
+            gh release create "$ACCEPTED_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "AutoEditor Helper ${ACCEPTED_TAG#helper-v}" \
+              --generate-notes --verify-tag --draft
+            WAS_DRAFT=true
+          fi
+          if [[ "$WAS_DRAFT" == true ]]; then
+            while IFS= read -r asset; do
+              [[ -z "$asset" || -n "${EXPECTED_SET[$asset]+x}" ]] && continue
+              gh release delete-asset "$ACCEPTED_TAG" "$asset" \
+                --repo "$GITHUB_REPOSITORY" --yes
+            done < <(gh release view "$ACCEPTED_TAG" \
+              --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            gh release upload "$ACCEPTED_TAG" "${FILES[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            verify_github_release
+            gh release edit "$ACCEPTED_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft=false
+          fi
+          test "$(gh release view "$ACCEPTED_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
+          verify_github_release
+
+      - name: Atomically expose the physically accepted release to private downloads
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_RELEASE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # current.json is the only mutation that makes these accepted bytes
+          # visible to friends. It stays last and uses an optimistic condition.
+          if [[ -s release-metadata/current-existing.etag ]]; then
+            ETAG=$(<release-metadata/current-existing.etag)
+            node desktop/scripts/r2-release-storage.js put \
+              --bucket autoeditor-releases --key dist/helper/current.json \
+              --file release-metadata/current.json \
+              --content-type application/json --if-match "$ETAG"
+          else
+            node desktop/scripts/r2-release-storage.js put \
+              --bucket autoeditor-releases --key dist/helper/current.json \
+              --file release-metadata/current.json \
+              --content-type application/json --if-none-match '*'
+          fi
+          node desktop/scripts/r2-release-storage.js get \
+            --bucket autoeditor-releases --key dist/helper/current.json \
+            > release-metadata/current-published.json
+          cmp -s release-metadata/current.json \
+            release-metadata/current-published.json

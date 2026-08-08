@@ -1,0 +1,42 @@
+# Generic course/lesson profile.
+
+meta:
+  display_name: "Course / Lesson"
+  status: "approved"
+  description: "Structured instructional video with grounded teaching visuals"
+
+brand:
+  accent: "#A7F3D0"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans"
+  caption_scale: 0.045
+  caption_words: 4
+
+rules:
+  min_pause_long: 0.85
+  min_pause_short: 0.55
+  pad_head: 0.30
+  pad_tail: 0.35
+  retake_min_words: 3
+  retake_max_gap: 16.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "long"
+  long_cap_scale: 0.045
+  long_cap_words: 4
+  long_cap_margin: 0.10
+
+creative:
+  mode: "generic structured course or lesson"
+  opening: "State the lesson result or question first, then establish the topic."
+  performance: "Keep each explanation complete and preserve the order of steps, examples, and qualifications."
+  punch_ins: "Use punch-ins on section changes, definitions, warnings, and conclusions."
+  broll: "Use literal demonstrations and transcript-grounded diagrams for processes, systems, and examples."
+  graphics: "Show only spoken steps, labels, numbers, definitions, comparisons, and recap points."
+  sound: "Keep speech clear and transitions restrained so the lesson stays easy to follow."
+  avoid: "No invented step names, reordered instruction, decorative filler, or visuals that contradict the lesson."

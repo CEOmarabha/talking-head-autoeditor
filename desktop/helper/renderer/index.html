@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AutoEditor Helper</title>
+  <link rel="stylesheet" href="style.css">
+</head><body>
+  <main>
+    <header><div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">OM</span>
+      <div><h1>AutoEditor Helper</h1>
+      <p>Runs video edits on this computer.</p></div></div>
+      <span id="status" class="pill" role="status" aria-live="polite">Checking</span></header>
+
+    <section id="setup" class="card hidden">
+      <h2>Finish one-time setup</h2>
+      <p class="small">About 10 to 20 minutes. AutoEditor checks every key for
+        you. Keys are encrypted by this computer and are never shown in the
+        activity log.</p>
+      <p class="small"><b>Want the fastest setup?</b> DeepSeek is required on
+        the website. Pexels, Pixabay, and ElevenLabs can be skipped if signup
+        feels like too much. The related resource will be unavailable.
+        HyperFrames and Remotion stay on for every edit, and Remotion asks you
+        to choose the license that applies to you. You can change these choices
+        later. The yellow Help button on the website can walk you through any
+        step.</p>
+
+      <fieldset>
+        <legend>1. Connect this computer</legend>
+        <p>On the AutoEditor website, copy your Setup code and paste it here.</p>
+      <label for="code">Setup code</label>
+      <textarea id="code" rows="4" autocomplete="off" spellcheck="false"
+        placeholder="Paste the one Setup code from the website"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. Pexels stock video</legend>
+        <p>Connect a free Pexels account for automatic stock footage, or skip
+          it. If skipped, AutoEditor will not receive anything from Pexels.</p>
+        <div class="choices">
+          <label><input type="radio" name="pexels-mode" value="connect" checked>
+            Connect Pexels</label>
+          <label><input type="radio" name="pexels-mode" value="skip"> Skip Pexels</label>
+        </div>
+        <div id="pexels-connect" class="account-box">
+          <ol>
+            <li>Press <button class="inline-link" data-open="pexelsSignup">Open Pexels signup</button>.</li>
+            <li>Create an account with your email, Google, or Apple login.</li>
+            <li>Verify your email if Pexels asks.</li>
+            <li>Press <button class="inline-link" data-open="pexelsApi">Open Pexels API</button>.</li>
+            <li>Choose <b>Get Started</b> or <b>Your API Key</b>. Describe the app as
+              “personal video editing.”</li>
+            <li>Copy the API key and paste it below.</li>
+          </ol>
+          <label for="pexels-key">Pexels API key</label>
+          <input id="pexels-key" type="password" autocomplete="off"
+            placeholder="Paste the key from Pexels">
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Pixabay stock video</legend>
+        <p>Connect a free Pixabay account for a second stock source, or skip
+          it. If skipped, AutoEditor will not receive anything from Pixabay.</p>
+        <div class="choices">
+          <label><input type="radio" name="pixabay-mode" value="connect" checked>
+            Connect Pixabay</label>
+          <label><input type="radio" name="pixabay-mode" value="skip"> Skip Pixabay</label>
+        </div>
+        <div id="pixabay-connect" class="account-box">
+          <ol>
+            <li>Press <button class="inline-link" data-open="pixabaySignup">Open Pixabay signup</button>.</li>
+            <li>Create an account and finish any email confirmation.</li>
+            <li>Press <button class="inline-link" data-open="pixabayApi">Open Pixabay API page</button>.</li>
+            <li>Make sure you are signed in. Your API key appears next to the
+              required <b>key</b> field.</li>
+            <li>Copy that key and paste it below.</li>
+          </ol>
+          <label for="pixabay-key">Pixabay API key</label>
+          <input id="pixabay-key" type="password" autocomplete="off"
+            placeholder="Paste the key from Pixabay">
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>4. ElevenLabs sound effects</legend>
+        <p>Connect an ElevenLabs account for generated sound effects, or skip
+          it. If skipped, AutoEditor uses only its built-in sound effects.</p>
+        <div class="choices">
+          <label><input type="radio" name="eleven-mode" value="connect" checked>
+            Connect ElevenLabs</label>
+          <label><input type="radio" name="eleven-mode" value="skip"> Skip ElevenLabs</label>
+        </div>
+        <div id="eleven-connect" class="account-box">
+          <ol>
+            <li>Press <button class="inline-link" data-open="elevenSignup">Open ElevenLabs signup</button>.</li>
+            <li>Create a free account and finish any email confirmation.</li>
+            <li>Press <button class="inline-link" data-open="elevenApiKeys">Open ElevenLabs API keys</button>.</li>
+            <li>Select <b>Create API Key</b>. Name it “AutoEditor.”</li>
+            <li>Turn on restrictions, allow <b>Sound Effects</b>, and set a
+              small credit limit. Do not add an IP restriction because this
+              app runs from your own computer.</li>
+            <li>Create the key, copy it once, and paste it below. You can read
+              the <button class="inline-link" data-open="elevenPricing">ElevenLabs plans</button>
+              before continuing.</li>
+          </ol>
+          <label for="eleven-key">ElevenLabs API key</label>
+          <input id="eleven-key" type="password" autocomplete="off"
+            placeholder="Paste the key from ElevenLabs">
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>5. Remotion animated visuals</legend>
+        <p>HyperFrames needs no account and is already included. For Remotion,
+          choose the one statement that is true for you.</p>
+        <div class="stacked-choices">
+          <label><input type="radio" name="remotion-mode" value="free" checked>
+            I am an individual, or my organization has 1 to 3 people. The free
+            Remotion license applies and no account is needed.</label>
+          <label><input type="radio" name="remotion-mode" value="paid">
+            My collaboration or organization has 4 or more people. I have a
+            paid Remotion license key.</label>
+        </div>
+        <div id="remotion-paid" class="account-box hidden">
+          <ol>
+            <li>Read the <button class="inline-link" data-open="remotionLicense">Remotion license rules</button>.</li>
+            <li>Open the <button class="inline-link" data-open="remotionDashboard">Remotion dashboard</button>
+              and purchase the plan that applies to your organization.</li>
+            <li>Open <b>License keys</b>, create or copy the public rendering key,
+              then paste it below.</li>
+          </ol>
+          <label for="remotion-key">Remotion license key</label>
+          <input id="remotion-key" type="password" autocomplete="off"
+            placeholder="starts with rm_pub_">
+        </div>
+      </fieldset>
+
+      <button id="save" class="primary wide">Check My Setup and Start</button>
+      <p id="checking" class="small hidden">Checking connected accounts, then
+        rendering a tiny HyperFrames and Remotion test. This can take a few
+        minutes the first time.</p>
+      <p id="setup-error" class="error"></p>
+    </section>
+
+    <section id="ready" class="card hidden">
+      <h2 id="headline">Ready</h2>
+      <p id="detail" aria-live="polite">Leave this app open while AutoEditor makes your video.</p>
+      <div class="actions">
+        <button id="start" class="primary">Start Helper</button>
+        <button id="stop">Stop</button>
+        <button id="reset" class="ghost">Change Accounts or Setup</button>
+      </div>
+      <div id="capabilities" class="capabilities"></div>
+    </section>
+
+    <section class="card">
+      <h2>Built-in checks</h2>
+      <div id="checks" class="checks" role="status" aria-live="polite"></div>
+      <p class="small">Python, Node, FFmpeg, FFprobe, both speech models,
+        HyperFrames, Remotion, a headless browser, fonts, certificates,
+        profiles, and the editing engine are inside this app.</p>
+    </section>
+
+    <details class="card"><summary>Activity</summary><pre id="log"></pre></details>
+    <footer><span>Built by Omar Marabha</span>
+      <span>@CEOmarabha · Yup, he's THAT GUY.</span></footer>
+    <button id="notices" class="link">Open third-party licenses</button>
+  </main>
+  <script src="app.js"></script>
+</body></html>

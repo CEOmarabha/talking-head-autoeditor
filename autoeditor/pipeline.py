@@ -21,16 +21,6 @@ FFMPEG = (os.environ.get("AUTOEDITOR_FFMPEG")
           or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg")
 FFPROBE = (os.environ.get("AUTOEDITOR_FFPROBE")
            or shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe")
-RUNTIME_BIN = Path(sys.executable).resolve().parent
-LEGACY_EDIT_BIN = Path.home() / "cinematic-autopilot" / "venv" / "bin"
-AUTO_EDITOR = Path(
-    shutil.which("auto-editor")
-    or (
-        RUNTIME_BIN / "auto-editor"
-        if (RUNTIME_BIN / "auto-editor").exists()
-        else LEGACY_EDIT_BIN / "auto-editor"
-    )
-)
 VENV_PY = Path(sys.executable).resolve()
 
 GOLD = "&H00A7C7E8"   # ASS BGR for brand gold (#E8C7A7-ish warm gold)
@@ -330,6 +320,75 @@ def _probe_candidate_groups(word_mids: list[float], avoid: list[tuple],
     return groups
 
 
+def _normalized_audio_window_locator(raw_audio, window_length: int,
+                                     sample_rate: int):
+    """Build a stable normalized-correlation locator for source audio.
+
+    Window sums use a leading-zero prefix so the energy denominator covers
+    exactly the same samples as the FFT numerator. Near-silent windows are
+    excluded instead of letting floating-point noise become the best match.
+    """
+    import numpy as np
+
+    raw_audio = np.asarray(raw_audio, dtype=np.float64)
+    sample_count = len(raw_audio)
+    if window_length <= 0 or sample_count < window_length:
+        return lambda _needle: (0.0, -1.0, -1.0)
+
+    fft_size = 1 << int(np.ceil(np.log2(
+        sample_count + window_length - 1
+    )))
+    raw_fft = np.fft.rfft(raw_audio, fft_size)
+    prefix = np.concatenate(([0.0], np.cumsum(raw_audio)))
+    prefix_sq = np.concatenate(([0.0], np.cumsum(raw_audio ** 2)))
+    window_sum = prefix[window_length:] - prefix[:-window_length]
+    window_energy = (
+        prefix_sq[window_length:] - prefix_sq[:-window_length]
+        - (window_sum ** 2) / window_length
+    )
+    window_energy = np.maximum(window_energy, 0.0)
+    strongest_energy = float(window_energy.max(initial=0.0))
+    energy_floor = max(strongest_energy * 1e-6, 1e-12)
+    usable_windows = window_energy > energy_floor
+
+    def locate(needle):
+        centered = np.asarray(needle, dtype=np.float64)
+        if len(centered) != window_length:
+            return 0.0, -1.0, -1.0
+        centered = centered - centered.mean()
+        needle_energy = float(np.dot(centered, centered))
+        if needle_energy <= 1e-12 or not np.any(usable_windows):
+            return 0.0, -1.0, -1.0
+
+        query_fft = np.fft.rfft(centered[::-1], fft_size)
+        numerator = np.fft.irfft(
+            raw_fft * query_fft, fft_size
+        )[window_length - 1:sample_count]
+        scores = np.full(len(window_energy), -np.inf, dtype=np.float64)
+        denominator = np.sqrt(window_energy[usable_windows] * needle_energy)
+        scores[usable_windows] = np.clip(
+            numerator[usable_windows] / denominator, -1.0, 1.0
+        )
+        best_index = int(np.argmax(scores))
+        best = float(scores[best_index])
+        if not np.isfinite(best):
+            return 0.0, -1.0, -1.0
+
+        exclusion = sample_rate // 2
+        low = max(0, best_index - exclusion)
+        high = min(len(scores), best_index + exclusion)
+        alternatives = scores.copy()
+        alternatives[low:high] = -np.inf
+        finite_alternatives = alternatives[np.isfinite(alternatives)]
+        second = (
+            float(finite_alternatives.max())
+            if finite_alternatives.size else -1.0
+        )
+        return best_index / sample_rate, best, second
+
+    return locate
+
+
 def _stream_start_delta(path: Path) -> float:
     """Return audio-start minus video-start on the container timeline."""
     probe = run([
@@ -394,24 +453,7 @@ def verify_sync_source(master: Path, raw_src: Path, edl: dict,
         return out
 
     n = int(1.2 * SR)
-    N = len(raw_a)
-    size = 1 << int(np.ceil(np.log2(N + n)))
-    R = np.fft.rfft(raw_a, size)
-    csum = np.cumsum(raw_a ** 2)
-    win_e = csum[n:] - csum[:-n]
-
-    def locate(needle):
-        q = np.fft.rfft(needle[::-1], size)
-        c = np.fft.irfft(R * q, size)[n - 1:N]
-        denom = np.sqrt(win_e * (needle ** 2).sum()) + 1e-9
-        m = min(len(c), len(denom))
-        sc = c[:m] / denom[:m]
-        i1 = int(np.argmax(sc))
-        best = float(sc[i1])
-        lo, hi = max(0, i1 - SR // 2), min(m, i1 + SR // 2)
-        sc2 = sc.copy(); sc2[lo:hi] = -1
-        second = float(sc2.max()) if m else -1.0
-        return i1 / SR, best, second
+    locate = _normalized_audio_window_locator(raw_a, n, SR)
 
     # Reconstruct the transform from RAW inside the verifier. Depending on the
     # mutable DELETTERBOX_VF set by an earlier render step made a fresh,
@@ -682,17 +724,62 @@ def verify_sync(master: Path, ref_cut: Path, edl: dict, duration: float) -> dict
             "probes_used": usable, "probes_required": need}
 
 
-def _video_geometry(path: Path) -> tuple[int, int]:
+def _video_geometry_details(path: Path) -> tuple[int, int, int, int]:
     probe = run([
         FFPROBE, "-v", "quiet", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height", "-of", "json", path,
+        "-show_entries", "stream=width,height,sample_aspect_ratio",
+        "-of", "json", path,
     ], check=False)
     try:
         stream = json.loads(probe.stdout.decode())["streams"][0]
-        return int(stream["width"]), int(stream["height"])
+        ratio = str(stream.get("sample_aspect_ratio") or "").split(":")
+        sar_num, sar_den = int(ratio[0]), int(ratio[1])
+        if sar_num <= 0 or sar_den <= 0:
+            raise ValueError("invalid sample aspect ratio")
+        return (
+            int(stream["width"]), int(stream["height"]),
+            sar_num, sar_den,
+        )
     except (AttributeError, IndexError, KeyError, TypeError, ValueError,
             json.JSONDecodeError):
+        return (0, 0, 0, 0)
+
+
+def _video_geometry(path: Path) -> tuple[int, int]:
+    width, height, _sar_num, _sar_den = _video_geometry_details(path)
+    return width, height
+
+
+def _fit_16x9_foreground(width: int, height: int) -> tuple[int, int]:
+    """Return even dimensions that fit the full frame inside 1920x1080."""
+    if min(width, height) <= 0:
         return (0, 0)
+    scale = min(1920.0 / width, 1080.0 / height)
+    fitted_w = min(1920, max(2, 2 * round(width * scale / 2.0)))
+    fitted_h = min(1080, max(2, 2 * round(height * scale / 2.0)))
+    return fitted_w, fitted_h
+
+
+def _delivery_viewport(width: int, height: int,
+                       aspects: str) -> tuple[float, float, float, float]:
+    """Return the source-space rectangle that survives delivery framing."""
+    if aspects != "9x16":
+        return (0.0, 0.0, float(width), float(height))
+    crop_w = min(float(width), float(height) * 9.0 / 16.0)
+    crop_h = min(float(height), float(width) * 16.0 / 9.0)
+    return (
+        (float(width) - crop_w) / 2.0,
+        (float(height) - crop_h) / 2.0,
+        crop_w,
+        crop_h,
+    )
+
+
+def _caption_overlay_y(view_top: float, view_height: float,
+                       caption_height: int, margin_frac: float) -> int:
+    return round(
+        view_top + view_height - caption_height - view_height * margin_frac
+    )
 
 
 def _decoded_audio_hash(path: Path) -> str:
@@ -719,7 +806,10 @@ def verify_aspect_derivative(delivered: Path, master: Path, transform: str,
     planned visual midpoint.
     """
     import numpy as np
-    allowed = {"identity", "center_crop_9x16", "portrait_pillarbox_16x9"}
+    allowed = {
+        "identity", "center_crop_9x16", "portrait_pillarbox_16x9",
+        "fit_blur_16x9",
+    }
     out = {
         "ok": False, "transform": transform, "duration_delta_ms": None,
         "audio_hash_match": False, "stream_start_delta_ms": None,
@@ -728,22 +818,36 @@ def verify_aspect_derivative(delivered: Path, master: Path, transform: str,
     if transform not in allowed:
         out["note"] = f"unsupported delivery transform {transform!r}"
         return out
-    master_w, master_h = _video_geometry(master)
-    delivered_w, delivered_h = _video_geometry(delivered)
+    master_w, master_h, _master_sar_num, _master_sar_den = (
+        _video_geometry_details(master)
+    )
+    delivered_w, delivered_h, delivered_sar_num, delivered_sar_den = (
+        _video_geometry_details(delivered)
+    )
     if min(master_w, master_h, delivered_w, delivered_h) <= 0:
         out["note"] = "missing video geometry"
         return out
     if transform == "center_crop_9x16":
-        if delivered_h <= delivered_w:
-            out["note"] = "9x16 derivative is not portrait"
+        if (delivered_sar_num, delivered_sar_den) != (1, 1):
+            out["note"] = "9x16 derivative does not use square pixels"
+            return out
+        if (delivered_w, delivered_h) != (1080, 1920):
+            out["note"] = "9x16 derivative is not exactly 1080x1920"
+            return out
+        if delivered_w * 16 != delivered_h * 9:
+            out["note"] = "9x16 derivative does not have exact 9:16 display geometry"
             return out
         master_vf = (
             "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),"
-            "scale=1080:1920,scale=90:160,format=gray"
+            "scale=1080:1920,setsar=1,scale=90:160,format=gray"
         )
         delivered_vf = "scale=90:160,format=gray"
         frame_size = 90 * 160
+        master_complex_vf = None
     elif transform == "portrait_pillarbox_16x9":
+        if (delivered_w, delivered_h) != (1920, 1080):
+            out["note"] = "pillarbox derivative is not exactly 1920x1080"
+            return out
         if delivered_w <= delivered_h or master_h <= master_w:
             out["note"] = "pillarbox derivative geometry is inconsistent"
             return out
@@ -756,10 +860,35 @@ def verify_aspect_derivative(delivered: Path, master: Path, transform: str,
             "scale=90:160,format=gray"
         )
         frame_size = 90 * 160
+        master_complex_vf = None
+    elif transform == "fit_blur_16x9":
+        if (delivered_sar_num, delivered_sar_den) != (1, 1):
+            out["note"] = "16x9 derivative does not use square pixels"
+            return out
+        if (delivered_w, delivered_h) != (1920, 1080):
+            out["note"] = "16x9 derivative is not exactly 1920x1080"
+            return out
+        if delivered_w * 9 != delivered_h * 16:
+            out["note"] = "16x9 derivative does not have exact 16:9 display geometry"
+            return out
+        foreground_w, foreground_h = _fit_16x9_foreground(
+            master_w, master_h
+        )
+        master_complex_vf = (
+            "[0:v]split=2[a][b];"
+            "[a]scale=64:36,scale=1920:1080:flags=bicubic,setsar=1[bg];"
+            f"[b]scale={foreground_w}:{foreground_h},setsar=1[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,"
+            "scale=160:90,format=gray[verify]"
+        )
+        master_vf = ""
+        delivered_vf = "scale=160:90,format=gray"
+        frame_size = 160 * 90
     else:
         master_vf = "scale=160:90,format=gray"
         delivered_vf = "scale=160:90,format=gray"
         frame_size = 160 * 90
+        master_complex_vf = None
 
     delivered_duration = _dur(delivered)
     master_duration = _dur(master)
@@ -792,11 +921,19 @@ def verify_aspect_derivative(delivered: Path, master: Path, transform: str,
         for name, path, vf in (
                 ("master", master, master_vf),
                 ("delivered", delivered, delivered_vf)):
-            probe = run([
-                FFMPEG, "-v", "error", "-i", path,
-                "-ss", f"{point:.3f}", "-frames:v", "1",
-                "-vf", vf, "-f", "rawvideo", "-",
-            ], check=False)
+            if name == "master" and master_complex_vf:
+                probe = run([
+                    FFMPEG, "-v", "error", "-ss", f"{point:.3f}",
+                    "-i", path, "-frames:v", "1",
+                    "-filter_complex", master_complex_vf,
+                    "-map", "[verify]", "-f", "rawvideo", "-",
+                ], check=False)
+            else:
+                probe = run([
+                    FFMPEG, "-v", "error", "-i", path,
+                    "-ss", f"{point:.3f}", "-frames:v", "1",
+                    "-vf", vf, "-f", "rawvideo", "-",
+                ], check=False)
             frame = np.frombuffer(probe.stdout, dtype=np.uint8)
             frames[name] = frame[:frame_size]
         mae = (
@@ -839,46 +976,228 @@ def _dur(path: Path) -> float:
         return 0.0
 
 
-def silence_cut(src: Path, workdir: Path, margin: str = "0.15s",
-                min_keep: float = 0.55) -> tuple[Path, float]:
-    """Silence/stumble cut with a RETENTION GUARDRAIL.
+class LowSpeechCutError(RuntimeError):
+    """The required local low-speech analysis or render failed."""
 
-    Quiet recordings (e.g. phone across the room, mean volume ~-40dB) fall
-    below auto-editor's default 4% loudness threshold, which then deletes
-    SPEECH as 'silence', the 2026-07-23 incident turned a 6:14 lesson into
-    46s. So: try progressively gentler thresholds, and if the cut still
-    keeps less than ``min_keep`` of the source, ship the SOURCE UNCUT, a
-    long video beats a butchered one. Returns (path, retention_ratio).
-    """
-    src_dur = _dur(src) or 1.0
-    attempts = [None, "audio:threshold=1%", "audio:threshold=0.4%"]
-    best, best_ratio = None, -1.0
-    for i, edit in enumerate(attempts):
-        out = workdir / f"cut_try{i}.mp4"
-        cmd = [AUTO_EDITOR, src, "--margin", margin, "--no-open",
-               "--output", out]
-        if edit:
-            cmd += ["--edit", edit]
-        if not AUTO_EDITOR.exists():
-            break
-        run(cmd, check=False)
-        if not out.exists() or out.stat().st_size == 0:
-            continue
-        ratio = _dur(out) / src_dur
-        log(f"phase 2: cut attempt {i+1} "
-            f"({edit or 'default threshold'}) kept {ratio:.0%}")
-        if ratio > best_ratio:
-            best, best_ratio = out, ratio
-        if ratio >= min_keep:
-            return out, ratio
-    if best is not None and best_ratio >= min_keep:
-        return best, best_ratio
-    log(f"phase 2 GUARDRAIL: best cut kept only {max(best_ratio,0):.0%} "
-        f"(< {min_keep:.0%}), quiet recording; using SOURCE UNCUT so no "
-        "speech is lost")
+
+_SILENCE_EVENT = re.compile(
+    r"silence_(start|end):\s*(-?(?:\d+(?:\.\d*)?|\.\d+))"
+)
+
+
+def _resolve_low_speech_ffmpeg() -> Path:
+    """Resolve the shipped FFmpeg explicitly in frozen desktop builds."""
+    configured = os.environ.get("AUTOEDITOR_FFMPEG")
+    if getattr(sys, "frozen", False) and not configured:
+        raise LowSpeechCutError(
+            "frozen low-speech cutter requires AUTOEDITOR_FFMPEG from the "
+            "verified packaged resources"
+        )
+    requested = configured or str(FFMPEG)
+    candidate = Path(requested)
+    if candidate.is_file():
+        return candidate.resolve()
+    located = shutil.which(requested)
+    if located and Path(located).is_file():
+        return Path(located).resolve()
+    raise LowSpeechCutError(
+        f"required packaged FFmpeg is unavailable: {requested}"
+    )
+
+
+def _silence_intervals(stderr: str, duration: float) -> list[tuple[float, float]]:
+    """Parse chronological FFmpeg silencedetect events into source spans."""
+    intervals: list[tuple[float, float]] = []
+    start: float | None = None
+    for match in _SILENCE_EVENT.finditer(stderr):
+        kind, raw_time = match.groups()
+        point = min(duration, max(0.0, float(raw_time)))
+        if kind == "start":
+            start = point
+        elif start is not None:
+            if point > start:
+                intervals.append((start, point))
+            start = None
+    if start is not None and duration > start:
+        intervals.append((start, duration))
+    return intervals
+
+
+def _speech_protected_silence(
+        intervals: list[tuple[float, float]], words: list,
+        margin: float = 0.15, head: float = 0.30,
+        tail: float = 0.35) -> list[dict]:
+    """Remove only confirmed silence outside padded transcript word spans."""
+    protected = sorted(
+        (max(0.0, float(word["s"]) - head), float(word["e"]) + tail)
+        for word in words
+    )
+    cuts: list[dict] = []
+    for silence_start, silence_end in intervals:
+        # Keep a little room tone on both sides of every cut, matching the
+        # old editor's 150ms margin without depending on its native binary.
+        segments = [(silence_start + margin, silence_end - margin)]
+        for protect_start, protect_end in protected:
+            remaining: list[tuple[float, float]] = []
+            for start, end in segments:
+                if protect_end <= start or protect_start >= end:
+                    remaining.append((start, end))
+                    continue
+                if protect_start - start > 0.15:
+                    remaining.append((start, min(end, protect_start)))
+                if end - protect_end > 0.15:
+                    remaining.append((max(start, protect_end), end))
+            segments = remaining
+        for start, end in segments:
+            if end - start > 0.15:
+                cuts.append({
+                    "s": round(start, 3),
+                    "e": round(end, 3),
+                    "why": "confirmed silence outside protected words",
+                })
+    return cuts
+
+
+def low_speech_cutter_self_test() -> bool:
+    """Deterministic frozen-engine probe with no media or network access."""
+    events = "silence_start: 0.0\nsilence_end: 2.0\n"
+    intervals = _silence_intervals(events, 3.0)
+    cuts = _speech_protected_silence(
+        intervals,
+        [{"w": "hello", "s": 0.8, "e": 1.2, "p": 1.0}],
+    )
+    return intervals == [(0.0, 2.0)] and cuts == [
+        {
+            "s": 0.15,
+            "e": 0.5,
+            "why": "confirmed silence outside protected words",
+        },
+        {
+            "s": 1.55,
+            "e": 1.85,
+            "why": "confirmed silence outside protected words",
+        },
+    ]
+
+
+def _preserve_low_speech_source(
+        src: Path, workdir: Path, reason: str) -> tuple[Path, float]:
     out = workdir / "cut.mp4"
-    shutil.copy(src, out)
+    shutil.copy2(src, out)
+    log(f"phase 2 GUARDRAIL: {reason}; source kept whole")
+    emit({"event": "low_speech_no_safe_cut", "reason": reason})
     return out, 1.0
+
+
+def silence_cut(src: Path, workdir: Path, words: list | None = None,
+                margin: float | str = 0.15,
+                min_keep: float = 0.55) -> tuple[Path, float]:
+    """Conservative in-process low-speech cutter with a retention guard.
+
+    The old implementation spawned the ``auto-editor`` command. The pinned
+    PyPI package was only a first-run network downloader for a separate
+    platform binary, so frozen offline installs never had the executable and
+    quietly copied the source. This implementation uses the FFmpeg already
+    shipped for every supported target, protects every transcribed word in
+    source time, and renders through the same integer frame/sample cutter as
+    the rest of the pipeline.
+
+    A legitimate no-cut result explicitly preserves the source. Missing or
+    broken FFmpeg and render failures raise ``LowSpeechCutError`` so the job
+    fails closed instead of masquerading as a successful edit.
+    """
+    words = words or []
+    try:
+        margin_seconds = float(
+            margin[:-1] if isinstance(margin, str) and margin.endswith("s")
+            else margin
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid low-speech margin: {margin!r}") from exc
+    if margin_seconds < 0:
+        raise ValueError("low-speech margin must be non-negative")
+    if not 0 < min_keep <= 1:
+        raise ValueError("low-speech min_keep must be in (0, 1]")
+    src_dur = _dur(src)
+    if src_dur <= 0:
+        raise LowSpeechCutError("low-speech source duration is unavailable")
+    ffmpeg = _resolve_low_speech_ffmpeg()
+
+    # These are the amplitude-equivalent dB values for the former 4%, 1%,
+    # and 0.4% attempts. Analysis is local and deterministic on every target.
+    attempts = ("-28dB", "-40dB", "-48dB")
+    safest: tuple[list[dict], float, str] | None = None
+    best_ratio = 0.0
+    for threshold in attempts:
+        try:
+            result = run([
+                ffmpeg, "-nostdin", "-hide_banner", "-i", src,
+                "-af", f"silencedetect=noise={threshold}:d=0.60",
+                "-f", "null", "-",
+            ], check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LowSpeechCutError(
+                f"required FFmpeg low-speech analysis could not start: {exc}"
+            ) from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace")[-500:].strip()
+            raise LowSpeechCutError(
+                "required FFmpeg low-speech analysis failed"
+                + (f": {detail}" if detail else "")
+            )
+        intervals = _silence_intervals(
+            result.stderr.decode(errors="replace"), src_dur
+        )
+        cuts = _speech_protected_silence(
+            intervals, words, margin=margin_seconds
+        )
+        removed = sum(float(cut["e"]) - float(cut["s"]) for cut in cuts)
+        ratio = max(0.0, min(1.0, (src_dur - removed) / src_dur))
+        best_ratio = max(best_ratio, ratio)
+        log(f"phase 2: local silence analysis ({threshold}) would keep "
+            f"{ratio:.0%}")
+        if cuts and ratio >= min_keep:
+            safest = cuts, ratio, threshold
+            break
+        if not intervals:
+            # A gentler threshold cannot discover silence that an aggressive
+            # threshold did not see.
+            break
+
+    if safest is None:
+        reason = (
+            "no confirmed removable silence outside protected speech"
+            if best_ratio >= min_keep
+            else f"safest candidate kept only {best_ratio:.0%} "
+                 f"(< {min_keep:.0%})"
+        )
+        return _preserve_low_speech_source(src, workdir, reason)
+
+    cuts, expected_ratio, threshold = safest
+    try:
+        out = apply_cuts(src, cuts, workdir)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LowSpeechCutError(
+            f"required low-speech render failed: {exc}"
+        ) from exc
+    if out == src or not out.is_file() or out.stat().st_size == 0:
+        raise LowSpeechCutError("required low-speech render produced no output")
+    rendered_duration = _dur(out)
+    if rendered_duration <= 0:
+        raise LowSpeechCutError(
+            "required low-speech render has no measurable duration"
+        )
+    ratio = rendered_duration / src_dur
+    if ratio + 0.01 < min_keep:
+        raise LowSpeechCutError(
+            f"low-speech render violated retention guard: {ratio:.0%} "
+            f"< {min_keep:.0%}"
+        )
+    log(f"phase 2: local silence cut ({threshold}) removed {len(cuts)} "
+        f"span(s), kept {ratio:.0%} (planned {expected_ratio:.0%})")
+    emit({"event": "low_speech_cut", "cuts": len(cuts),
+          "retention": round(ratio, 6), "threshold": threshold})
+    return out, ratio
 
 
 def word_guarded_cut(src: Path, workdir: Path,
@@ -891,13 +1210,13 @@ def word_guarded_cut(src: Path, workdir: Path,
     Transcribe the SOURCE first; silence may only be removed BETWEEN padded
     word spans (tail after a word, head before the next), never inside one.
     Word loss is now architecturally impossible. Returns
-    (cut_video, retention, raw_words). Falls back to the loudness cutter
-    only if whisper finds almost nothing (not a talking-head video)."""
+    (cut_video, retention, raw_words). Falls back to the bundled local
+    silence analyzer only if Whisper finds almost nothing."""
     raw_words = transcribe(src, workdir)
     dur = _dur(src) or 1.0
     if len(raw_words) < 10:
-        log("phase 2: <10 words transcribed, falling back to loudness cut")
-        out, ratio = silence_cut(src, workdir)
+        log("phase 2: <10 words transcribed, using local low-speech cutter")
+        out, ratio = silence_cut(src, workdir, words=raw_words)
         return out, ratio, raw_words
     cuts = detect_dead_air(raw_words, dur, min_pause, head, tail)
     for c in cuts:
@@ -1370,9 +1689,10 @@ def transcribe(video: Path, workdir: Path) -> list[dict]:
     log("phase 3: faster-whisper word-level transcript")
     script = workdir / "_whisper.py"
     script.write_text(
-        "import json,sys\n"
+        "import json,os,sys\n"
         "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel('small',device='cpu',compute_type='int8')\n"
+        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_SMALL','small'),"
+        "device='cpu',compute_type='int8')\n"
         "segs,_=m.transcribe(sys.argv[1],word_timestamps=True)\n"
         "words=[{'w':w.word.strip(),'s':round(w.start,3),'e':round(w.end,3),"
         "'p':round(w.probability,2)}\n"
@@ -1510,9 +1830,10 @@ def _secondary_asr_text(master: Path, start: float, end: float,
         "-vn", "-ac", "1", "-ar", "16000", clip
     ])
     script_file.write_text(
-        "import json,sys\n"
+        "import json,os,sys\n"
         "from faster_whisper import WhisperModel\n"
-        "m=WhisperModel('medium',device='cpu',compute_type='int8')\n"
+        "m=WhisperModel(os.getenv('AUTOEDITOR_WHISPER_MEDIUM','medium'),"
+        "device='cpu',compute_type='int8')\n"
         "s,_=m.transcribe(sys.argv[1],beam_size=5,vad_filter=False,"
         "condition_on_previous_text=False)\n"
         "json.dump({'text':' '.join(x.text.strip() for x in s)},"
@@ -1764,9 +2085,83 @@ def brand_font() -> tuple[str, bool]:
     return "", False
 
 
+def _caption_safe_bounds(vid_w: int,
+                         safe_width: float | None = None) -> tuple[float, float]:
+    """Return the centered horizontal safe area for the delivered frame."""
+    width = min(float(vid_w), max(1.0, float(safe_width or vid_w)))
+    margin = max(10.0, width * 0.05)
+    center = vid_w / 2.0
+    return center - width / 2.0 + margin, center + width / 2.0 - margin
+
+
+def _caption_measure(draw, chunk: list[dict], font, stroke: int) -> tuple[list[float], float]:
+    widths = [draw.textlength(word["w"] + " ", font=font) for word in chunk]
+    return widths, sum(widths) + 2 * stroke
+
+
+def _caption_chunks(words: list[dict], font_file: str, preferred_size: int,
+                    vid_w: int, max_words: int,
+                    safe_width: float | None = None) -> list[list[dict]]:
+    """Group captions by word count and the real delivered-frame width."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    canvas = Image.new("L", (max(1, vid_w), max(1, preferred_size * 2)))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.truetype(font_file, preferred_size)
+    stroke = max(2, preferred_size // 14)
+    left, right = _caption_safe_bounds(vid_w, safe_width)
+    chunks, current = [], []
+    for word in words:
+        candidate = current + [dict(word)]
+        _widths, rendered_width = _caption_measure(
+            draw, candidate, font, stroke
+        )
+        if current and rendered_width > right - left:
+            chunks.append(current)
+            current = []
+        current.append(dict(word))
+        if (len(current) >= max_words
+                or (word["w"] and word["w"][-1] in ".!?")):
+            chunks.append(current)
+            current = []
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _caption_layout(draw, chunk: list[dict], font_file: str,
+                    preferred_size: int, vid_w: int, band_h: int,
+                    safe_width: float | None = None):
+    """Fit one caption chunk without allowing outline pixels to be cropped."""
+    from PIL import ImageFont
+
+    left, right = _caption_safe_bounds(vid_w, safe_width)
+    size = preferred_size
+    minimum_size = min(preferred_size, max(18, int(preferred_size * 0.55)))
+    while True:
+        font = ImageFont.truetype(font_file, size)
+        stroke = max(1, size // 14)
+        widths, rendered_width = _caption_measure(draw, chunk, font, stroke)
+        if rendered_width <= right - left or size <= minimum_size:
+            break
+        size = max(
+            minimum_size,
+            min(size - 1, int(size * (right - left) / rendered_width)),
+        )
+    text_width = sum(widths)
+    x = max(left + stroke, (vid_w - text_width) / 2.0)
+    y = max(stroke, (band_h - size) / 2.0)
+    layout_safe = (
+        x - stroke >= left - 0.5
+        and x + sum(widths) + stroke <= right + 0.5
+    )
+    return font, stroke, widths, x, y, layout_safe
+
+
 def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
                        vid_w: int, vid_h: int,
-                       scale: float = 0.045, max_words: int = 4) -> list[dict]:
+                       scale: float = 0.045, max_words: int = 4,
+                       safe_width: float | None = None) -> list[dict]:
     """Phase 4 (libass-free): render each caption card as a transparent PNG
     (Pillow), first word in brand gold, rest white, black outline. Composited
     later with ffmpeg's `overlay` filter, works on minimal ffmpeg builds
@@ -1774,37 +2169,38 @@ def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
     profile (shorts = bigger cards, fewer words per card)."""
     from PIL import Image, ImageDraw, ImageFont
     size = max(28, int(vid_h * scale))
-    font = ImageFont.truetype(font_file, size)
     gold, white, outline = (232, 199, 167, 255), (255, 255, 255, 255), (0, 0, 0, 255)
-    cards, chunk = [], []
+    cards = []
 
     def flush(chunk, idx):
         text_words = [c["w"] for c in chunk]
         img = Image.new("RGBA", (vid_w, int(size * 2.2)), (0, 0, 0, 0))
         dr = ImageDraw.Draw(img)
-        widths = [dr.textlength(w + " ", font=font) for w in text_words]
-        total = sum(widths)
-        x = max(10, (vid_w - total) / 2)
-        y = int(size * 0.4)
+        font, stroke, widths, x, y, layout_safe = _caption_layout(
+            dr, chunk, font_file, size, vid_w, img.height, safe_width
+        )
         for i, w in enumerate(text_words):
             dr.text((x, y), w, font=font, fill=gold if i == 0 else white,
-                    stroke_width=max(2, size // 14), stroke_fill=outline)
+                    stroke_width=stroke, stroke_fill=outline)
             x += widths[i]
         p = workdir / f"cap_{idx:04d}.png"
         img.save(p)
-        cards.append({"png": str(p), "s": chunk[0]["s"], "e": chunk[-1]["e"]})
+        cards.append({
+            "png": str(p), "s": chunk[0]["s"], "e": chunk[-1]["e"],
+            "layout_safe": layout_safe, "height": img.height,
+        })
 
-    for w in words:
-        chunk.append(w)
-        if len(chunk) >= max_words or (w["w"] and w["w"][-1] in ".!?"):
-            flush(chunk, len(cards)); chunk = []
-    if chunk:
+    chunks = _caption_chunks(
+        words, font_file, size, vid_w, max_words, safe_width
+    )
+    for chunk in chunks:
         flush(chunk, len(cards))
     return cards
 
 def build_caption_band(words: list[dict], workdir: Path, font_file: str,
                        vid_w: int, vid_h: int, fps: str, duration: float,
                        scale: float = 0.045, max_words: int = 4,
+                       safe_width: float | None = None,
                        ) -> dict | None:
     """KARAOKE captions . Renders the caption strip as a transparent PNG frame-sequence:
     per video frame, the word being SPOKEN right now is gold, the rest
@@ -1812,6 +2208,8 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
     hardlinked per frame, so 6k frames cost ~600 renders. Composited as ONE
     overlay input."""
     from PIL import Image, ImageDraw, ImageFont
+    if not words:
+        return None
     try:
         num, den = (fps.split("/") + ["1"])[:2]
         f_fps = float(num) / float(den or 1)
@@ -1819,37 +2217,34 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
         f_fps, fps = 30.0, "30"
     size = max(28, int(vid_h * scale))
     band_h = int(size * 2.2)
-    font = ImageFont.truetype(font_file, size)
     gold, white, outline = (232, 199, 167, 255), (255, 255, 255, 255), (0, 0, 0, 255)
-    # chunking identical to the card system
-    chunks, cur = [], []
-    for w in words:
-        cur.append(dict(w))
-        if len(cur) >= max_words or (w["w"] and w["w"][-1] in ".!?"):
-            chunks.append(cur); cur = []
-    if cur:
-        chunks.append(cur)
+    chunks = _caption_chunks(
+        words, font_file, size, vid_w, max_words, safe_width
+    )
     seq = workdir / "capband"
     seq.mkdir(exist_ok=True)
     blank = seq / "_blank.png"
     Image.new("RGBA", (vid_w, band_h), (0, 0, 0, 0)).save(blank)
 
     state_cache: dict = {}
+    layout_safe = True
 
     def state_png(ci: int, ai: int) -> Path:
+        nonlocal layout_safe
         key = (ci, ai)
         if key in state_cache:
             return state_cache[key]
         ch = chunks[ci]
         img = Image.new("RGBA", (vid_w, band_h), (0, 0, 0, 0))
         dr = ImageDraw.Draw(img)
-        widths = [dr.textlength(c["w"] + " ", font=font) for c in ch]
-        x = max(10, (vid_w - sum(widths)) / 2)
-        y = int(size * 0.4)
+        font, stroke, widths, x, y, state_safe = _caption_layout(
+            dr, ch, font_file, size, vid_w, band_h, safe_width
+        )
+        layout_safe = layout_safe and state_safe
         for i, c in enumerate(ch):
             dr.text((x, y), c["w"], font=font,
                     fill=gold if i == ai else white,
-                    stroke_width=max(2, size // 14), stroke_fill=outline)
+                    stroke_width=stroke, stroke_fill=outline)
             x += widths[i]
         p = seq / f"state_{ci:03d}_{ai:02d}.png"
         img.save(p)
@@ -1877,7 +2272,10 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
         os.link(src_png, dst)
     log(f"captions: karaoke band, {len(chunks)} chunks, "
         f"{len(state_cache)} states, {total} frames")
-    return {"seq": str(seq), "fps": fps, "band_h": band_h}
+    return {
+        "seq": str(seq), "fps": fps, "band_h": band_h,
+        "layout_safe": layout_safe,
+    }
 
 
 def build_srt(words: list[dict], out: Path):
@@ -1904,12 +2302,13 @@ def render_master(cut: Path, cards: list[dict], music: Path | None,
                   broll: list[dict] | None = None,
                   caption_margin_frac: float = 0.10,
                   sfx: list | None = None,
-                  caption_band: dict | None = None) -> Path:
+                  caption_band: dict | None = None,
+                  caption_viewport: tuple[float, float] | None = None) -> Path:
     gfx, broll, sfx = gfx or [], broll or [], sfx or []
     log(f"phase 5/6: composite {len(broll)} b-roll + {len(gfx)} graphics + "
         f"{len(cards)} caption cards + loudness pass 1")
     graded = workdir / "graded.mp4"
-    margin = int(vid_h * caption_margin_frac)
+    view_top, view_height = caption_viewport or (0.0, float(vid_h))
     inputs = [FFMPEG, "-y", "-i", cut]
     pre, chain, cur, idx = [], [], "0:v", 0
     # 1) b-roll video overlays (bottom layer; audio untouched = J-cut feel)
@@ -1941,14 +2340,22 @@ def render_master(cut: Path, cards: list[dict], music: Path | None,
         idx += 1
         pre.append(f"[{idx}:v]format=rgba,setpts=PTS-STARTPTS[capband]")
         nxt = f"v{len(chain)+1}"
+        caption_y = _caption_overlay_y(
+            view_top, view_height, caption_band["band_h"],
+            caption_margin_frac,
+        )
         chain.append(f"[{cur}][capband]overlay=x=0:"
-                     f"y=main_h-{caption_band['band_h']}-{margin}[{nxt}]")
+                     f"y={caption_y}[{nxt}]")
         cur = nxt
     for c in cards:
         inputs += ["-i", c["png"]]
         idx += 1
         nxt = f"v{len(chain)+1}"
-        chain.append(f"[{cur}][{idx}:v]overlay=x=0:y=main_h-overlay_h-{margin}"
+        caption_y = _caption_overlay_y(
+            view_top, view_height, int(c.get("height", 0)),
+            caption_margin_frac,
+        )
+        chain.append(f"[{cur}][{idx}:v]overlay=x=0:y={caption_y}"
                      f":enable='between(t,{c['s']:.3f},{c['e']:.3f})'[{nxt}]")
         cur = nxt
     vgraph = ";".join(pre + chain) if chain else "[0:v]null[vout]"
@@ -2162,9 +2569,15 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    visual_reference: Path | None = None,
                    captions_burn_requested: bool = True,
                    caption_inputs_rendered: bool = False,
+                   caption_layout_safe: bool = False,
                    caption_sidecar: Path | None = None) -> dict:
     log("phase 7: QA gate")
-    qa = {"checks": {}, "pass": True}
+    qa = {
+        "checks": {},
+        "pass": True,
+        "product": "AutoEditor",
+        "built_by": "Omar Marabha (@CEOmarabha)",
+    }
     # 2026-07-23 incident guard: a silence-cut that deletes actual speech
     # must NEVER pass QA silently. retention==1.0 means source-uncut fallback.
     qa["checks"]["speech_retention"] = {
@@ -2207,6 +2620,12 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
         words, captions_burn_requested, caption_inputs_rendered,
         caption_sidecar,
     )
+    caption_safe = not captions_burn_requested or caption_layout_safe
+    qa["checks"]["caption_safe_area"] = {
+        "ok": caption_safe,
+        "note": "" if caption_safe else
+                "one or more burned caption states exceed the final crop",
+    }
     qa["checks"]["brand_font_worksans"] = {"ok": ass_font_ok,
         "note": "" if ass_font_ok else "WorkSans not installed, fell back to Arial Black. Install Work Sans for full brand compliance."}
     qa["checks"]["all_variants"] = {"ok": all(v.exists() and v.stat().st_size > 0
@@ -2417,7 +2836,10 @@ def _cut_settings(style: str, config: Config) -> dict:
 
 # ---------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(prog="autoedit")
+    ap = argparse.ArgumentParser(
+        prog="autoedit",
+        description="AutoEditor, built by Omar Marabha (@CEOmarabha)",
+    )
     ap.add_argument("video", type=Path)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--music", type=Path, default=None)
@@ -2663,17 +3085,27 @@ def main():
             vid_w=info["width"], vid_h=info["height"])
         (outdir / "EDL.json").write_text(json.dumps(
             {"source": edl_src, **edl}, indent=2))
+    aspects = a.aspects
+    if aspects == "auto":
+        # Standing law 2026-07-23: long-form -> 16:9 only, shorts -> 9:16 only
+        aspects = "9x16" if style == "short" else "16x9"
+    _view_left, view_top, caption_safe_width, view_height = (
+        _delivery_viewport(info["width"], info["height"], aspects)
+    )
+
     cards, caption_band = [], None
     if words and not a.no_burn and font_file:
         caption_band = build_caption_band(
             words, work, font_file, info["width"], info["height"],
             str(info.get("fps", "30")), info["duration"],
-            scale=PROFILE["cap_scale"], max_words=PROFILE["cap_words"])
+            scale=PROFILE["cap_scale"], max_words=PROFILE["cap_words"],
+            safe_width=caption_safe_width)
         if not caption_band:
             cards = build_caption_pngs(words, work, font_file,
                                        info["width"], info["height"],
                                        scale=PROFILE["cap_scale"],
-                                       max_words=PROFILE["cap_words"])
+                                       max_words=PROFILE["cap_words"],
+                                       safe_width=caption_safe_width)
     srt = outdir / "PSE_CAPTIONS.srt"
     if words:
         build_srt(words, srt)
@@ -2685,45 +3117,63 @@ def main():
                            vid_w=info["width"], gfx=gfx_layers,
                            broll=broll_lyrs,
                            caption_margin_frac=PROFILE["cap_margin"],
-                           sfx=sfx_plan, caption_band=caption_band)
-    aspects = a.aspects
-    if aspects == "auto":
-        # Standing law 2026-07-23: long-form -> 16:9 only, shorts -> 9:16 only
-        aspects = "9x16" if style == "short" else "16x9"
+                           sfx=sfx_plan, caption_band=caption_band,
+                           caption_viewport=(view_top, view_height))
     if aspects == "9x16":
         only = outdir / "PSE_SHORT_9x16.mp4"
-        if info["width"] > info["height"]:
-            delivery_transform = "center_crop_9x16"
-            run([FFMPEG, "-y", "-i", master, "-vf",
-                 "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),scale=1080:1920",
-                 "-c:a", "copy", only])
-        else:
-            delivery_transform = "identity"
-            shutil.copy(master, only)
+        delivery_transform = "center_crop_9x16"
+        run([FFMPEG, "-y", "-i", master, "-vf",
+             "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),"
+             "scale=1080:1920,setsar=1",
+             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+             "-c:a", "copy", only])
         outs = {"9x16": only}
     else:
         only = outdir / "PSE_MASTER_16x9.mp4"
-        if info["height"] > info["width"]:
-            delivery_transform = "portrait_pillarbox_16x9"
-            run([FFMPEG, "-y", "-i", master, "-filter_complex",
-                 "[0:v]split=2[a][b];"
-                 "[a]scale=64:36,scale=1920:1080:flags=bicubic,crop=1920:1080[bg];"
-                 "[b]scale=-2:1080[fg];[bg][fg]overlay=(W-w)/2:0",
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                 "-c:a", "copy", only])
-        else:
-            delivery_transform = "identity"
-            shutil.copy(master, only)
+        delivery_transform = "fit_blur_16x9"
+        foreground_w, foreground_h = _fit_16x9_foreground(
+            info["width"], info["height"]
+        )
+        run([FFMPEG, "-y", "-i", master, "-filter_complex",
+             "[0:v]split=2[a][b];"
+             "[a]scale=64:36,scale=1920:1080:flags=bicubic,setsar=1[bg];"
+             f"[b]scale={foreground_w}:{foreground_h},setsar=1[fg];"
+             "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1",
+             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+             "-c:a", "copy", only])
         outs = {"16x9": only}
     # Completed is not verified. Quarantine before any gate can raise so an
     # exception cannot strand an ungated artifact under a delivery name.
     outs, final_paths = quarantine_outputs(outs)
+    horizontal_caption_safe = (
+        bool(caption_band.get("layout_safe"))
+        if caption_band else
+        bool(cards) and all(
+            card.get("layout_safe") is True for card in cards
+        )
+    )
+    caption_height = (
+        int(caption_band["band_h"])
+        if caption_band else
+        max((int(card.get("height", 0)) for card in cards), default=0)
+    )
+    caption_y = _caption_overlay_y(
+        view_top, view_height, caption_height, PROFILE["cap_margin"]
+    )
+    vertical_caption_safe = (
+        caption_height > 0
+        and caption_y >= view_top - 0.5
+        and caption_y + caption_height <= view_top + view_height + 0.5
+    )
     qa = qa_and_release(outs, font_ok, words, outdir, retention=retention,
                         edl=(edl if (not a.no_premium and words) else None),
                         visual_master=master,
                         visual_reference=cut,
                         captions_burn_requested=not a.no_burn,
                         caption_inputs_rendered=bool(caption_band or cards),
+                        caption_layout_safe=(
+                            horizontal_caption_safe and vertical_caption_safe
+                        ) if not a.no_burn else True,
                         caption_sidecar=srt)
     # HARD GATE : mechanical lip-sync verification. The
     # video is never delivered unless every probe passes.
@@ -2802,6 +3252,8 @@ def main():
     log(f"DONE in {time.time()-t0:.0f}s → {outdir}")
     log(f"QA: {'PASS ✅' if qa['pass'] else 'FAIL ❌ (see QA_REPORT.json)'}")
     emit({"event": "result",
+          "product": "AutoEditor",
+          "built_by": "Omar Marabha (@CEOmarabha)",
           "qa_pass": bool(qa["pass"]),
           "status": "delivered" if qa["pass"] else "needs_review",
           "outputs": {k: str(v) for k, v in outs.items()},

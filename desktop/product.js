@@ -1,23 +1,14 @@
-/** Product identity: one shared codebase, two release channels.
+/** Product identity for the legacy PSE desktop channel.
  *
- * PRODUCT=ryan  -> "Ryan Reels Editor"  (ryan_duffy, ryan_humes, shared_skit)
- * PRODUCT=pse   -> "PSE AutoEditor"     (pse)
- *
- * CI stamps the resolved identity and architecture-specific update channel
- * into product.json. The packaged app reads that file from resources.
+ * Friends use the generic AutoEditor Helper product. The old creator-specific
+ * channel is retired so a local build cannot silently
+ * ship somebody else's name or profiles. PSE remains separate from the same
+ * codebase and CI stamps its identity into product.json.
  */
 const fs = require('fs');
 const path = require('path');
 
 const PRODUCTS = {
-  ryan: {
-    id: 'ryan',
-    name: 'Ryan Reels Editor',
-    appId: 'com.marabha.ryanreels',
-    profiles: ['ryan_duffy', 'ryan_humes', 'shared_skit'],
-    channel: 'ryan',
-    tagline: 'Drop clips. Get a finished reel.'
-  },
   pse: {
     id: 'pse',
     name: 'PSE AutoEditor',
@@ -34,7 +25,7 @@ function resolveProduct(resourcesPath) {
     const p = path.join(resourcesPath, 'product.json');
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch (_) { /* fall through */ }
-  return PRODUCTS[process.env.PRODUCT || 'ryan'];
+  return PRODUCTS[process.env.PRODUCT || 'pse'];
 }
 
 module.exports = { PRODUCTS, resolveProduct };

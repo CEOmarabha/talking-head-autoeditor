@@ -1,0 +1,42 @@
+# Generic podcast/interview profile.
+
+meta:
+  display_name: "Podcast / Interview"
+  status: "approved"
+  description: "Conversation-first long-form podcast or interview"
+
+brand:
+  accent: "#7DD3FC"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans"
+  caption_scale: 0.043
+  caption_words: 5
+
+rules:
+  min_pause_long: 1.15
+  min_pause_short: 0.65
+  pad_head: 0.38
+  pad_tail: 0.42
+  retake_min_words: 4
+  retake_max_gap: 18.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "long"
+  long_cap_scale: 0.043
+  long_cap_words: 5
+  long_cap_margin: 0.08
+
+creative:
+  mode: "generic podcast or interview"
+  opening: "Open on the strongest complete exchange or claim without hiding who is speaking."
+  performance: "Preserve conversational timing, reactions, interruptions, and pauses that carry meaning."
+  punch_ins: "Use restrained emphasis on major claims or reactions, not on routine speaker changes."
+  broll: "Keep the conversation visible. Use literal supporting footage only for a concrete story, place, object, or event."
+  graphics: "Use supported names, dates, numbers, quotes, or topic context without covering reactions."
+  sound: "Keep every speaker clear and retain natural room between turns."
+  avoid: "No edits that change the meaning of an exchange, erase a reaction, or imply a different answer."

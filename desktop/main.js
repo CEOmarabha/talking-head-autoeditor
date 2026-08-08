@@ -1,4 +1,4 @@
-/** Ryan Reels Editor / PSE AutoEditor: Electron main process.
+/** PSE AutoEditor: Electron main process.
  *
  * Responsibilities:
  *  - one-screen edit flow (renderer) with IPC to the verified Python engine
@@ -9,7 +9,7 @@
  *  - multi-clip concat via bundled ffmpeg before the engine runs
  *  - transcript generation (engine --transcribe-only) for the review step
  *  - QA-gated result: "delivered" vs "needs_review", never silently passed
- *  - auto-update via GitHub Releases (per-product channel)
+ *  - release updates are installed explicitly from verified installers
  */
 const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } =
   require('electron');
@@ -382,14 +382,10 @@ app.whenReady().then(() => {
   }
   setupIpc();
   createWindow();
-  // auto-update: per-product channel on the shared GitHub Releases feed
-  if (PACKAGED) {
-    try {
-      const { autoUpdater } = require('electron-updater');
-      autoUpdater.channel = PRODUCT.channel;
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
-    } catch (_) { /* updater optional in dev */ }
-  }
+  // Auto-update is intentionally disabled. Notarization and stapling mutate
+  // the final DMG after electron-builder would have generated update metadata,
+  // so the old metadata could describe different bytes than friends receive.
+  // Releases now publish only final, post-staple installers and checksums.
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

@@ -1,0 +1,3 @@
+# Latest compatible wheels that still install on the declared macOS 12 floor.
+av==14.2.0
+onnxruntime==1.19.2

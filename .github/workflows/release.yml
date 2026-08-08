@@ -1,106 +1,141 @@
-name: Build desktop installers
+name: Build PSE desktop installers
 
-# Two release channels off one codebase:
-#   tag ryan-v1.2.3 -> Ryan Reels Editor (ryan_duffy, ryan_humes, shared_skit)
-#   tag pse-v1.2.3  -> PSE AutoEditor    (pse)
-# Or run manually with the product input.
-#
-# Signing is env-gated on repo secrets. Without secrets the workflow still
-# produces UNSIGNED installers for acceptance testing; add
-# CSC_LINK/WIN_CSC_LINK + Apple creds later to remove the Gatekeeper /
-# SmartScreen friction).
+# Friends use the generic AutoEditor Helper workflow. This legacy workflow is
+# retained only for PSE, with tag signing isolated behind protected platform
+# environments after the same payload passes unsigned acceptance.
 
 on:
   push:
-    branches: [friend-ready-app]
-    tags: ["ryan-v*", "pse-v*"]
+    tags: ["pse-v*"]
   workflow_dispatch:
     inputs:
-      product:
-        description: "Which product to build"
+      version:
+        description: "Version for an unsigned PSE acceptance build"
         required: true
-        default: "ryan"
-        type: choice
-        options: [ryan, pse]
+        default: "0.1.0"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-15
+            target_os: mac
             platform: mac
             arch: arm64
           - os: macos-15-intel
+            target_os: mac
             platform: mac
             arch: x64
           - os: windows-2022
+            target_os: windows
             platform: win
             arch: x64
-            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 150
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-dist" >> "$GITHUB_ENV"
 
       - name: Resolve product
         id: product
         shell: bash
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
         run: |
           REF="${GITHUB_REF_NAME:-}"
-          PRODUCT="${{ github.event.inputs.product }}"
-          if [[ -z "$PRODUCT" ]]; then
-            case "$REF" in
-              ryan-v*) PRODUCT=ryan ;;
-              pse-v*)  PRODUCT=pse ;;
-              *)       PRODUCT=ryan ;;
-            esac
-          fi
-          VERSION="0.1.0"
-          if [[ "$REF" == *-v* ]]; then
-            VERSION="${REF#*-v}"
-          fi
-          if [[ "$PRODUCT" == "ryan" ]]; then
-            echo "name=Ryan Reels Editor" >> "$GITHUB_OUTPUT"
-            echo "appid=com.marabha.ryanreels" >> "$GITHUB_OUTPUT"
-            echo "profiles=ryan_duffy ryan_humes shared_skit" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$REF" == pse-v* ]] || { echo "Only pse-v* tags are supported" >&2; exit 1; }
+            VERSION="${REF#pse-v}"
+            echo "tagged=true" >> "$GITHUB_OUTPUT"
           else
-            echo "name=PSE AutoEditor" >> "$GITHUB_OUTPUT"
-            echo "appid=com.marabha.pseautoeditor" >> "$GITHUB_OUTPUT"
-            echo "profiles=pse" >> "$GITHUB_OUTPUT"
+            VERSION="$MANUAL_VERSION"
+            echo "tagged=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "product=$PRODUCT" >> "$GITHUB_OUTPUT"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+            echo "Invalid version: $VERSION" >&2
+            exit 1
+          }
+          echo "name=PSE AutoEditor" >> "$GITHUB_OUTPUT"
+          echo "appid=com.marabha.pseautoeditor" >> "$GITHUB_OUTPUT"
+          echo "profiles=pse" >> "$GITHUB_OUTPUT"
+          echo "product=pse" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "channel=$PRODUCT-${{ matrix.platform }}-${{ matrix.arch }}" \
-            >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v6
+      - name: Require a protected default-branch release tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pse-v')
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          test -n "$DEFAULT_BRANCH" || {
+            echo "GitHub did not provide the repository default branch" >&2
+            exit 1
+          }
+          test "$TAG_REF_PROTECTED" = true || {
+            echo "The PSE release tag must be protected" >&2
+            exit 1
+          }
+          TAG_COMMIT=$(git rev-parse HEAD)
+          DEFAULT_COMMIT=$(git ls-remote --exit-code origin \
+            "refs/heads/$DEFAULT_BRANCH" | awk 'NR == 1 {print $1}')
+          [[ "$DEFAULT_COMMIT" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "Could not resolve the repository default-branch head" >&2
+            exit 1
+          }
+          test "$TAG_COMMIT" = "$DEFAULT_COMMIT" || {
+            echo "A PSE release tag must point to the protected default-branch head" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: packaging/requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt
 
       - name: Build frozen engine
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          LOCK="packaging/requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt"
+          test -f "$LOCK"
+          python -m pip install --require-hashes -r "$LOCK"
+          python -m pip check
           python -m unittest tests.test_safety
           pyinstaller packaging/engine.spec --distpath packaging/dist
-          ls packaging/dist/autoeditor-engine | head
+          test -d packaging/dist/autoeditor-engine
           ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
           [[ "${{ runner.os }}" == "Windows" ]] && ENGINE="${ENGINE}.exe"
-          "$ENGINE" --help >/dev/null
+          "$ENGINE" --self-test
 
       - name: Stage resources
         shell: bash
         run: |
           mkdir -p desktop/staging/bin desktop/staging/lib \
-            desktop/staging/profiles desktop/staging/fonts
+            desktop/staging/profiles desktop/staging/fonts \
+            desktop/staging/licenses
+          # GPL FFmpeg/x264 are bundled below; ship their notices with them.
+          cp packaging/THIRD_PARTY_NOTICES.md desktop/staging/licenses/
+          cp LICENSE desktop/staging/licenses/AutoEditor-LICENSE.txt
+          cp "packaging/requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt" \
+            desktop/staging/licenses/PYTHON_REQUIREMENTS_LOCK.txt
           cp -r packaging/dist/autoeditor-engine desktop/staging/engine
           for p in ${{ steps.product.outputs.profiles }}; do
             cp -r "profiles/$p" "desktop/staging/profiles/$p"
@@ -110,7 +145,7 @@ jobs:
            "name":"${{ steps.product.outputs.name }}",
            "appId":"${{ steps.product.outputs.appid }}",
            "profiles":$(python -c "import json;print(json.dumps('${{ steps.product.outputs.profiles }}'.split()))"),
-           "channel":"${{ steps.product.outputs.channel }}",
+           "updates":false,
            "tagline":"Drop clips. Get a finished reel."}
           EOF
 
@@ -119,11 +154,68 @@ jobs:
         shell: bash
         run: |
           brew install ffmpeg
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          brew --version | head -n 1 | grep -Fx 'Homebrew 6.0.15'
+          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2_1([[:space:]]|$)' || {
+            echo "Homebrew FFmpeg moved from audited formula revision 8.1.2_1. Review and repin before releasing." >&2
+            exit 1
+          }
+          STAGE=desktop/staging
+          EXPECTED="packaging/macos-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" \
+            --output "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           python packaging/bundle_macos_ffmpeg.py \
             --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
             --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
             --bin-dir desktop/staging/bin \
             --lib-dir desktop/staging/lib
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$BOTTLE_TAG" && -n "$BOTTLE_REBUILD" ]]
+            [[ -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            PREFIX=$(realpath "$(brew --prefix "$FORMULA")")
+            [[ "$(basename "$PREFIX")" == "$VERSION" ]] || {
+              echo "Installed $FORMULA prefix does not match $VERSION" >&2
+              exit 1
+            }
+            DEST="$STAGE/licenses/ffmpeg-components/${FORMULA/@/_}-$VERSION"
+            mkdir -p "$DEST"
+            test -f "$PREFIX/INSTALL_RECEIPT.json"
+            cp "$PREFIX/INSTALL_RECEIPT.json" "$DEST/"
+            FORMULA_FILE=$(find "$PREFIX/.brew" -maxdepth 1 -type f \
+              -name '*.rb' -print -quit)
+            test -n "$FORMULA_FILE"
+            cp "$FORMULA_FILE" "$DEST/"
+            FOUND_LICENSE=0
+            while IFS= read -r LICENSE_FILE; do
+              cp "$LICENSE_FILE" "$DEST/"
+              FOUND_LICENSE=1
+            done < <(find "$PREFIX" -maxdepth 2 -type f \
+              \( -iname 'COPYING*' -o -iname 'LICENSE*' \
+                 -o -iname 'COPYRIGHT*' -o -iname 'NOTICE*' \) \
+              -print | LC_ALL=C sort)
+            [[ "$FOUND_LICENSE" == 1 ]] || {
+              echo "No license text found for bundled formula $FORMULA" >&2
+              exit 1
+            }
+          done < "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe
           if [[ "${{ matrix.arch }}" == "arm64" ]]; then
             file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe | \
@@ -141,43 +233,121 @@ jobs:
           desktop/staging/bin/ffmpeg -version >/dev/null
           desktop/staging/bin/ffprobe -version >/dev/null
 
-      - name: Fetch ffmpeg (Windows)
+      - name: Bundle verified FFmpeg and FFprobe (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
+          $release = Invoke-RestMethod `
+            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
+          $metadata = $release.assets | Where-Object { $_.name -eq $asset }
+          if (-not $metadata) { throw "Pinned FFmpeg release asset is missing" }
+          Invoke-WebRequest $metadata.browser_download_url -OutFile ffmpeg.zip
+          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          $expected = "8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331"
+          $published = $metadata.digest.Replace("sha256:", "").ToLower()
+          if ($published -ne $expected) {
+            throw "BtbN latest changed from the audited FFmpeg archive. Review and repin before releasing"
+          }
+          if ($actual -ne $expected) {
+            throw "FFmpeg archive digest does not match the audited digest"
+          }
+          Expand-Archive ffmpeg.zip -DestinationPath fftmp
+          Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/staging/bin/"
+          Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/staging/bin/"
+          Copy-Item "fftmp/*/LICENSE.txt" `
+            "desktop/staging/licenses/FFMPEG-GPL-3.0.txt"
+          Set-Content "desktop/staging/licenses/FFMPEG_BUILD.txt" `
+            "asset=$asset`nsha256=$actual`nbytes=$($metadata.size)`nrelease_id=$($release.id)`npublished_at=$($release.published_at)`nsource=$($metadata.browser_download_url)"
+          & desktop/staging/bin/ffmpeg.exe -version | `
+            Set-Content "desktop/staging/licenses/FFMPEG_VERSION.txt"
+          & desktop/staging/bin/ffmpeg.exe -buildconf 2>&1 | `
+            Set-Content "desktop/staging/licenses/FFMPEG_BUILDCONF.txt"
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg did not start" }
+          & desktop/staging/bin/ffprobe.exe -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe did not start" }
+
+      - name: Fetch digest-pinned open-license font
         shell: bash
         run: |
-          curl -L "${{ matrix.ffmpeg_url }}" -o ff.zip
-          unzip -o ff.zip -d fftmp
-          cp fftmp/*/bin/ffmpeg.exe fftmp/*/bin/ffprobe.exe desktop/staging/bin/
-          desktop/staging/bin/ffmpeg.exe -version >/dev/null
-          desktop/staging/bin/ffprobe.exe -version >/dev/null
+          FONTS_COMMIT=2d85e20401920891efb7cd6272d6339685df2820
+          FONT=desktop/staging/fonts/Montserrat-Variable.ttf
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/$FONTS_COMMIT/ofl/montserrat/Montserrat%5Bwght%5D.ttf" \
+            -o "$FONT"
+          ACTUAL=$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$FONT")
+          EXPECTED=0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7
+          test "$ACTUAL" = "$EXPECTED" || {
+            echo "Montserrat digest changed from the audited font" >&2
+            exit 1
+          }
 
-      - name: Fetch open-license fonts
+      - name: Generate byte-verifiable product runtime manifest
         shell: bash
+        env:
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          PRODUCT_VERSION: ${{ steps.product.outputs.version }}
+          PRODUCT_ID: ${{ steps.product.outputs.product }}
         run: |
-          curl -L "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf" \
-            -o desktop/staging/fonts/Montserrat-Bold.ttf
-          test -s desktop/staging/fonts/Montserrat-Bold.ttf
+          python - <<'PY'
+          import json
+          import os
+          import runpy
+          from pathlib import Path
 
-      - uses: actions/setup-node@v4
+          stage = Path("desktop/staging")
+          receipt = runpy.run_path(
+              "packaging/generate_helper_manifest.py"
+          )["directory_receipt"]
+          allowed = ("engine", "bin", "lib", "profiles", "fonts", "licenses")
+          components = {}
+          for name in allowed:
+              value = receipt(stage / name)
+              if value["files"]:
+                  components[name] = value
+          required = {"engine", "bin", "profiles", "fonts", "licenses"}
+          missing = sorted(required - set(components))
+          if missing:
+              raise SystemExit(
+                  "runtime manifest components are empty: " + ", ".join(missing)
+              )
+          product_path = stage / "product.json"
+          product = json.loads(product_path.read_text())
+          if product.get("id") != os.environ["PRODUCT_ID"]:
+              raise SystemExit("staged product identity does not match the build")
+          product["runtimeManifest"] = {
+              "schema": "autoeditor-desktop-runtime/v1",
+              "version": os.environ["PRODUCT_VERSION"],
+              "target": {
+                  "os": os.environ["TARGET_OS"],
+                  "arch": os.environ["TARGET_ARCH"],
+              },
+              "components": components,
+          }
+          product_path.write_text(
+              json.dumps(product, indent=2, sort_keys=True) + "\n"
+          )
+          print(
+              "product runtime manifest generated:",
+              os.environ["TARGET_OS"], os.environ["TARGET_ARCH"],
+              os.environ["PRODUCT_VERSION"],
+          )
+          PY
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22.23.2
 
-      - name: Build installer
+      - name: Strip macOS metadata before packaging
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          find desktop/staging \( -name '.DS_Store' -o -name '._*' \) -delete
+          xattr -cr desktop/staging
+
+      - name: Install and test desktop package
         shell: bash
         working-directory: desktop
-        env:
-          PRODUCT: ${{ steps.product.outputs.product }}
-          PRODUCT_NAME: ${{ steps.product.outputs.name }}
-          APP_ID: ${{ steps.product.outputs.appid }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           npm ci
           npm version "${{ steps.product.outputs.version }}" \
@@ -188,12 +358,24 @@ jobs:
           node --check renderer/app.js
           node --check scripts/notarize.js
           npm test
+
+      - name: Build installer
+        shell: bash
+        working-directory: desktop
+        env:
+          PRODUCT: ${{ steps.product.outputs.product }}
+          PRODUCT_NAME: ${{ steps.product.outputs.name }}
+          APP_ID: ${{ steps.product.outputs.appid }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
           TARGET="--${{ matrix.platform }}"
           ARCH="--${{ matrix.arch }}"
-          npx electron-builder --config electron-builder.yml \
+          rm -rf "$DESKTOP_DIST"
+          mkdir -p "$DESKTOP_DIST"
+          npx --no-install electron-builder --config electron-builder.yml \
             --config.appId="$APP_ID" \
             --config.productName="$PRODUCT_NAME" \
-            --config.publish.channel="${{ steps.product.outputs.channel }}" \
+            --config.directories.output="$DESKTOP_DIST" \
             "$TARGET" "$ARCH" \
             --publish never
 
@@ -202,10 +384,16 @@ jobs:
         shell: pwsh
         env:
           PRODUCT_NAME: ${{ steps.product.outputs.name }}
-          EXPECT_SIGNED: ${{ secrets.WIN_CSC_LINK != '' }}
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          PRODUCT_VERSION: ${{ steps.product.outputs.version }}
+          PRODUCT_ID: ${{ steps.product.outputs.product }}
         run: |
-          $installer = Get-ChildItem "desktop/dist/*.exe" | Select-Object -First 1
-          if (-not $installer) { throw "Windows installer was not created" }
+          $installers = @(Get-ChildItem "$env:DESKTOP_DIST/*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one Windows installer, found $($installers.Count)"
+          }
+          $installer = $installers[0]
           $install = Start-Process -FilePath $installer.FullName `
             -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) {
@@ -215,32 +403,75 @@ jobs:
           $app = Join-Path $root "$env:PRODUCT_NAME.exe"
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           $ffmpeg = Join-Path $root "resources/bin/ffmpeg.exe"
+          $ffprobe = Join-Path $root "resources/bin/ffprobe.exe"
           if (-not (Test-Path $app)) { throw "Installed app is missing" }
           if (-not (Test-Path $engine)) { throw "Installed engine is missing" }
           if (-not (Test-Path $ffmpeg)) { throw "Installed FFmpeg is missing" }
-          $expectedProfiles = @("ryan_duffy", "ryan_humes", "shared_skit")
-          if ($env:PRODUCT_NAME -eq "PSE AutoEditor") { $expectedProfiles = @("pse") }
+          if (-not (Test-Path $ffprobe)) { throw "Installed FFprobe is missing" }
+          $resources = Join-Path $root "resources"
+          $stagedProduct = "desktop/staging/product.json"
+          $installedProduct = Join-Path $resources "product.json"
+          $stagedHash = (Get-FileHash $stagedProduct -Algorithm SHA256).Hash
+          $installedHash = (Get-FileHash $installedProduct -Algorithm SHA256).Hash
+          if ($stagedHash -ne $installedHash) {
+            throw "Installed product manifest is not byte-identical to staging"
+          }
+          $verifyManifest = @'
+          import json
+          import runpy
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          target = {"os": sys.argv[2], "arch": sys.argv[3]}
+          version, product_id = sys.argv[4], sys.argv[5]
+          product = json.loads((root / "product.json").read_text())
+          runtime = product.get("runtimeManifest") or {}
+          components = runtime.get("components")
+          if not isinstance(components, dict):
+              raise SystemExit("product runtime manifest has no components")
+          allowed = {"engine", "bin", "lib", "profiles", "fonts", "licenses"}
+          required = {"engine", "bin", "profiles", "fonts", "licenses"}
+          if not required.issubset(components) or not set(components).issubset(allowed):
+              raise SystemExit("product runtime manifest component set is invalid")
+          receipt = runpy.run_path(
+              "packaging/generate_helper_manifest.py"
+          )["directory_receipt"]
+          actual = {name: receipt(root / name) for name in components}
+          valid = (
+              product.get("id") == product_id
+              and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
+              and runtime.get("version") == version
+              and runtime.get("target") == target
+              and components == actual
+          )
+          if not valid:
+              raise SystemExit("installed product runtime manifest verification failed")
+          print("installed product runtime manifest verified")
+          '@
+          python -c $verifyManifest $resources $env:TARGET_OS $env:TARGET_ARCH `
+            $env:PRODUCT_VERSION $env:PRODUCT_ID
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed product runtime manifest verification failed"
+          }
+          $expectedProfiles = @("pse")
           $profileRoot = Join-Path $root "resources/profiles"
           $actualProfiles = @(Get-ChildItem $profileRoot -Directory |
             ForEach-Object Name | Sort-Object)
           if (Compare-Object ($expectedProfiles | Sort-Object) $actualProfiles) {
             throw "Installed creator profiles do not match the product"
           }
-          & $engine --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Installed engine smoke test failed" }
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed engine self-test failed" }
           & $ffmpeg -version | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Installed FFmpeg smoke test failed" }
+          & $ffprobe -version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installed FFprobe smoke test failed" }
           $env:AUTOEDITOR_SMOKE_TEST = "1"
           $desktopSmoke = Start-Process -FilePath $app -Wait -PassThru
           Remove-Item Env:AUTOEDITOR_SMOKE_TEST
           if ($desktopSmoke.ExitCode -ne 0) {
             throw "Installed app or Windows DPAPI smoke test failed"
-          }
-          if ($env:EXPECT_SIGNED -eq "true") {
-            $signature = Get-AuthenticodeSignature $app
-            if ($signature.Status -ne "Valid") {
-              throw "Windows app signature is not valid: $($signature.Status)"
-            }
           }
           $uninstaller = Join-Path $root "Uninstall $env:PRODUCT_NAME.exe"
           if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
@@ -255,61 +486,501 @@ jobs:
         shell: bash
         env:
           PRODUCT_NAME: ${{ steps.product.outputs.name }}
-          EXPECT_SIGNED: ${{ secrets.CSC_LINK != '' }}
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          PRODUCT_VERSION: ${{ steps.product.outputs.version }}
+          PRODUCT_ID: ${{ steps.product.outputs.product }}
         run: |
-          APP=$(find desktop/dist -maxdepth 2 -type d \
-            -name "$PRODUCT_NAME.app" -print -quit)
-          DMG=$(find desktop/dist -maxdepth 1 -type f \
-            -name '*.dmg' -print -quit)
-          test -n "$APP" && test -d "$APP"
-          test -n "$DMG" && test -f "$DMG"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          "$APP/Contents/Resources/engine/autoeditor-engine" --help >/dev/null
+          DMG_COUNT=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')
+          test "$DMG_COUNT" = 1 || {
+            echo "Expected exactly one DMG, found $DMG_COUNT" >&2
+            exit 1
+          }
+          DMG=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          hdiutil verify "$DMG"
+
+          MOUNT=$(mktemp -d "$RUNNER_TEMP/desktop-dmg.XXXXXX")
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d -name "$PRODUCT_NAME.app" | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1 || {
+            echo "Expected exactly one $PRODUCT_NAME.app in the DMG, found $APP_COUNT" >&2
+            exit 1
+          }
+          APP=$(find "$MOUNT" -maxdepth 1 -type d -name "$PRODUCT_NAME.app" -print -quit)
+          DETRITUS=$(xattr -lr "$APP" 2>/dev/null | \
+            grep -E 'com\.apple\.(FinderInfo|ResourceFork)' || true)
+          test -z "$DETRITUS" || {
+            echo "Finder metadata is attached inside the mounted app" >&2
+            printf '%s\n' "$DETRITUS" >&2
+            exit 1
+          }
+          test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)" || {
+            echo "Apple metadata files are present inside the mounted app" >&2
+            exit 1
+          }
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          test -n "$BIN" && test -x "$APP/Contents/MacOS/$BIN"
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
+          RESOURCES="$APP/Contents/Resources"
+          cmp -s desktop/staging/product.json "$RESOURCES/product.json" || {
+            echo "Mounted product manifest is not byte-identical to staging" >&2
+            exit 1
+          }
+          python - "$RESOURCES" "$TARGET_OS" "$TARGET_ARCH" \
+            "$PRODUCT_VERSION" "$PRODUCT_ID" <<'PY'
+          import json
+          import runpy
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          target = {"os": sys.argv[2], "arch": sys.argv[3]}
+          version, product_id = sys.argv[4], sys.argv[5]
+          product = json.loads((root / "product.json").read_text())
+          runtime = product.get("runtimeManifest") or {}
+          components = runtime.get("components")
+          if not isinstance(components, dict):
+              raise SystemExit("product runtime manifest has no components")
+          allowed = {"engine", "bin", "lib", "profiles", "fonts", "licenses"}
+          required = {"engine", "bin", "profiles", "fonts", "licenses"}
+          if not required.issubset(components) or not set(components).issubset(allowed):
+              raise SystemExit("product runtime manifest component set is invalid")
+          receipt = runpy.run_path(
+              "packaging/generate_helper_manifest.py"
+          )["directory_receipt"]
+          actual = {name: receipt(root / name) for name in components}
+          valid = (
+              product.get("id") == product_id
+              and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
+              and runtime.get("version") == version
+              and runtime.get("target") == target
+              and components == actual
+          )
+          if not valid:
+              raise SystemExit("mounted product runtime manifest verification failed")
+          print("mounted product runtime manifest verified")
+          PY
+          "$APP/Contents/Resources/engine/autoeditor-engine" --self-test
           "$APP/Contents/Resources/bin/ffmpeg" -version >/dev/null
           "$APP/Contents/Resources/bin/ffprobe" -version >/dev/null
-          AUTOEDITOR_SMOKE_TEST=1 \
-            "$APP/Contents/MacOS/$PRODUCT_NAME"
           EXPECTED="${{ steps.product.outputs.profiles }}"
           ACTUAL=$(find "$APP/Contents/Resources/profiles" \
             -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | \
             sort | tr '\n' ' ' | sed 's/ $//')
           test "$ACTUAL" = "$(printf '%s\n' $EXPECTED | sort | tr '\n' ' ' | sed 's/ $//')"
-          hdiutil verify "$DMG"
-          if [[ "$EXPECT_SIGNED" == "true" ]]; then
-            codesign -dv --verbose=4 "$APP" 2>&1 | \
-              grep -q 'Authority=Developer ID Application'
-            spctl --assess --type execute --verbose=2 "$APP"
-          fi
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
 
-      - uses: actions/upload-artifact@v4
+      - name: Seal prepared PSE runtime for tag-only signing jobs
+        if: steps.product.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          tar -czf "$RUNNER_TEMP/pse-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz" \
+            -C desktop staging
+
+      - name: Upload prepared PSE runtime to isolated signing job
+        if: steps.product.outputs.tagged == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prepared-pse-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pse-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload unsigned PSE acceptance installer
+        if: steps.product.outputs.tagged != 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ steps.product.outputs.product }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            desktop/dist/*.dmg
-            desktop/dist/*.exe
-            desktop/dist/*.yml
-            desktop/dist/*.blockmap
+            ${{ runner.temp }}/desktop-dist/*.dmg
+            ${{ runner.temp }}/desktop-dist/*.exe
+          if-no-files-found: error
+
+  sign-windows:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pse-v')
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    environment: pse-windows-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-signed-dist" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-pse-win-x64
+          path: ${{ runner.temp }}/prepared-pse
+      - name: Restore the PSE runtime that passed unsigned acceptance
+        shell: bash
+        run: |
+          tar -xzf "$RUNNER_TEMP/prepared-pse/pse-stage-windows-x64.tar.gz" \
+            -C desktop
+          test -f desktop/staging/product.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        run: npm ci
+      - name: Build the signed PSE Windows installer
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" || {
+            echo "A tagged Windows PSE release requires WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
+            exit 1
+          }
+          VERSION="${GITHUB_REF_NAME#pse-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx --no-install electron-builder --config electron-builder.yml \
+            --config.appId=com.marabha.pseautoeditor \
+            --config.productName="PSE AutoEditor" \
+            --config.directories.output="$DESKTOP_DIST" \
+            --win --x64 --publish never
+      - name: Verify installed PSE Windows signatures and payload
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "$env:DESKTOP_DIST/*.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected one signed PSE installer" }
+          $installer = $installers[0]
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne "Valid") { throw "Installer signature is $($signature.Status)" }
+          $install = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA "Programs/PSE AutoEditor"
+          $app = Join-Path $root "PSE AutoEditor.exe"
+          $uninstaller = Join-Path $root "Uninstall PSE AutoEditor.exe"
+          foreach ($file in @($app, $uninstaller)) {
+            if (-not (Test-Path $file)) { throw "Installed file is missing: $file" }
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") { throw "$file signature is $($signature.Status)" }
+          }
+          $staged = (Get-FileHash desktop/staging/product.json -Algorithm SHA256).Hash
+          $resources = Join-Path $root "resources"
+          $installed = (Get-FileHash (Join-Path $resources "product.json") -Algorithm SHA256).Hash
+          if ($staged -ne $installed) { throw "Installed product manifest is not byte-identical to staging" }
+          $verifyManifest = @'
+          import json
+          import runpy
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          target = {"os": "windows", "arch": "x64"}
+          product = json.loads((root / "product.json").read_text())
+          runtime = product.get("runtimeManifest") or {}
+          components = runtime.get("components")
+          receipt = runpy.run_path(
+              "packaging/generate_helper_manifest.py"
+          )["directory_receipt"]
+          actual = {name: receipt(root / name) for name in components or {}}
+          valid = (
+              product.get("id") == "pse"
+              and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
+              and runtime.get("version") == sys.argv[2]
+              and runtime.get("target") == target
+              and components == actual
+          )
+          if not valid:
+              raise SystemExit("signed Windows runtime manifest verification failed")
+          '@
+          $version = $env:GITHUB_REF_NAME -replace '^pse-v', ''
+          python -c $verifyManifest $resources $version
+          if ($LASTEXITCODE -ne 0) { throw "Signed Windows runtime manifest verification failed" }
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed engine self-test failed" }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $smoke = Start-Process $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($smoke.ExitCode -ne 0) { throw "Installed PSE smoke test failed" }
+          $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
+            throw "PSE Windows uninstall smoke test failed"
+          }
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-pse-win-x64
+          path: ${{ runner.temp }}/desktop-signed-dist/*.exe
+          if-no-files-found: error
+
+  sign-macos:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pse-v')
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    environment: pse-macos-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-signed-dist" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-pse-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/prepared-pse
+      - name: Restore the PSE runtime that passed unsigned acceptance
+        shell: bash
+        run: |
+          tar -xzf "$RUNNER_TEMP/prepared-pse/pse-stage-mac-${{ matrix.arch }}.tar.gz" \
+            -C desktop
+          test -f desktop/staging/product.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        run: npm ci
+      - name: Build, notarize, and staple the final PSE Mac installer
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" && \
+            test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && \
+            test -n "$APPLE_TEAM_ID" || {
+            echo "A tagged Mac PSE release requires Developer ID and notarization secrets" >&2
+            exit 1
+          }
+          VERSION="${GITHUB_REF_NAME#pse-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx --no-install electron-builder --config electron-builder.yml \
+            --config.appId=com.marabha.pseautoeditor \
+            --config.productName="PSE AutoEditor" \
+            --config.directories.output="$DESKTOP_DIST" \
+            --mac --${{ matrix.arch }} --publish never
+          DMG=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -f "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+      - name: Verify the final mounted PSE Mac artifact
+        shell: bash
+        run: |
+          DMG_COUNT=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')
+          test "$DMG_COUNT" = 1
+          DMG=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          hdiutil verify "$DMG"
+          MOUNT=$(mktemp -d "$RUNNER_TEMP/pse-dmg.XXXXXX")
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          APP=$(find "$MOUNT" -maxdepth 1 -type d -name 'PSE AutoEditor.app' -print -quit)
+          test -n "$APP"
+          test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)"
+          if xattr -lr "$APP" 2>/dev/null | \
+              grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
+            echo "Finder metadata is attached inside the signed app" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | \
+            grep -q 'Authority=Developer ID Application'
+          spctl --assess --type execute --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+          cmp -s desktop/staging/product.json "$APP/Contents/Resources/product.json" || {
+            echo "Mounted product manifest is not byte-identical to staging" >&2
+            exit 1
+          }
+          python - "$APP/Contents/Resources" "${GITHUB_REF_NAME#pse-v}" <<'PY'
+          import json
+          import runpy
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          target = {"os": "mac", "arch": "${{ matrix.arch }}"}
+          product = json.loads((root / "product.json").read_text())
+          runtime = product.get("runtimeManifest") or {}
+          components = runtime.get("components")
+          receipt = runpy.run_path(
+              "packaging/generate_helper_manifest.py"
+          )["directory_receipt"]
+          actual = {name: receipt(root / name) for name in components or {}}
+          valid = (
+              product.get("id") == "pse"
+              and runtime.get("schema") == "autoeditor-desktop-runtime/v1"
+              and runtime.get("version") == sys.argv[2]
+              and runtime.get("target") == target
+              and components == actual
+          )
+          if not valid:
+              raise SystemExit("signed Mac runtime manifest verification failed")
+          PY
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
+          "$APP/Contents/Resources/engine/autoeditor-engine" --self-test
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-pse-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/desktop-signed-dist/*.dmg
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pse-v')
+    needs: [sign-windows, sign-macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
-          merge-multiple: true
       - name: Publish only after every platform passes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "$TAG" \
-              --notes "Desktop installers validated by the release workflow."
-          find release-assets -maxdepth 1 -type f \
-            \( -name '*.dmg' -o -name '*.exe' -o -name '*.yml' \
-               -o -name '*.blockmap' \) -print0 | \
-            xargs -0 gh release upload "$TAG" --clobber
+          mapfile -d '' PAYLOAD_FILES < <(find release-assets -type f \
+            \( -name '*.dmg' -o -name '*.exe' \) -print0 | sort -z)
+          test "${#PAYLOAD_FILES[@]}" = 3
+
+          count_suffix() {
+            local suffix="$1" count=0 file
+            for file in "${PAYLOAD_FILES[@]}"; do
+              [[ "$(basename "$file")" == *"$suffix" ]] && ((count += 1))
+            done
+            printf '%s' "$count"
+          }
+          test "$(count_suffix '-mac-arm64.dmg')" = 1
+          test "$(count_suffix '-mac-x64.dmg')" = 1
+          test "$(count_suffix '-win-x64.exe')" = 1
+
+          declare -A EXPECTED_SET=()
+          for file in "${PAYLOAD_FILES[@]}"; do
+            name=$(basename "$file")
+            [[ -z "${EXPECTED_SET[$name]+x}" ]] || {
+              echo "Duplicate release asset name: $name" >&2
+              exit 1
+            }
+            EXPECTED_SET[$name]=1
+            test "$(stat -c '%s' "$file")" -lt 2147483648 || {
+              echo "GitHub release asset exceeds 2 GiB: $file" >&2
+              exit 1
+            }
+          done
+
+          CHECKSUMS="$RUNNER_TEMP/SHA256SUMS.txt"
+          : > "$CHECKSUMS"
+          for file in "${PAYLOAD_FILES[@]}"; do
+            printf '%s  %s\n' \
+              "$(sha256sum "$file" | cut -d' ' -f1)" "$(basename "$file")" \
+              >> "$CHECKSUMS"
+          done
+          EXPECTED_PAYLOAD_NAMES=$(printf '%s\n' \
+            "${PAYLOAD_FILES[@]##*/}" | LC_ALL=C sort)
+          FILES=("${PAYLOAD_FILES[@]}" "$CHECKSUMS")
+          EXPECTED_SET[SHA256SUMS.txt]=1
+          EXPECTED_NAMES=$(printf '%s\n' "${FILES[@]##*/}" | LC_ALL=C sort)
+
+          verify_remote_assets() {
+            local compare_local="$1"
+            local remote_names verify_dir checksum_names file
+            remote_names=$(gh release view "$TAG" --repo "$GH_REPO" \
+              --json assets --jq '.assets[].name' | LC_ALL=C sort)
+            [[ "$remote_names" == "$EXPECTED_NAMES" ]] || {
+              echo "Remote release assets do not exactly match the expected set" >&2
+              diff -u <(printf '%s\n' "$EXPECTED_NAMES") \
+                <(printf '%s\n' "$remote_names") || true
+              return 1
+            }
+            verify_dir=$(mktemp -d "$RUNNER_TEMP/desktop-release-verify.XXXXXX")
+            gh release download "$TAG" --repo "$GH_REPO" \
+              --dir "$verify_dir" --clobber
+            checksum_names=$(sed -E 's/^[0-9a-f]{64}  //' \
+              "$verify_dir/SHA256SUMS.txt" | LC_ALL=C sort)
+            [[ "$checksum_names" == "$EXPECTED_PAYLOAD_NAMES" ]] || {
+              echo "Remote checksum inventory is incomplete" >&2
+              return 1
+            }
+            (cd "$verify_dir" && sha256sum -c SHA256SUMS.txt)
+            if [[ "$compare_local" == "true" ]]; then
+              for file in "${FILES[@]}"; do
+                cmp -s "$file" "$verify_dir/$(basename "$file")" || {
+                  echo "Uploaded asset differs from the verified local file: $file" >&2
+                  return 1
+                }
+              done
+            fi
+            rm -rf "$verify_dir"
+          }
+
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" --repo "$GH_REPO" \
+              --json isDraft --jq .isDraft)
+            if [[ "$IS_DRAFT" != "true" ]]; then
+              # A completed rerun is a read-only verification. Never mutate a
+              # public release in place or expose a partially refreshed set.
+              verify_remote_assets true
+              echo "Published release already has a complete verified asset set."
+              exit 0
+            fi
+            gh release edit "$TAG" --repo "$GH_REPO" --draft \
+              --title "$TAG" \
+              --notes "Desktop installers validated by the release workflow." \
+              --verify-tag
+          else
+            gh release create "$TAG" --repo "$GH_REPO" --draft \
+              --title "$TAG" \
+              --notes "Desktop installers validated by the release workflow." \
+              --verify-tag
+          fi
+
+          while IFS= read -r asset; do
+            [[ -z "$asset" || -n "${EXPECTED_SET[$asset]+x}" ]] && continue
+            gh release delete-asset "$TAG" "$asset" \
+              --repo "$GH_REPO" --yes
+          done < <(gh release view "$TAG" --repo "$GH_REPO" \
+            --json assets --jq '.assets[].name')
+
+          gh release upload "$TAG" "${FILES[@]}" \
+            --repo "$GH_REPO" --clobber
+          verify_remote_assets true
+          gh release edit "$TAG" --repo "$GH_REPO" --draft=false
+          test "$(gh release view "$TAG" --repo "$GH_REPO" \
+            --json isDraft --jq .isDraft)" = false

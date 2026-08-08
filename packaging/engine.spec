@@ -12,11 +12,12 @@ repo_root = spec_dir.parent
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
             "onnxruntime", "av"):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d; binaries += b; hiddenimports += h
-    except Exception:
-        pass  # optional deps may be absent in slim builds
+    # Every release lock includes these runtime backends.  Failing the freeze
+    # is safer than creating an installer that opens normally and only finds
+    # out on a friend's first transcript that a native ASR dependency was
+    # silently omitted.
+    d, b, h = collect_all(pkg)
+    datas += d; binaries += b; hiddenimports += h
 
 a = Analysis(
     [str(spec_dir / "engine_entry.py")],
@@ -31,7 +32,10 @@ a = Analysis(
                                    "autoeditor.config",
                                    "autoeditor.calibrate",
                                    "PIL", "numpy"],
-    excludes=["tkinter", "matplotlib", "pytest"],
+    # auto-editor 29.3.1 on PyPI is only a first-run native-binary downloader.
+    # The product uses its own frozen in-process low-speech cutter instead,
+    # so keep the network loader out of every Mac and Windows artifact.
+    excludes=["tkinter", "matplotlib", "pytest", "auto_editor"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
