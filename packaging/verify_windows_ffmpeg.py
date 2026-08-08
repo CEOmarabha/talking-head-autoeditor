@@ -22,15 +22,15 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-SOURCE_LOCK_SCHEMA = "autoeditor-windows-ffmpeg-sources/v2"
+SOURCE_LOCK_SCHEMA = "autoeditor-windows-ffmpeg-sources/v3"
 CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
-RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v3"
+RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v4"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "c4f222982b5f0d61f0a612108705802fa5aad139d195bc24561721c2320ad6ff"
+    "098d357f204882a1d8780b907f19ea8abd11903ae3dd60994720cfaf5e4796c6"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "1c0bcc226d76d8e8a9520ffc93d3f19b3f23342e50836d163cb4aae53aa098b7"
+    "5f0fa502b332413cc60b14c95e34d0570ae36ec3397d5264c5c1e6fffcc4fa51"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -44,7 +44,16 @@ ROOT_SOURCE_FIELDS = {
     "license_expression", "link_closure", "schema", "source_date_epoch",
     "sources", "target", "toolchain",
 }
-LINK_CLOSURE_FIELDS = {"evidence", "status"}
+LINK_CLOSURE_FIELDS = {
+    "evidence", "evidence_artifact", "non_linking_source_ids", "programs",
+    "status",
+}
+LINK_CLOSURE_PROGRAM_FIELDS = {
+    "linkage_receipt_sha256", "lld_map_sha256", "reproducer_sha256",
+    "reproducer_input_count", "selected_code_member_count",
+    "selected_directive_member_count", "selected_import_member_count",
+    "unstripped_executable_sha256", "verbose_sha256",
+}
 SOURCE_FIELDS = {
     "archive", "archive_bytes", "archive_sha256", "build", "fetch",
     "git_ref", "id", "license", "patches", "role", "version",
@@ -88,7 +97,10 @@ RECEIPT_BUILD_FIELDS = {
     "environment", "link_evidence", "make", "source_date_epoch", "strip",
 }
 LINK_EVIDENCE_RECEIPT_FIELDS = {"closure_status", "programs"}
-LINK_EVIDENCE_PROGRAM_FIELDS = {"lld_map", "reproducer", "verbose"}
+LINK_EVIDENCE_PROGRAM_FIELDS = {
+    "linkage_receipt", "lld_map", "reproducer", "unstripped_executable",
+    "verbose",
+}
 LINK_EVIDENCE_FILE_FIELDS = {"bytes", "filename", "sha256"}
 LINK_EVIDENCE_REPRODUCER_FIELDS = {
     "bytes", "filename", "members", "sha256",
@@ -173,9 +185,22 @@ EXPECTED_RUNTIME_NOTICES = [
     },
 ]
 EXPECTED_LINK_EVIDENCE_CONTRACT = {
-    "closure_status": "input-classification-unverified",
+    "closure_status": "verified",
     "formats": ["lld-map", "lld-reproducer", "lld-verbose"],
     "programs": ["ffmpeg", "ffprobe"],
+}
+EXPECTED_LINK_EVIDENCE_ARTIFACT = {
+    "archive_bytes": 527332259,
+    "archive_sha256": (
+        "e89dc5a20dc9b69aaa65c389f6accc39afccf0199820c1a1a57350e67ab9fe28"
+    ),
+    "artifact_id": 9024578626,
+    "name": (
+        "windows-ffmpeg-evidence-"
+        "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c"
+    ),
+    "repository_commit": "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c",
+    "workflow_run_id": 31267037435,
 }
 LINK_EVIDENCE_FILES = {
     "ffmpeg": {
@@ -481,8 +506,119 @@ def _lld_reproducer_receipt(path: Path, program: str) -> dict[str, Any]:
     return {**base, "members": members}
 
 
+def _expected_linkage_sources(source_lock: LoadedContract) -> list[dict[str, Any]]:
+    return [
+        {
+            "archive": source["archive"],
+            "archive_bytes": source["archive_bytes"],
+            "archive_sha256": source["archive_sha256"],
+            "id": source["id"],
+            "role": source["role"],
+            "version": source["version"],
+        }
+        for source in source_lock.parsed()["sources"]
+    ]
+
+
+def _verified_linkage_files(
+    *,
+    program: str,
+    linkage_dir: Path,
+    evidence: dict[str, Any],
+    source_lock: LoadedContract,
+) -> dict[str, Any]:
+    pin = source_lock.parsed()["link_closure"]["programs"][program]
+    receipt_name = f"{program}-linkage-receipt.json"
+    receipt_path = linkage_dir / receipt_name
+    receipt_raw = _read_regular_file(
+        receipt_path, f"{program} classified linkage receipt"
+    )
+    receipt_value = _parse_json(receipt_raw, f"{program} classified linkage receipt")
+    if receipt_raw != canonical_json(receipt_value):
+        raise WindowsFFmpegError(
+            f"{program} classified linkage receipt must be canonical sorted JSON"
+        )
+    receipt_sha256 = sha256_bytes(receipt_raw)
+    if receipt_sha256 != pin["linkage_receipt_sha256"]:
+        raise WindowsFFmpegError(
+            f"{program} classified linkage receipt differs from the pinned closure"
+        )
+    _exact_fields(
+        receipt_value,
+        {
+            "closure", "lld_map", "program", "reproducer", "schema", "sources",
+            "unstripped_executable", "verbose_log",
+        },
+        f"{program} classified linkage receipt",
+    )
+    if (
+        receipt_value["schema"] != "autoeditor-windows-ffmpeg-linkage/v2"
+        or receipt_value["program"] != program
+        or receipt_value["sources"] != _expected_linkage_sources(source_lock)
+    ):
+        raise WindowsFFmpegError(f"{program} classified linkage identity drifted")
+    closure = receipt_value["closure"]
+    if not isinstance(closure, dict) or closure.get("status") != "verified":
+        raise WindowsFFmpegError(f"{program} linkage closure is not verified")
+    for field in (
+        "reproducer_input_count", "selected_code_member_count",
+        "selected_directive_member_count", "selected_import_member_count",
+    ):
+        if closure.get(field) != pin[field]:
+            raise WindowsFFmpegError(
+                f"{program} classified linkage {field} differs from its source pin"
+            )
+    for receipt_field, evidence_field, pin_field in (
+        ("lld_map", "lld_map", "lld_map_sha256"),
+        ("reproducer", "reproducer", "reproducer_sha256"),
+        ("verbose_log", "verbose", "verbose_sha256"),
+    ):
+        recorded = receipt_value.get(receipt_field)
+        if (
+            not isinstance(recorded, dict)
+            or recorded.get("sha256") != evidence[evidence_field]["sha256"]
+            or recorded.get("sha256") != pin[pin_field]
+        ):
+            raise WindowsFFmpegError(
+                f"{program} classified linkage does not bind its {evidence_field} evidence"
+            )
+
+    executable_name = f"{program}_g.exe"
+    executable_path = linkage_dir / executable_name
+    executable_record = _link_evidence_file_receipt(executable_path, executable_name)
+    try:
+        pe = inspect_pe(executable_path, ())
+    except WindowsFFmpegError as exc:
+        raise WindowsFFmpegError(
+            f"{program} unstripped classified executable is invalid: {exc}"
+        ) from exc
+    recorded_executable = receipt_value.get("unstripped_executable")
+    if (
+        executable_record["sha256"] != pin["unstripped_executable_sha256"]
+        or not isinstance(recorded_executable, dict)
+        or recorded_executable.get("filename") != executable_name
+        or recorded_executable.get("bytes") != executable_record["bytes"]
+        or recorded_executable.get("sha256") != executable_record["sha256"]
+        or recorded_executable.get("imports") != pe["imports"]
+        or pe["certificate_bytes"]
+    ):
+        raise WindowsFFmpegError(
+            f"{program} unstripped executable differs from the classified closure"
+        )
+    return {
+        "linkage_receipt": {
+            "bytes": len(receipt_raw),
+            "filename": receipt_name,
+            "sha256": receipt_sha256,
+        },
+        "unstripped_executable": executable_record,
+    }
+
+
 def link_evidence_receipt(
     evidence_dir: Path,
+    linkage_dir: Path,
+    source_lock: LoadedContract,
     capabilities: LoadedContract,
 ) -> dict[str, Any]:
     try:
@@ -511,6 +647,32 @@ def link_evidence_receipt(
         extra = sorted(actual_names - expected_names)
         raise WindowsFFmpegError(
             f"Windows FFmpeg link evidence set drifted (missing {missing}; extra {extra})"
+        )
+
+    try:
+        linkage_metadata = linkage_dir.lstat()
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot inspect Windows FFmpeg linkage directory {linkage_dir}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(linkage_metadata.st_mode) or not stat.S_ISDIR(linkage_metadata.st_mode):
+        raise WindowsFFmpegError(
+            "Windows FFmpeg linkage path must be a directory, not a symlink"
+        )
+    expected_linkage_names = {
+        f"{program}-linkage-receipt.json" for program in LINK_EVIDENCE_FILES
+    } | {f"{program}_g.exe" for program in LINK_EVIDENCE_FILES}
+    try:
+        actual_linkage_names = {item.name for item in linkage_dir.iterdir()}
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot enumerate Windows FFmpeg linkage directory: {exc}"
+        ) from exc
+    if actual_linkage_names != expected_linkage_names:
+        raise WindowsFFmpegError(
+            "Windows FFmpeg classified linkage set drifted "
+            f"(missing {sorted(expected_linkage_names - actual_linkage_names)}; "
+            f"extra {sorted(actual_linkage_names - expected_linkage_names)})"
         )
 
     programs = {}
@@ -542,7 +704,7 @@ def link_evidence_receipt(
             raise WindowsFFmpegError(
                 f"{program} LLD verbose log lacks the actual evidence-bearing link command"
             )
-        programs[program] = {
+        program_receipt = {
             "lld_map": {
                 "bytes": len(map_raw),
                 "filename": names["lld_map"],
@@ -557,6 +719,15 @@ def link_evidence_receipt(
                 "sha256": sha256_bytes(verbose_raw),
             },
         }
+        program_receipt.update(
+            _verified_linkage_files(
+                program=program,
+                linkage_dir=linkage_dir,
+                evidence=program_receipt,
+                source_lock=source_lock,
+            )
+        )
+        programs[program] = program_receipt
     contract = capabilities.parsed()["build"]["link_evidence"]
     return {
         "closure_status": contract["closure_status"],
@@ -662,13 +833,44 @@ def _validate_source_lock(value: dict[str, Any]) -> None:
     if not isinstance(link_closure, dict):
         raise WindowsFFmpegError("source lock link_closure must be an object")
     _exact_fields(link_closure, LINK_CLOSURE_FIELDS, "source lock link_closure")
-    if link_closure != {
-        "evidence": ["lld-map", "lld-reproducer", "lld-verbose"],
-        "status": "input-classification-unverified",
-    }:
+    if (
+        link_closure["evidence"]
+        != ["lld-map", "lld-reproducer", "lld-verbose"]
+        or link_closure["evidence_artifact"] != EXPECTED_LINK_EVIDENCE_ARTIFACT
+        or link_closure["non_linking_source_ids"] != ["llvm-mingw", "nasm"]
+        or link_closure["status"] != "verified"
+    ):
         raise WindowsFFmpegError(
-            "source lock link closure must remain unverified until every actual link input is classified"
+            "source lock verified link closure identity drifted"
         )
+    programs = link_closure["programs"]
+    if not isinstance(programs, dict):
+        raise WindowsFFmpegError("source lock link closure programs must be an object")
+    _exact_fields(programs, {"ffmpeg", "ffprobe"}, "source lock link closure programs")
+    receipt_hashes: set[str] = set()
+    for program, record in programs.items():
+        if not isinstance(record, dict):
+            raise WindowsFFmpegError(f"source lock {program} link closure must be an object")
+        _exact_fields(
+            record,
+            LINK_CLOSURE_PROGRAM_FIELDS,
+            f"source lock {program} link closure",
+        )
+        for field in (
+            "linkage_receipt_sha256", "lld_map_sha256", "reproducer_sha256",
+            "unstripped_executable_sha256", "verbose_sha256",
+        ):
+            digest = _trimmed_string(record[field], f"{program}.{field}")
+            if not SHA256_RE.fullmatch(digest):
+                raise WindowsFFmpegError(f"source lock {program}.{field} is invalid")
+        for field in (
+            "reproducer_input_count", "selected_code_member_count",
+            "selected_directive_member_count", "selected_import_member_count",
+        ):
+            _positive_int(record[field], f"source lock {program}.{field}")
+        receipt_hashes.add(record["linkage_receipt_sha256"])
+    if len(receipt_hashes) != len(programs):
+        raise WindowsFFmpegError("source lock linkage receipt hashes must be unique")
 
     toolchain = value["toolchain"]
     if not isinstance(toolchain, dict):
@@ -848,7 +1050,7 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
     )
     if link_evidence != EXPECTED_LINK_EVIDENCE_CONTRACT:
         raise WindowsFFmpegError(
-            "build.link_evidence must remain fail-closed until actual link inputs are classified"
+            "build.link_evidence must require the verified classified closure"
         )
     make = build["make"]
     if not isinstance(make, dict):
@@ -1682,6 +1884,7 @@ def create_receipt(
     ffprobe: Path,
     license_dir: Path,
     link_evidence_dir: Path,
+    linkage_dir: Path,
     source_bundle: Path,
     source_manifest: Path,
     repository_commit: str,
@@ -1719,6 +1922,8 @@ def create_receipt(
         "license_expression": contract["license_expression"],
         "link_evidence": link_evidence_receipt(
             link_evidence_dir,
+            linkage_dir,
+            source_lock,
             capabilities,
         ),
         "outputs": {
@@ -1749,9 +1954,9 @@ def _validate_link_evidence_shape(value: Any) -> None:
     if not isinstance(value, dict):
         raise WindowsFFmpegError("receipt link_evidence must be an object")
     _exact_fields(value, LINK_EVIDENCE_RECEIPT_FIELDS, "receipt link_evidence")
-    if value["closure_status"] != "input-classification-unverified":
+    if value["closure_status"] != "verified":
         raise WindowsFFmpegError(
-            "receipt link evidence may not claim verified closure without classified inputs"
+            "receipt link evidence must bind the verified classified closure"
         )
     programs = value["programs"]
     if not isinstance(programs, dict):
@@ -1778,6 +1983,33 @@ def _validate_link_evidence_shape(value: Any) -> None:
                 f"receipt link evidence {program}.{field}",
             )
             if file_record["filename"] != names[field]:
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field} filename drifted"
+                )
+            _positive_int(
+                file_record["bytes"],
+                f"receipt link evidence {program}.{field}.bytes",
+            )
+            if not SHA256_RE.fullmatch(str(file_record["sha256"])):
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field}.sha256 is invalid"
+                )
+
+        for field, expected_name in (
+            ("linkage_receipt", f"{program}-linkage-receipt.json"),
+            ("unstripped_executable", f"{program}_g.exe"),
+        ):
+            file_record = record[field]
+            if not isinstance(file_record, dict):
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field} must be an object"
+                )
+            _exact_fields(
+                file_record,
+                LINK_EVIDENCE_FILE_FIELDS,
+                f"receipt link evidence {program}.{field}",
+            )
+            if file_record["filename"] != expected_name:
                 raise WindowsFFmpegError(
                     f"receipt link evidence {program}.{field} filename drifted"
                 )
@@ -2040,6 +2272,19 @@ def validate_receipt_against_contracts(
         raise WindowsFFmpegError(
             "build receipt link evidence program set differs from the pinned contract"
         )
+    for program, evidence in receipt["link_evidence"]["programs"].items():
+        pin = source_contract["link_closure"]["programs"][program]
+        for receipt_field, pin_field in (
+            ("linkage_receipt", "linkage_receipt_sha256"),
+            ("lld_map", "lld_map_sha256"),
+            ("reproducer", "reproducer_sha256"),
+            ("unstripped_executable", "unstripped_executable_sha256"),
+            ("verbose", "verbose_sha256"),
+        ):
+            if evidence[receipt_field]["sha256"] != pin[pin_field]:
+                raise WindowsFFmpegError(
+                    f"build receipt {program} {receipt_field} differs from the pinned closure"
+                )
     notice_contracts = [
         {field: notice[field] for field in RUNTIME_NOTICE_CONTRACT_FIELDS}
         for notice in receipt["runtime_notices"]
@@ -2109,6 +2354,7 @@ def _add_artifact_paths(parser: argparse.ArgumentParser, defaults: tuple[Path, P
     parser.add_argument("--ffprobe", type=Path, required=True)
     parser.add_argument("--license-dir", type=Path, required=True)
     parser.add_argument("--link-evidence-dir", type=Path, required=True)
+    parser.add_argument("--linkage-dir", type=Path, required=True)
     parser.add_argument("--source-bundle", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--repository-commit", required=True)
@@ -2170,6 +2416,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_contract_paths(link_evidence, defaults)
     link_evidence.add_argument("--link-evidence-dir", type=Path, required=True)
+    link_evidence.add_argument("--linkage-dir", type=Path, required=True)
 
     create = commands.add_parser("create-receipt", help="create a canonical build receipt")
     _add_contract_paths(create, defaults)
@@ -2287,14 +2534,19 @@ def main() -> None:
                     raise WindowsFFmpegError(f"{path.name} must be unsigned")
             print("Windows FFmpeg PE artifacts verified")
         elif args.command == "verify-link-evidence":
-            evidence = link_evidence_receipt(args.link_evidence_dir, capabilities)
+            evidence = link_evidence_receipt(
+                args.link_evidence_dir,
+                args.linkage_dir,
+                source_lock,
+                capabilities,
+            )
             member_count = sum(
                 len(program["reproducer"]["members"])
                 for program in evidence["programs"].values()
             )
             print(
                 "Windows FFmpeg LLD link evidence verified: "
-                f"{member_count} recorded reproducer members; closure remains unverified"
+                f"{member_count} recorded reproducer members; closure verified"
             )
         elif args.command == "assert-promotable":
             receipt = load_receipt(args.receipt)
@@ -2315,6 +2567,7 @@ def main() -> None:
                 ffprobe=args.ffprobe,
                 license_dir=args.license_dir,
                 link_evidence_dir=args.link_evidence_dir,
+                linkage_dir=args.linkage_dir,
                 source_bundle=args.source_bundle,
                 source_manifest=args.source_manifest,
                 repository_commit=args.repository_commit,

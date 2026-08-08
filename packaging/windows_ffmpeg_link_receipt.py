@@ -18,18 +18,29 @@ from typing import Any
 import verify_windows_ffmpeg as windows_verifier
 
 
-SCHEMA = "autoeditor-windows-ffmpeg-linkage/v1"
+SCHEMA = "autoeditor-windows-ffmpeg-linkage/v2"
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 PROGRAMS = {"ffmpeg": "ffmpeg_g.exe", "ffprobe": "ffprobe_g.exe"}
+FFMPEG_SOURCE_ROOT = (
+    "build/autoeditor-media/sources/"
+    "FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/"
+)
+BUILD_ONLY_SOURCE_IDS = {"llvm-mingw", "nasm"}
+EXPECTED_CODE_SOURCE_IDS = {
+    "ffmpeg", "llvm-project", "mingw-w64", "x264", "zlib",
+}
 MAP_INPUT_RE = re.compile(
     r"^[0-9A-Fa-f]{8,16} [0-9A-Fa-f]{8,16}\s+\d+\s{9}(.+):\(([^()]*)\)$"
 )
 VERBOSE_MEMBER_RE = re.compile(
     r"\b(?P<event>Loaded|Reading)\s+(?P<archive>[^\s()]+)"
-    r"\((?P<member>[^()]+)\)(?:\s+for\s+.*)?$"
+    r"\((?P<member>[^()]+)\)(?:\s+for\s+(?P<reason>.+))?$"
 )
 ARCHIVE_MAGIC = b"!<arch>\n"
 COFF_AMD64 = 0x8664
+COFF_SYMBOL_BYTES = 18
+COFF_STORAGE_EXTERNAL = 2
+COFF_STORAGE_WEAK_EXTERNAL = 105
 
 
 class LinkageError(ValueError):
@@ -77,7 +88,7 @@ def _safe_tar_name(name: str) -> PurePosixPath:
 
 def _origin_for(path: str) -> tuple[str, str]:
     name = PurePosixPath(path).name
-    if path.startswith("build/autoeditor-media/sources/FFmpeg-"):
+    if path.startswith(FFMPEG_SOURCE_ROOT):
         if name.endswith(".a"):
             return "ffmpeg", "project-static-archive"
         if name.endswith((".o", ".obj", ".res")):
@@ -89,10 +100,12 @@ def _origin_for(path: str) -> tuple[str, str]:
         return "zlib", "project-static-archive"
     if path.startswith("build/autoeditor-media/prefix/"):
         raise LinkageError(f"undeclared prefix link input: {path}")
-    if path.startswith("opt/llvm-mingw/lib/clang/"):
+    if path.startswith("opt/llvm-mingw/lib/clang/22/lib/windows/"):
         if not name.endswith(".a"):
             raise LinkageError(f"undeclared compiler runtime link input: {path}")
         return "llvm-project", "toolchain-runtime-static-archive"
+    if path.startswith("opt/llvm-mingw/lib/clang/"):
+        raise LinkageError(f"undeclared compiler runtime link input: {path}")
     if path.startswith("opt/llvm-mingw/x86_64-w64-mingw32/lib/"):
         if name.startswith(("libunwind", "libc++", "libcxx")):
             if not name.endswith(".a"):
@@ -113,7 +126,9 @@ def _decimal_field(raw: bytes, label: str) -> int:
     return int(value)
 
 
-def _archive_members(raw: bytes, archive_path: str) -> dict[str, list[bytes]]:
+def _archive_members(
+    raw: bytes, archive_path: str
+) -> dict[str, list[dict[str, Any]]]:
     """Return exact members from a regular ar archive, excluding its index."""
     if not raw.startswith(ARCHIVE_MAGIC):
         raise LinkageError(f"selected input is not a regular ar archive: {archive_path}")
@@ -143,8 +158,8 @@ def _archive_members(raw: bytes, archive_path: str) -> dict[str, list[bytes]]:
     if offset != len(raw):
         raise LinkageError(f"invalid archive padding: {archive_path}")
 
-    members: dict[str, list[bytes]] = {}
-    for raw_name, data in records:
+    members: dict[str, list[dict[str, Any]]] = {}
+    for ordinal, (raw_name, data) in enumerate(records):
         if raw_name.startswith(b"#1/"):
             name_size = _decimal_field(raw_name[3:], f"BSD name size in {archive_path}")
             if name_size > len(data):
@@ -171,7 +186,7 @@ def _archive_members(raw: bytes, archive_path: str) -> dict[str, list[bytes]]:
             raise LinkageError(f"archive member name is not UTF-8: {archive_path}") from exc
         if not name or "/" in name or "\\" in name or name in {".", ".."}:
             raise LinkageError(f"unsafe archive member name in {archive_path}: {name!r}")
-        members.setdefault(name, []).append(data)
+        members.setdefault(name, []).append({"ordinal": ordinal, "raw": data})
     if not members:
         raise LinkageError(f"selected archive contains no object members: {archive_path}")
     return members
@@ -203,11 +218,131 @@ def _short_import_dll(raw: bytes, label: str) -> str | None:
     return dll
 
 
+def _short_import_symbol(raw: bytes, label: str) -> str | None:
+    imported_dll = _short_import_dll(raw, label)
+    if imported_dll is None:
+        return None
+    symbol_raw = raw[20:raw.find(b"\0", 20)]
+    try:
+        symbol = symbol_raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise LinkageError(f"short-import symbol is not ASCII: {label}") from exc
+    if not symbol or any(ord(character) < 33 or ord(character) > 126 for character in symbol):
+        raise LinkageError(f"short-import symbol is invalid: {label}")
+    return symbol
+
+
+def _coff_symbol_name(
+    entry: bytes,
+    string_table: bytes,
+    string_table_size: int,
+    label: str,
+) -> str:
+    zeroes, offset = struct.unpack_from("<II", entry)
+    if zeroes:
+        raw_name = entry[:8].split(b"\0", 1)[0]
+    else:
+        if offset < 4 or offset >= string_table_size:
+            raise LinkageError(f"COFF symbol string offset is invalid: {label}")
+        end = string_table.find(b"\0", offset, string_table_size)
+        if end < 0:
+            raise LinkageError(f"COFF symbol string is unterminated: {label}")
+        raw_name = string_table[offset:end]
+    try:
+        name = raw_name.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LinkageError(f"COFF symbol name is not UTF-8: {label}") from exc
+    if not name:
+        raise LinkageError(f"COFF symbol name is invalid: {label}")
+    return name
+
+
+def _coff_resolution_symbols(raw: bytes, label: str) -> set[str]:
+    """Return defined externals and weak aliases used by LLD archive selection."""
+    if len(raw) < 20 or struct.unpack_from("<H", raw)[0] != COFF_AMD64:
+        raise LinkageError(f"selected member is not AMD64 COFF: {label}")
+    (
+        _machine,
+        _section_count,
+        _timestamp,
+        symbol_table_offset,
+        symbol_count,
+        optional_header_bytes,
+        _characteristics,
+    ) = struct.unpack_from("<HHIIIHH", raw)
+    if optional_header_bytes != 0:
+        raise LinkageError(f"COFF object unexpectedly has an optional header: {label}")
+    symbol_table_end = symbol_table_offset + symbol_count * COFF_SYMBOL_BYTES
+    if (
+        symbol_table_offset < 20
+        or symbol_count <= 0
+        or symbol_table_end + 4 > len(raw)
+    ):
+        raise LinkageError(f"COFF symbol table is invalid: {label}")
+    string_table = raw[symbol_table_end:]
+    string_table_size = struct.unpack_from("<I", string_table)[0]
+    if string_table_size < 4 or string_table_size > len(string_table):
+        raise LinkageError(f"COFF string table is invalid: {label}")
+
+    symbols: set[str] = set()
+    index = 0
+    while index < symbol_count:
+        start = symbol_table_offset + index * COFF_SYMBOL_BYTES
+        entry = raw[start:start + COFF_SYMBOL_BYTES]
+        if len(entry) != COFF_SYMBOL_BYTES:
+            raise LinkageError(f"COFF symbol table is truncated: {label}")
+        section_number = struct.unpack_from("<h", entry, 12)[0]
+        storage_class = entry[16]
+        auxiliary_count = entry[17]
+        if index + auxiliary_count >= symbol_count:
+            raise LinkageError(f"COFF auxiliary symbol count is invalid: {label}")
+        if (
+            (storage_class == COFF_STORAGE_EXTERNAL and section_number != 0)
+            or storage_class == COFF_STORAGE_WEAK_EXTERNAL
+        ):
+            symbols.add(
+                _coff_symbol_name(
+                    entry, string_table, string_table_size, label
+                )
+            )
+        index += 1 + auxiliary_count
+    if not symbols:
+        raise LinkageError(f"selected COFF member has no resolution symbols: {label}")
+    return symbols
+
+
+def _reason_match_rank(symbols: set[str], reason: str) -> int | None:
+    dllimport_prefix = "__declspec(dllimport) "
+    if reason.startswith(dllimport_prefix):
+        target = "__imp_" + reason.removeprefix(dllimport_prefix)
+        return 0 if target in symbols else None
+    if reason in symbols:
+        return 0
+    if any(
+        symbol == "_" + reason or reason == "_" + symbol
+        for symbol in symbols
+    ):
+        return 1
+    return None
+
+
 def _code_member_format(raw: bytes, label: str) -> str:
     imported_dll = _short_import_dll(raw, label)
     if imported_dll is not None:
         return "short-import"
-    if len(raw) >= 2 and struct.unpack_from("<H", raw)[0] == COFF_AMD64:
+    if len(raw) >= 20 and struct.unpack_from("<H", raw)[0] == COFF_AMD64:
+        section_count = struct.unpack_from("<H", raw, 2)[0]
+        optional_header_bytes = struct.unpack_from("<H", raw, 16)[0]
+        section_table_offset = 20 + optional_header_bytes
+        section_table_end = section_table_offset + section_count * 40
+        if section_count <= 0 or section_table_end > len(raw):
+            raise LinkageError(f"COFF section table is invalid: {label}")
+        section_names = [
+            raw[offset:offset + 8].split(b"\0", 1)[0]
+            for offset in range(section_table_offset, section_table_end, 40)
+        ]
+        if section_names == [b".drectve"]:
+            return "coff-directive"
         return "coff-object"
     if raw.startswith((b"BC\xc0\xde", b"\xde\xc0\x17\x0b")):
         return "llvm-bitcode"
@@ -304,6 +439,11 @@ def _map_receipt(
     if not text.startswith("Address  Size     Align Out     In      Symbol\n"):
         raise LinkageError("LLD map header drifted")
     direct_inputs = [name for name in input_payloads if not name.endswith(".a")]
+    selected_code_keys = {
+        (selection["archive"], selection["member"])
+        for selection in selections
+        if selection["selected_code_members"]
+    }
     resolutions: dict[tuple[str, tuple[str, ...], str], dict[str, Any]] = {}
     live_section_count = 0
     for line in text.splitlines()[1:]:
@@ -321,6 +461,7 @@ def _map_receipt(
                 if (
                     PurePosixPath(selection["archive"]).name == archive_name
                     and selection["member"] == member_name
+                    and selection["selected_code_members"]
                 ):
                     candidates.append(("archive-member", selection["archive"], member_name))
         else:
@@ -333,7 +474,10 @@ def _map_receipt(
                 ):
                     candidates.append(("direct-input", input_path, ""))
             for selection in selections:
-                if selection["member"] == displayed_name:
+                if (
+                    selection["member"] == displayed_name
+                    and selection["selected_code_members"]
+                ):
                     candidates.append(
                         ("archive-member", selection["archive"], selection["member"])
                     )
@@ -385,8 +529,29 @@ def _map_receipt(
             item["member"] or "",
         )
     )
+    covered_direct_inputs = {
+        item["path"] for item in live_inputs if item["kind"] == "direct-input"
+    }
+    if covered_direct_inputs != set(direct_inputs):
+        raise LinkageError(
+            "LLD map does not cover every direct code input "
+            f"(missing {sorted(set(direct_inputs) - covered_direct_inputs)})"
+        )
+    covered_code_keys = {
+        (archive, item["member"])
+        for item in live_inputs
+        if item["kind"] == "archive-member"
+        for archive in item["candidate_archives"]
+    }
+    if covered_code_keys != selected_code_keys:
+        raise LinkageError(
+            "LLD map does not cover every exact verbose-selected code member "
+            f"(missing {sorted(selected_code_keys - covered_code_keys)})"
+        )
     return {
         "bytes": len(raw),
+        "covered_archive_member_groups": len(covered_code_keys),
+        "covered_direct_inputs": len(covered_direct_inputs),
         "live_inputs": live_inputs,
         "live_section_count": live_section_count,
         "sha256": sha256_bytes(raw),
@@ -401,28 +566,64 @@ def _verbose_receipt(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw = _read_regular(path, "LLD verbose log")
     text = _decode_text(raw, "LLD verbose log")
-    selections: dict[tuple[str, str], dict[str, int]] = {}
+    selections: dict[tuple[str, str], dict[str, Any]] = {}
+    read_inputs: dict[str, str] = {}
     for line in text.splitlines():
         match = VERBOSE_MEMBER_RE.search(line)
-        if not match:
-            continue
-        archive_name = PurePosixPath(match.group("archive")).name
-        archive_path = basename_paths.get(archive_name)
-        if archive_path is None:
-            raise LinkageError(
-                f"verbose log selected an archive absent from reproducer: {archive_name}"
+        if match:
+            archive_name = PurePosixPath(match.group("archive")).name
+            archive_path = basename_paths.get(archive_name)
+            if archive_path is None:
+                raise LinkageError(
+                    f"verbose log selected an archive absent from reproducer: {archive_name}"
+                )
+            event = match.group("event").casefold()
+            reason = match.group("reason")
+            if event == "loaded" and not reason:
+                raise LinkageError("verbose Loaded event lacks its resolution reason")
+            if event == "reading" and reason:
+                raise LinkageError("verbose Reading event unexpectedly has a resolution reason")
+            events = selections.setdefault(
+                (archive_path, match.group("member")),
+                {"loaded_reasons": [], "reading": 0},
             )
-        event = match.group("event").casefold()
-        counts = selections.setdefault(
-            (archive_path, match.group("member")), {"loaded": 0, "reading": 0}
+            if event == "loaded":
+                events["loaded_reasons"].append(reason)
+            else:
+                events["reading"] += 1
+            continue
+        event_match = re.search(r"\b(?P<event>Loaded|Reading)\s+(?P<input>.+)$", line)
+        if not event_match:
+            continue
+        if event_match.group("event") != "Reading":
+            raise LinkageError(f"unparsed verbose Loaded event: {line}")
+        displayed = event_match.group("input")
+        normalized = displayed.replace("\\", "/").lstrip("/")
+        _safe_tar_name(normalized)
+        candidates = sorted(
+            input_path
+            for input_path in input_payloads
+            if input_path == normalized or input_path.endswith("/" + normalized)
         )
-        counts[event] += 1
+        if len(candidates) != 1:
+            raise LinkageError(
+                f"verbose Reading input does not resolve exactly: {displayed}={candidates}"
+            )
+        input_path = candidates[0]
+        if input_path in read_inputs:
+            raise LinkageError(f"verbose Reading input is duplicated: {input_path}")
+        read_inputs[input_path] = displayed
+    if set(read_inputs) != set(input_payloads):
+        raise LinkageError(
+            "verbose log does not read every reproducer input "
+            f"(missing {sorted(set(input_payloads) - set(read_inputs))})"
+        )
     if not selections:
         raise LinkageError("LLD verbose log contains no selected archive members")
     records = []
-    archive_members: dict[str, dict[str, list[bytes]]] = {}
+    archive_members: dict[str, dict[str, list[dict[str, Any]]]] = {}
     selected_imports: set[str] = set()
-    for (archive_path, member), event_counts in sorted(selections.items()):
+    for (archive_path, member), events in sorted(selections.items()):
         origin, input_class = _origin_for(archive_path)
         members = archive_members.get(archive_path)
         if members is None:
@@ -434,57 +635,132 @@ def _verbose_receipt(
                 f"verbose-selected member is absent from archive: {archive_path}({member})"
             )
         label = f"{archive_path}({member})"
-        if event_counts["loaded"] > event_counts["reading"]:
+        loaded_reasons = events["loaded_reasons"]
+        reading_count = events["reading"]
+        if len(loaded_reasons) > reading_count:
             raise LinkageError(f"archive event counts are impossible: {label}")
-        selected_code_count = event_counts["loaded"]
-        selected_import_count = event_counts["reading"] - event_counts["loaded"]
-        candidates = []
-        code_candidate_count = 0
-        import_candidate_count = 0
+        candidates: list[dict[str, Any]] = []
+        resolution_candidates: list[tuple[dict[str, Any], set[str]]] = []
         candidate_imports: set[str] = set()
-        for member_raw in member_candidates:
+        for member_record in member_candidates:
+            member_raw = member_record["raw"]
+            ordinal = member_record["ordinal"]
+            member_label = f"{label}#{ordinal}"
             member_format = _code_member_format(member_raw, label)
-            imported_dll = _short_import_dll(member_raw, label)
+            imported_dll = _short_import_dll(member_raw, member_label)
+            imported_symbol = _short_import_symbol(member_raw, member_label)
             if member_format == "short-import":
-                if origin != "mingw-w64" or imported_dll is None:
+                if (
+                    origin != "mingw-w64"
+                    or imported_dll is None
+                    or imported_symbol is None
+                ):
                     raise LinkageError(f"short-import candidate origin mismatch: {label}")
-                import_candidate_count += 1
                 candidate_imports.add(imported_dll)
+                symbols = {imported_symbol}
             else:
-                code_candidate_count += 1
-            candidates.append({
+                if imported_symbol is not None:
+                    raise LinkageError(f"code-bearing member has an import symbol: {label}")
+                symbols = _coff_resolution_symbols(member_raw, member_label)
+            candidate = {
                 "bytes": len(member_raw),
                 "format": member_format,
                 "imported_dll": imported_dll,
+                "imported_symbol": imported_symbol,
+                "member_ordinal": ordinal,
                 "sha256": sha256_bytes(member_raw),
+            }
+            candidates.append(candidate)
+            resolution_candidates.append((candidate, symbols))
+        candidates.sort(key=lambda item: item["member_ordinal"])
+
+        selected_loaded: list[dict[str, Any]] = []
+        selected_ordinals: set[int] = set()
+        for reason in loaded_reasons:
+            ranked: list[tuple[int, dict[str, Any]]] = []
+            for candidate, symbols in resolution_candidates:
+                rank = _reason_match_rank(symbols, reason)
+                if rank is not None:
+                    ranked.append((rank, candidate))
+            if not ranked:
+                raise LinkageError(
+                    f"Loaded reason does not resolve to an archive member: {label} for {reason}"
+                )
+            best_rank = min(rank for rank, _candidate in ranked)
+            best = [candidate for rank, candidate in ranked if rank == best_rank]
+            if len(best) != 1:
+                raise LinkageError(
+                    f"Loaded reason resolves ambiguously: {label} for {reason}"
+                )
+            candidate = best[0]
+            ordinal = candidate["member_ordinal"]
+            if ordinal in selected_ordinals:
+                raise LinkageError(
+                    f"archive member was Loaded more than once: {label}#{ordinal}"
+                )
+            selected_ordinals.add(ordinal)
+            selected_loaded.append({
+                "bytes": candidate["bytes"],
+                "format": candidate["format"],
+                "imported_dll": candidate["imported_dll"],
+                "loaded_reason": reason,
+                "member_ordinal": ordinal,
+                "sha256": candidate["sha256"],
             })
-        candidates.sort(key=lambda item: (item["format"], item["sha256"]))
-        if selected_code_count > code_candidate_count:
-            raise LinkageError(f"code-bearing archive event count exceeds candidates: {label}")
+        selected_loaded.sort(
+            key=lambda item: (item["member_ordinal"], item["loaded_reason"])
+        )
+        selected_code = [
+            item for item in selected_loaded if item["format"] == "coff-object"
+        ]
+        selected_directives = [
+            item for item in selected_loaded if item["format"] == "coff-directive"
+        ]
+        selected_loaded_imports = [
+            item for item in selected_loaded if item["format"] == "short-import"
+        ]
+        selected_import_count = (
+            reading_count - len(selected_code) - len(selected_directives)
+        )
+        import_candidate_count = sum(
+            candidate["format"] == "short-import" for candidate in candidates
+        )
         if selected_import_count > import_candidate_count:
             raise LinkageError(f"short-import event count exceeds candidates: {label}")
-        if selected_code_count == 0 and selected_import_count == 0:
+        if not selected_loaded and selected_import_count == 0:
             raise LinkageError(f"archive selection count is zero: {label}")
         if selected_import_count:
             if len(candidate_imports) != 1:
                 raise LinkageError(f"short-import DLL candidates are ambiguous: {label}")
+            imported_dll = next(iter(candidate_imports))
+            if any(
+                item["imported_dll"] != imported_dll
+                for item in selected_loaded_imports
+            ):
+                raise LinkageError(f"Loaded short-import DLL drifted: {label}")
             selected_imports.update(candidate_imports)
-        scope = (
+        elif selected_loaded_imports:
+            raise LinkageError(f"Loaded short import was not counted as an import: {label}")
+        import_scope = (
             "exact"
-            if selected_code_count == code_candidate_count
-            and selected_import_count == import_candidate_count
-            else "conservative-same-name-closure"
+            if selected_import_count == import_candidate_count
+            else "actual-pe-import-conservative"
         )
         records.append({
             "archive": archive_path,
             "archive_class": input_class,
-            "candidate_scope": scope,
             "candidates": candidates,
-            "event_counts": event_counts,
+            "event_counts": {
+                "loaded": len(loaded_reasons),
+                "reading": reading_count,
+            },
+            "import_candidate_scope": import_scope,
             "member": member,
             "origin": origin,
-            "selected_code_member_count": selected_code_count,
+            "selected_code_members": selected_code,
+            "selected_directive_members": selected_directives,
             "selected_import_member_count": selected_import_count,
+            "selected_loaded_import_members": selected_loaded_imports,
         })
     if selected_imports != set(pe_imports):
         raise LinkageError(
@@ -494,12 +770,111 @@ def _verbose_receipt(
     return (
         {
             "bytes": len(raw),
+            "read_inputs": [
+                {"display_name": read_inputs[input_path], "path": input_path}
+                for input_path in sorted(read_inputs)
+            ],
             "selected_archive_members": records,
             "sha256": sha256_bytes(raw),
             "system_imports": sorted(selected_imports),
         },
         records,
     )
+
+
+def _source_catalog(source_lock: Path) -> list[dict[str, Any]]:
+    try:
+        loaded = windows_verifier.load_source_lock(source_lock)
+    except windows_verifier.WindowsFFmpegError as exc:
+        raise LinkageError(f"source lock verification failed: {exc}") from exc
+    catalog = [
+        {
+            "archive": source["archive"],
+            "archive_bytes": source["archive_bytes"],
+            "archive_sha256": source["archive_sha256"],
+            "id": source["id"],
+            "role": source["role"],
+            "version": source["version"],
+        }
+        for source in loaded.parsed()["sources"]
+    ]
+    if [source["id"] for source in catalog] != sorted(
+        EXPECTED_CODE_SOURCE_IDS | BUILD_ONLY_SOURCE_IDS
+    ):
+        raise LinkageError("source catalog IDs drifted")
+    return catalog
+
+
+def _bind_reproducer_sources(
+    reproducer: dict[str, Any],
+    sources: list[dict[str, Any]],
+) -> None:
+    by_id = {source["id"]: source for source in sources}
+    for item in reproducer["inputs"]:
+        source = by_id.get(item["origin"])
+        if source is None:
+            raise LinkageError(
+                f"reproducer input origin lacks a pinned source: {item['origin']}"
+            )
+        item["source_archive"] = source["archive"]
+        item["source_archive_sha256"] = source["archive_sha256"]
+
+
+def _closure_receipt(
+    reproducer: dict[str, Any],
+    selections: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+) -> dict[str, Any]:
+    reproducer_source_ids = sorted({
+        item["origin"] for item in reproducer["inputs"]
+    })
+    code_source_ids = {
+        item["origin"]
+        for item in reproducer["inputs"]
+        if not item["path"].endswith(".a")
+    }
+    code_source_ids.update(
+        item["origin"] for item in selections if item["selected_code_members"]
+    )
+    import_source_ids = {
+        item["origin"]
+        for item in selections
+        if item["selected_import_member_count"]
+    }
+    source_ids = {source["id"] for source in sources}
+    if code_source_ids != EXPECTED_CODE_SOURCE_IDS:
+        raise LinkageError(
+            "code-bearing link sources are incomplete: "
+            f"expected {sorted(EXPECTED_CODE_SOURCE_IDS)}, found {sorted(code_source_ids)}"
+        )
+    if import_source_ids != {"mingw-w64"}:
+        raise LinkageError(
+            "import-library source must be exactly mingw-w64: "
+            f"found {sorted(import_source_ids)}"
+        )
+    if (
+        set(reproducer_source_ids) != EXPECTED_CODE_SOURCE_IDS
+        or source_ids != EXPECTED_CODE_SOURCE_IDS | BUILD_ONLY_SOURCE_IDS
+    ):
+        raise LinkageError("reproducer/source catalog coverage drifted")
+    return {
+        "build_only_source_ids": sorted(BUILD_ONLY_SOURCE_IDS),
+        "code_source_ids": sorted(code_source_ids),
+        "import_source_ids": sorted(import_source_ids),
+        "mapping": "exact-reproducer-input-and-archive-member-sha256",
+        "reproducer_input_count": len(reproducer["inputs"]),
+        "reproducer_source_ids": reproducer_source_ids,
+        "selected_code_member_count": sum(
+            len(item["selected_code_members"]) for item in selections
+        ),
+        "selected_directive_member_count": sum(
+            len(item["selected_directive_members"]) for item in selections
+        ),
+        "selected_import_member_count": sum(
+            item["selected_import_member_count"] for item in selections
+        ),
+        "status": "verified",
+    }
 
 
 def create_receipt(
@@ -509,6 +884,7 @@ def create_receipt(
     lld_map: Path,
     verbose_log: Path,
     unstripped_executable: Path,
+    source_lock: Path = Path(__file__).with_name("windows-ffmpeg-sources.lock.json"),
 ) -> dict[str, Any]:
     if program not in PROGRAMS:
         raise LinkageError(f"unsupported program: {program}")
@@ -522,14 +898,20 @@ def create_receipt(
     repro_receipt, basename_paths, input_payloads = _reproducer_manifest(
         reproduce, program
     )
+    sources = _source_catalog(source_lock)
+    _bind_reproducer_sources(repro_receipt, sources)
     verbose_receipt, selections = _verbose_receipt(
         verbose_log, basename_paths, input_payloads, pe["imports"]
     )
     receipt = {
+        "closure": _closure_receipt(
+            repro_receipt, selections, sources
+        ),
         "lld_map": _map_receipt(lld_map, input_payloads, selections),
         "program": program,
         "reproducer": repro_receipt,
         "schema": SCHEMA,
+        "sources": sources,
         "unstripped_executable": {
             "bytes": len(executable),
             "filename": PROGRAMS[program],
@@ -577,7 +959,10 @@ def validate_receipt(value: dict[str, Any]) -> None:
         raise LinkageError("linkage receipt must be an object")
     _exact_fields(
         value,
-        {"lld_map", "program", "reproducer", "schema", "unstripped_executable", "verbose_log"},
+        {
+            "closure", "lld_map", "program", "reproducer", "schema",
+            "sources", "unstripped_executable", "verbose_log",
+        },
         "linkage receipt",
     )
     if value["schema"] != SCHEMA or value["program"] not in PROGRAMS:
@@ -598,6 +983,38 @@ def validate_receipt(value: dict[str, Any]) -> None:
     if any(item != item.casefold() or not item.endswith(".dll") for item in imports):
         raise LinkageError("PE imports are not normalized DLL names")
 
+    sources = value["sources"]
+    if not isinstance(sources, list) or len(sources) != 7:
+        raise LinkageError("linkage source catalog must contain seven sources")
+    if any(not isinstance(source, dict) for source in sources):
+        raise LinkageError("linkage source catalog entry must be an object")
+    source_ids: list[str] = []
+    sources_by_id: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        _exact_fields(
+            source,
+            {"archive", "archive_bytes", "archive_sha256", "id", "role", "version"},
+            "linkage source catalog entry",
+        )
+        for field in ("archive", "id", "role", "version"):
+            if (
+                not isinstance(source[field], str)
+                or not source[field]
+                or source[field] != source[field].strip()
+            ):
+                raise LinkageError(f"linkage source {field} is invalid")
+        if Path(source["archive"]).name != source["archive"] or "\\" in source["archive"]:
+            raise LinkageError("linkage source archive name is invalid")
+        _positive_int(source["archive_bytes"], "linkage source archive bytes")
+        _sha(source["archive_sha256"], "linkage source archive hash")
+        source_ids.append(source["id"])
+        if source["id"] in sources_by_id:
+            raise LinkageError("duplicate linkage source ID")
+        sources_by_id[source["id"]] = source
+    expected_source_ids = sorted(EXPECTED_CODE_SOURCE_IDS | BUILD_ONLY_SOURCE_IDS)
+    if source_ids != expected_source_ids:
+        raise LinkageError("linkage source catalog IDs drifted")
+
     lld_map = value["lld_map"]
     reproducer = value["reproducer"]
     verbose = value["verbose_log"]
@@ -605,7 +1022,11 @@ def validate_receipt(value: dict[str, Any]) -> None:
         (
             "lld_map",
             lld_map,
-            {"bytes", "live_inputs", "live_section_count", "sha256"},
+            {
+                "bytes", "covered_archive_member_groups",
+                "covered_direct_inputs", "live_inputs", "live_section_count",
+                "sha256",
+            },
         ),
         (
             "reproducer",
@@ -615,7 +1036,10 @@ def validate_receipt(value: dict[str, Any]) -> None:
         (
             "verbose_log",
             verbose,
-            {"bytes", "selected_archive_members", "sha256", "system_imports"},
+            {
+                "bytes", "read_inputs", "selected_archive_members", "sha256",
+                "system_imports",
+            },
         ),
     ):
         if not isinstance(section, dict):
@@ -632,22 +1056,66 @@ def validate_receipt(value: dict[str, Any]) -> None:
     if any(not isinstance(item, dict) for item in inputs):
         raise LinkageError("reproducer input must be an object")
     for item in inputs:
-        _exact_fields(item, {"bytes", "class", "origin", "path", "sha256"}, "reproducer input")
+        _exact_fields(
+            item,
+            {
+                "bytes", "class", "origin", "path", "sha256",
+                "source_archive", "source_archive_sha256",
+            },
+            "reproducer input",
+        )
         if not isinstance(item["path"], str):
             raise LinkageError("reproducer input path must be a string")
     if inputs != sorted(inputs, key=lambda item: item["path"]):
         raise LinkageError("reproducer inputs are not sorted")
     input_paths: set[str] = set()
+    reproducer_source_ids: set[str] = set()
+    code_source_ids: set[str] = set()
     for item in inputs:
         _safe_tar_name(item["path"])
         expected_origin, expected_class = _origin_for(item["path"])
         if (item["origin"], item["class"]) != (expected_origin, expected_class):
             raise LinkageError("reproducer input origin/class drifted")
+        source = sources_by_id.get(item["origin"])
+        if source is None or (
+            item["source_archive"], item["source_archive_sha256"]
+        ) != (source["archive"], source["archive_sha256"]):
+            raise LinkageError("reproducer input source archive mapping drifted")
         _positive_int(item["bytes"], "reproducer input bytes")
         _sha(item["sha256"], "reproducer input hash")
         if item["path"] in input_paths:
             raise LinkageError("duplicate reproducer input path")
         input_paths.add(item["path"])
+        reproducer_source_ids.add(item["origin"])
+        if not item["path"].endswith(".a"):
+            code_source_ids.add(item["origin"])
+
+    read_inputs = verbose["read_inputs"]
+    if not isinstance(read_inputs, list) or not read_inputs:
+        raise LinkageError("verbose read inputs are empty")
+    if any(not isinstance(item, dict) for item in read_inputs):
+        raise LinkageError("verbose read input must be an object")
+    for item in read_inputs:
+        _exact_fields(item, {"display_name", "path"}, "verbose read input")
+        if (
+            not isinstance(item["display_name"], str)
+            or not item["display_name"]
+            or not isinstance(item["path"], str)
+            or item["path"] not in input_paths
+        ):
+            raise LinkageError("verbose read input identity drifted")
+        normalized_display = item["display_name"].replace("\\", "/").lstrip("/")
+        _safe_tar_name(normalized_display)
+        if not (
+            item["path"] == normalized_display
+            or item["path"].endswith("/" + normalized_display)
+        ):
+            raise LinkageError("verbose read input display mapping drifted")
+    if read_inputs != sorted(read_inputs, key=lambda item: item["path"]):
+        raise LinkageError("verbose read inputs are not sorted")
+    read_input_paths = [item["path"] for item in read_inputs]
+    if len(read_input_paths) != len(set(read_input_paths)) or set(read_input_paths) != input_paths:
+        raise LinkageError("verbose read inputs do not cover the reproducer")
 
     selections = verbose["selected_archive_members"]
     if not isinstance(selections, list) or not selections:
@@ -658,9 +1126,10 @@ def validate_receipt(value: dict[str, Any]) -> None:
         _exact_fields(
             item,
             {
-                "archive", "archive_class", "candidate_scope", "candidates",
-                "event_counts", "member", "origin", "selected_code_member_count",
-                "selected_import_member_count",
+                "archive", "archive_class", "candidates", "event_counts",
+                "import_candidate_scope", "member", "origin",
+                "selected_code_members", "selected_directive_members",
+                "selected_import_member_count", "selected_loaded_import_members",
             },
             "verbose archive member",
         )
@@ -669,7 +1138,12 @@ def validate_receipt(value: dict[str, Any]) -> None:
     if selections != sorted(selections, key=lambda item: (item["archive"], item["member"])):
         raise LinkageError("verbose archive members are not sorted")
     selected_keys: set[tuple[str, str]] = set()
+    selected_code_keys: set[tuple[str, str]] = set()
     selected_imports: set[str] = set()
+    selected_code_member_count = 0
+    selected_directive_member_count = 0
+    selected_import_member_count = 0
+    import_source_ids: set[str] = set()
     for item in selections:
         if item["archive"] not in input_paths or not item["archive"].endswith(".a"):
             raise LinkageError("verbose archive is absent from reproducer inputs")
@@ -690,13 +1164,8 @@ def validate_receipt(value: dict[str, Any]) -> None:
         reading = item["event_counts"]["reading"]
         _nonnegative_int(loaded, "archive loaded count")
         _nonnegative_int(reading, "archive reading count")
-        _nonnegative_int(item["selected_code_member_count"], "selected code member count")
         _nonnegative_int(item["selected_import_member_count"], "selected import member count")
-        if (
-            loaded != item["selected_code_member_count"]
-            or reading - loaded != item["selected_import_member_count"]
-            or reading <= 0
-        ):
+        if reading <= 0 or loaded > reading:
             raise LinkageError("archive event count classification drifted")
         candidates = item["candidates"]
         if not isinstance(candidates, list) or not candidates:
@@ -705,59 +1174,167 @@ def validate_receipt(value: dict[str, Any]) -> None:
             raise LinkageError("archive member candidate must be an object")
         for candidate in candidates:
             _exact_fields(
-                candidate, {"bytes", "format", "imported_dll", "sha256"},
+                candidate,
+                {
+                    "bytes", "format", "imported_dll", "imported_symbol",
+                    "member_ordinal", "sha256",
+                },
                 "archive member candidate",
             )
-        if candidates != sorted(candidates, key=lambda candidate: (candidate["format"], candidate["sha256"])):
+        if candidates != sorted(candidates, key=lambda candidate: candidate["member_ordinal"]):
             raise LinkageError("archive member candidates are not sorted")
-        code_candidates = 0
+        candidate_ordinals: set[int] = set()
+        candidate_by_ordinal: dict[int, dict[str, Any]] = {}
         import_candidates = 0
         candidate_imports: set[str] = set()
         for candidate in candidates:
             _positive_int(candidate["bytes"], "archive member candidate bytes")
             _sha(candidate["sha256"], "archive member candidate hash")
+            _nonnegative_int(candidate["member_ordinal"], "archive member ordinal")
+            if candidate["member_ordinal"] in candidate_ordinals:
+                raise LinkageError("duplicate archive member ordinal")
+            candidate_ordinals.add(candidate["member_ordinal"])
+            candidate_by_ordinal[candidate["member_ordinal"]] = candidate
             if candidate["format"] == "short-import":
                 if (
                     not isinstance(candidate["imported_dll"], str)
                     or candidate["imported_dll"] != candidate["imported_dll"].casefold()
                     or not candidate["imported_dll"].endswith(".dll")
+                    or not isinstance(candidate["imported_symbol"], str)
+                    or not candidate["imported_symbol"]
                 ):
-                    raise LinkageError("short-import candidate DLL drifted")
+                    raise LinkageError("short-import candidate identity drifted")
                 import_candidates += 1
                 candidate_imports.add(candidate["imported_dll"])
-            elif candidate["format"] in {"coff-object", "llvm-bitcode"}:
-                if candidate["imported_dll"] is not None:
+            elif candidate["format"] in {"coff-directive", "coff-object"}:
+                if (
+                    candidate["imported_dll"] is not None
+                    or candidate["imported_symbol"] is not None
+                ):
                     raise LinkageError("code-bearing candidate has an imported DLL")
-                code_candidates += 1
             else:
                 raise LinkageError("unknown archive member candidate format")
-        if (
-            item["selected_code_member_count"] > code_candidates
-            or item["selected_import_member_count"] > import_candidates
+
+        def validate_selected(
+            selected: Any,
+            *,
+            expected_format: str,
+            label: str,
+        ) -> list[dict[str, Any]]:
+            if not isinstance(selected, list):
+                raise LinkageError(f"{label} must be an array")
+            if any(not isinstance(entry, dict) for entry in selected):
+                raise LinkageError(f"{label} entry must be an object")
+            for entry in selected:
+                _exact_fields(
+                    entry,
+                    {
+                        "bytes", "format", "imported_dll", "loaded_reason",
+                        "member_ordinal", "sha256",
+                    },
+                    label,
+                )
+            expected_sort = sorted(
+                selected,
+                key=lambda entry: (entry["member_ordinal"], entry["loaded_reason"]),
+            )
+            if selected != expected_sort:
+                raise LinkageError(f"{label} is not sorted")
+            seen_ordinals: set[int] = set()
+            for entry in selected:
+                _positive_int(entry["bytes"], f"{label} bytes")
+                _nonnegative_int(entry["member_ordinal"], f"{label} ordinal")
+                _sha(entry["sha256"], f"{label} hash")
+                if (
+                    not isinstance(entry["loaded_reason"], str)
+                    or not entry["loaded_reason"]
+                    or entry["loaded_reason"] != entry["loaded_reason"].strip()
+                ):
+                    raise LinkageError(f"{label} reason is invalid")
+                candidate = candidate_by_ordinal.get(entry["member_ordinal"])
+                if candidate is None or (
+                    entry["bytes"], entry["format"], entry["imported_dll"],
+                    entry["sha256"],
+                ) != (
+                    candidate["bytes"], candidate["format"],
+                    candidate["imported_dll"], candidate["sha256"],
+                ):
+                    raise LinkageError(f"{label} does not identify an exact candidate")
+                if entry["format"] != expected_format:
+                    raise LinkageError(f"{label} format drifted")
+                if entry["member_ordinal"] in seen_ordinals:
+                    raise LinkageError(f"{label} repeats an archive member")
+                seen_ordinals.add(entry["member_ordinal"])
+            return selected
+
+        selected_code = validate_selected(
+            item["selected_code_members"],
+            expected_format="coff-object",
+            label="selected code member",
+        )
+        selected_loaded_imports = validate_selected(
+            item["selected_loaded_import_members"],
+            expected_format="short-import",
+            label="selected loaded import member",
+        )
+        selected_directives = validate_selected(
+            item["selected_directive_members"],
+            expected_format="coff-directive",
+            label="selected directive member",
+        )
+        selected_sets = [
+            {entry["member_ordinal"] for entry in selected}
+            for selected in (selected_code, selected_directives, selected_loaded_imports)
+        ]
+        if any(
+            selected_sets[left] & selected_sets[right]
+            for left in range(len(selected_sets))
+            for right in range(left + 1, len(selected_sets))
         ):
+            raise LinkageError("code, directive, and import selections overlap")
+        if (
+            loaded
+            != len(selected_code) + len(selected_directives) + len(selected_loaded_imports)
+            or reading - len(selected_code) - len(selected_directives)
+            != item["selected_import_member_count"]
+        ):
+            raise LinkageError("archive event count exact classification drifted")
+        if item["selected_import_member_count"] > import_candidates:
             raise LinkageError("archive selection count exceeds candidates")
+        selected_code_member_count += len(selected_code)
+        selected_directive_member_count += len(selected_directives)
+        selected_import_member_count += item["selected_import_member_count"]
+        if selected_code:
+            code_source_ids.add(item["origin"])
         if item["selected_import_member_count"]:
             if len(candidate_imports) != 1 or not candidate_imports.issubset(imports):
                 raise LinkageError("selected short-import candidates are ambiguous")
             selected_imports.update(candidate_imports)
+            import_source_ids.add(item["origin"])
         expected_scope = (
             "exact"
-            if item["selected_code_member_count"] == code_candidates
-            and item["selected_import_member_count"] == import_candidates
-            else "conservative-same-name-closure"
+            if item["selected_import_member_count"] == import_candidates
+            else "actual-pe-import-conservative"
         )
-        if item["candidate_scope"] != expected_scope:
-            raise LinkageError("archive member candidate scope drifted")
+        if item["import_candidate_scope"] != expected_scope:
+            raise LinkageError("archive member import candidate scope drifted")
         key = (item["archive"], item["member"])
         if key in selected_keys:
             raise LinkageError("duplicate verbose archive member")
         selected_keys.add(key)
+        if selected_code:
+            selected_code_keys.add(key)
 
     system_imports = _sorted_strings(verbose["system_imports"], "system imports")
     if system_imports != imports or system_imports != sorted(selected_imports):
         raise LinkageError("system import closure differs from PE imports")
 
     _positive_int(lld_map["live_section_count"], "lld_map.live_section_count")
+    _positive_int(
+        lld_map["covered_archive_member_groups"],
+        "lld_map.covered_archive_member_groups",
+    )
+    _positive_int(lld_map["covered_direct_inputs"], "lld_map.covered_direct_inputs")
     live_inputs = lld_map["live_inputs"]
     if not isinstance(live_inputs, list) or not live_inputs:
         raise LinkageError("LLD map live inputs are empty")
@@ -813,7 +1390,7 @@ def validate_receipt(value: dict[str, Any]) -> None:
             if (
                 not candidate_archives
                 or any(
-                    (archive, item["member"]) not in selected_keys
+                    (archive, item["member"]) not in selected_code_keys
                     for archive in candidate_archives
                 )
                 or item["path"] is not None
@@ -831,6 +1408,64 @@ def validate_receipt(value: dict[str, Any]) -> None:
             raise LinkageError("unknown LLD map input kind")
     if live_sections != lld_map["live_section_count"]:
         raise LinkageError("LLD map live section count drifted")
+    covered_direct_inputs = {
+        item["path"] for item in live_inputs if item["kind"] == "direct-input"
+    }
+    expected_direct_inputs = {
+        item["path"] for item in inputs if not item["path"].endswith(".a")
+    }
+    covered_code_keys = {
+        (archive, item["member"])
+        for item in live_inputs
+        if item["kind"] == "archive-member"
+        for archive in item["candidate_archives"]
+    }
+    if (
+        covered_direct_inputs != expected_direct_inputs
+        or covered_code_keys != selected_code_keys
+        or lld_map["covered_direct_inputs"] != len(covered_direct_inputs)
+        or lld_map["covered_archive_member_groups"] != len(covered_code_keys)
+    ):
+        raise LinkageError("LLD map code coverage drifted")
+
+    closure = value["closure"]
+    if not isinstance(closure, dict):
+        raise LinkageError("link closure receipt must be an object")
+    _exact_fields(
+        closure,
+        {
+            "build_only_source_ids", "code_source_ids", "import_source_ids",
+            "mapping", "reproducer_input_count", "reproducer_source_ids",
+            "selected_code_member_count", "selected_directive_member_count",
+            "selected_import_member_count", "status",
+        },
+        "link closure receipt",
+    )
+    for field in (
+        "build_only_source_ids", "code_source_ids", "import_source_ids",
+        "reproducer_source_ids",
+    ):
+        _sorted_strings(closure[field], f"link closure {field}")
+    if (
+        reproducer_source_ids != EXPECTED_CODE_SOURCE_IDS
+        or code_source_ids != EXPECTED_CODE_SOURCE_IDS
+        or import_source_ids != {"mingw-w64"}
+    ):
+        raise LinkageError("verified link source closure is incomplete")
+    build_only_source_ids = set(sources_by_id) - reproducer_source_ids
+    if closure != {
+        "build_only_source_ids": sorted(build_only_source_ids),
+        "code_source_ids": sorted(code_source_ids),
+        "import_source_ids": sorted(import_source_ids),
+        "mapping": "exact-reproducer-input-and-archive-member-sha256",
+        "reproducer_input_count": len(inputs),
+        "reproducer_source_ids": sorted(reproducer_source_ids),
+        "selected_code_member_count": selected_code_member_count,
+        "selected_directive_member_count": selected_directive_member_count,
+        "selected_import_member_count": selected_import_member_count,
+        "status": "verified",
+    }:
+        raise LinkageError("verified link closure receipt drifted")
 
 
 def load_receipt(path: Path) -> dict[str, Any]:
@@ -869,6 +1504,11 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("create", "verify"):
         child = commands.add_parser(command)
+        child.add_argument(
+            "--source-lock",
+            type=Path,
+            default=Path(__file__).with_name("windows-ffmpeg-sources.lock.json"),
+        )
         child.add_argument("--program", choices=sorted(PROGRAMS), required=True)
         child.add_argument("--reproduce", type=Path, required=True)
         child.add_argument("--lld-map", type=Path, required=True)
@@ -887,6 +1527,7 @@ def main() -> int:
             lld_map=args.lld_map,
             verbose_log=args.verbose_log,
             unstripped_executable=args.unstripped_executable,
+            source_lock=args.source_lock,
         )
         raw = canonical_json(computed)
         if args.command == "create":

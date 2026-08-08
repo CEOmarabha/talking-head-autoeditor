@@ -79,8 +79,34 @@ def make_archive(members: list[tuple[str, bytes]]) -> bytes:
     return bytes(raw)
 
 
-def make_coff_object() -> bytes:
-    return struct.pack("<H", linkage.COFF_AMD64) + b"\0" * 38
+def make_coff_object(symbol: str = "test_symbol") -> bytes:
+    encoded = symbol.encode("utf-8")
+    section_offset = 20
+    raw_offset = section_offset + 40
+    symbol_offset = raw_offset + 1
+    string_table = struct.pack("<I", 5 + len(encoded)) + encoded + b"\0"
+    raw = bytearray(symbol_offset + linkage.COFF_SYMBOL_BYTES + len(string_table))
+    struct.pack_into(
+        "<HHIIIHH",
+        raw,
+        0,
+        linkage.COFF_AMD64,
+        1,
+        0,
+        symbol_offset,
+        1,
+        0,
+        0,
+    )
+    raw[section_offset:section_offset + 8] = b".text\0\0\0"
+    struct.pack_into("<I", raw, section_offset + 16, 1)
+    struct.pack_into("<I", raw, section_offset + 20, raw_offset)
+    struct.pack_into("<I", raw, section_offset + 36, 0x60000020)
+    raw[raw_offset] = 0xC3
+    struct.pack_into("<II", raw, symbol_offset, 0, 4)
+    struct.pack_into("<IhHBB", raw, symbol_offset + 8, 0, 1, 0, 2, 0)
+    raw[symbol_offset + linkage.COFF_SYMBOL_BYTES:] = string_table
+    return bytes(raw)
 
 
 def make_short_import(dll: str) -> bytes:
@@ -93,6 +119,7 @@ def make_short_import(dll: str) -> bytes:
 class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
     def _write_capture(self, root: Path, *, program: str = "ffmpeg") -> dict[str, Path]:
         executable_name = linkage.PROGRAMS[program]
+        ffmpeg_root = linkage.FFMPEG_SOURCE_ROOT
         reproduce = root / f"{program}-reproduce.tar"
         members = {
             "response.txt": (
@@ -100,21 +127,29 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
                 f"-lldmap:/artifact/{program}.lldmap\n"
                 "-verbose\n"
                 "-threads:1\n"
-                "build/autoeditor-media/sources/FFmpeg-deadbeef/fftools/"
-                f"{program}.o\n"
+                f"{ffmpeg_root}fftools/{program}.o\n"
                 "build/autoeditor-media/prefix/lib/libx264.a\n"
+                "build/autoeditor-media/prefix/lib/libz.a\n"
+                "opt/llvm-mingw/lib/clang/22/lib/windows/"
+                "libclang_rt.builtins-x86_64.a\n"
                 "opt/llvm-mingw/x86_64-w64-mingw32/lib/libkernel32.a\n"
                 "opt/llvm-mingw/x86_64-w64-mingw32/lib/libmingw32.a\n"
             ).encode(),
-            f"build/autoeditor-media/sources/FFmpeg-deadbeef/fftools/{program}.o": make_coff_object(),
+            f"{ffmpeg_root}fftools/{program}.o": make_coff_object(program),
             "build/autoeditor-media/prefix/lib/libx264.a": make_archive(
-                [("encoder.o", make_coff_object())]
+                [("encoder.o", make_coff_object("x264_encoder_open"))]
+            ),
+            "build/autoeditor-media/prefix/lib/libz.a": make_archive(
+                [("adler32.o", make_coff_object("zlib_adler32"))]
+            ),
+            "opt/llvm-mingw/lib/clang/22/lib/windows/libclang_rt.builtins-x86_64.a": make_archive(
+                [("chkstk.o", make_coff_object("___chkstk_ms"))]
             ),
             "opt/llvm-mingw/x86_64-w64-mingw32/lib/libkernel32.a": make_archive(
                 [("kernel.o", make_short_import("kernel32.dll"))]
             ),
             "opt/llvm-mingw/x86_64-w64-mingw32/lib/libmingw32.a": make_archive(
-                [("crtexe.o", make_coff_object())]
+                [("crtexe.o", make_coff_object("main"))]
             ),
         }
         with tarfile.open(reproduce, "w") as archive:
@@ -128,13 +163,26 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
             "140001000 00000010    16 .text\n"
             f"140001000 00000008     4         fftools/{program}.o:(.text)\n"
             "140001008 00000008     4         encoder.o:(.text)\n"
-            "140001010 00000008     4         crtexe.o:(.text)\n",
+            "140001010 00000008     4         adler32.o:(.text)\n"
+            "140001018 00000008     4         chkstk.o:(.text)\n"
+            "140001020 00000008     4         crtexe.o:(.text)\n",
             encoding="utf-8",
         )
         verbose = root / f"{program}.verbose.log"
         verbose.write_text(
+            f"lld: Reading fftools/{program}.o\n"
+            "lld: Reading /build/autoeditor-media/prefix/lib/libx264.a\n"
+            "lld: Reading /build/autoeditor-media/prefix/lib/libz.a\n"
+            "lld: Reading /opt/llvm-mingw/lib/clang/22/lib/windows/"
+            "libclang_rt.builtins-x86_64.a\n"
+            "lld: Reading /opt/llvm-mingw/x86_64-w64-mingw32/lib/libkernel32.a\n"
+            "lld: Reading /opt/llvm-mingw/x86_64-w64-mingw32/lib/libmingw32.a\n"
             "lld: Loaded libx264.a(encoder.o) for x264_encoder_open\n"
             "lld: Reading libx264.a(encoder.o)\n"
+            "lld: Reading libz.a(adler32.o)\n"
+            "lld: Loaded libz.a(adler32.o) for zlib_adler32\n"
+            "lld: Reading libclang_rt.builtins-x86_64.a(chkstk.o)\n"
+            "lld: Loaded libclang_rt.builtins-x86_64.a(chkstk.o) for ___chkstk_ms\n"
             "lld: Reading libkernel32.a(kernel.o)\n"
             "lld: Loaded libmingw32.a(crtexe.o) for main\n"
             "lld: Reading libmingw32.a(crtexe.o)\n",
@@ -158,12 +206,50 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
             self.assertEqual(receipt["schema"], linkage.SCHEMA)
             self.assertEqual(
                 [item["origin"] for item in receipt["reproducer"]["inputs"]],
-                ["x264", "ffmpeg", "mingw-w64", "mingw-w64"],
+                [
+                    "x264",
+                    "zlib",
+                    "ffmpeg",
+                    "llvm-project",
+                    "mingw-w64",
+                    "mingw-w64",
+                ],
             )
             self.assertEqual(
-                len(receipt["verbose_log"]["selected_archive_members"]), 3
+                len(receipt["verbose_log"]["selected_archive_members"]), 5
             )
             self.assertEqual(receipt["verbose_log"]["system_imports"], ["kernel32.dll"])
+            self.assertEqual(
+                [item["path"] for item in receipt["verbose_log"]["read_inputs"]],
+                [item["path"] for item in receipt["reproducer"]["inputs"]],
+            )
+            self.assertEqual(
+                receipt["closure"],
+                {
+                    "build_only_source_ids": ["llvm-mingw", "nasm"],
+                    "code_source_ids": [
+                        "ffmpeg",
+                        "llvm-project",
+                        "mingw-w64",
+                        "x264",
+                        "zlib",
+                    ],
+                    "import_source_ids": ["mingw-w64"],
+                    "mapping": "exact-reproducer-input-and-archive-member-sha256",
+                    "reproducer_input_count": 6,
+                    "reproducer_source_ids": [
+                        "ffmpeg",
+                        "llvm-project",
+                        "mingw-w64",
+                        "x264",
+                        "zlib",
+                    ],
+                    "selected_code_member_count": 4,
+                    "selected_directive_member_count": 0,
+                    "selected_import_member_count": 1,
+                    "status": "verified",
+                },
+            )
             receipt_path = root / "receipt.json"
             receipt_path.write_bytes(linkage.canonical_json(receipt))
             self.assertEqual(linkage.load_receipt(receipt_path), receipt)
@@ -216,6 +302,33 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
             with self.assertRaisesRegex(linkage.LinkageError, "absent from reproducer"):
                 linkage.create_receipt(**capture)
 
+    def test_verbose_must_read_every_reproducer_input(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            capture = self._write_capture(root)
+            text = capture["verbose_log"].read_text(encoding="utf-8")
+            capture["verbose_log"].write_text(
+                text.replace("lld: Reading fftools/ffmpeg.o\n", ""),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(linkage.LinkageError, "does not read every"):
+                linkage.create_receipt(**capture)
+
+    def test_unparsed_loaded_event_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            capture = self._write_capture(root)
+            text = capture["verbose_log"].read_text(encoding="utf-8")
+            capture["verbose_log"].write_text(
+                text.replace(
+                    "Loaded libx264.a(encoder.o) for x264_encoder_open",
+                    "Loaded libx264.a[encoder.o] for x264_encoder_open",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(linkage.LinkageError, "unparsed verbose Loaded"):
+                linkage.create_receipt(**capture)
+
     def test_map_archive_member_absent_from_verbose_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -264,7 +377,7 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
             root_name = "ffmpeg-reproduce"
             captured[f"{root_name}/{archive_path}"] = make_archive(
                 [
-                    ("kernel.o", make_coff_object()),
+                    ("kernel.o", make_short_import("kernel32.dll")),
                     ("kernel.o", make_short_import("kernel32.dll")),
                 ]
             )
@@ -275,19 +388,83 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
                     info.size = len(raw)
                     archive.addfile(info, io.BytesIO(raw))
             capture["reproduce"] = rewritten
-            with capture["verbose_log"].open("a", encoding="utf-8") as handle:
-                handle.write(
-                    "lld: Loaded libkernel32.a(kernel.o) for __IMPORT_DESCRIPTOR_kernel32\n"
-                    "lld: Reading libkernel32.a(kernel.o)\n"
-                )
             receipt = linkage.create_receipt(**capture)
             group = next(
                 item
                 for item in receipt["verbose_log"]["selected_archive_members"]
                 if item["archive"].endswith("libkernel32.a")
             )
-            self.assertEqual(group["event_counts"], {"loaded": 1, "reading": 2})
-            self.assertEqual(group["candidate_scope"], "exact")
+            self.assertEqual(group["event_counts"], {"loaded": 0, "reading": 1})
+            self.assertEqual(
+                group["import_candidate_scope"],
+                "actual-pe-import-conservative",
+            )
+            self.assertEqual(group["selected_code_members"], [])
+            self.assertEqual(group["selected_import_member_count"], 1)
+
+    def test_symbol_normalization_changes_exactly_one_leading_underscore(self):
+        self.assertEqual(linkage._reason_match_rank({"test"}, "test"), 0)
+        self.assertEqual(linkage._reason_match_rank({"_test"}, "test"), 1)
+        self.assertEqual(linkage._reason_match_rank({"test"}, "_test"), 1)
+        self.assertIsNone(linkage._reason_match_rank({"__test"}, "test"))
+        self.assertIsNone(linkage._reason_match_rank({"test"}, "__test"))
+        self.assertEqual(
+            linkage._reason_match_rank(
+                {"__imp_test"}, "__declspec(dllimport) test"
+            ),
+            0,
+        )
+
+    def test_equal_rank_code_candidate_collision_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            capture = self._write_capture(root)
+            archive_path = "build/autoeditor-media/prefix/lib/libx264.a"
+            with tarfile.open(capture["reproduce"], "r") as archive:
+                captured = {
+                    member.name: archive.extractfile(member).read()
+                    for member in archive.getmembers()
+                    if member.isfile()
+                }
+            captured[f"ffmpeg-reproduce/{archive_path}"] = make_archive(
+                [
+                    ("encoder.o", make_coff_object("x264_encoder_open")),
+                    ("encoder.o", make_coff_object("x264_encoder_open")),
+                ]
+            )
+            rewritten = root / "ambiguous.tar"
+            with tarfile.open(rewritten, "w") as archive:
+                for name, raw in captured.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(raw)
+                    archive.addfile(info, io.BytesIO(raw))
+            capture["reproduce"] = rewritten
+            with self.assertRaisesRegex(linkage.LinkageError, "resolves ambiguously"):
+                linkage.create_receipt(**capture)
+
+    def test_receipt_rejects_source_or_member_identity_tampering(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            receipt = linkage.create_receipt(**self._write_capture(root))
+            changed = json.loads(json.dumps(receipt))
+            changed["reproducer"]["inputs"][0]["source_archive_sha256"] = "f" * 64
+            with self.assertRaisesRegex(linkage.LinkageError, "source archive mapping"):
+                linkage.validate_receipt(changed)
+
+            changed = json.loads(json.dumps(receipt))
+            group = next(
+                item
+                for item in changed["verbose_log"]["selected_archive_members"]
+                if item["archive"].endswith("libx264.a")
+            )
+            group["candidates"][0]["sha256"] = "f" * 64
+            with self.assertRaisesRegex(linkage.LinkageError, "exact candidate"):
+                linkage.validate_receipt(changed)
+
+            changed = json.loads(json.dumps(receipt))
+            changed["verbose_log"]["read_inputs"][0]["display_name"] = "evil.o"
+            with self.assertRaisesRegex(linkage.LinkageError, "display mapping"):
+                linkage.validate_receipt(changed)
 
     def test_verbose_member_must_exist_inside_captured_archive(self):
         with tempfile.TemporaryDirectory() as td:

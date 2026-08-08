@@ -69,7 +69,7 @@
       "ZERO_AR_DATE": "1"
     },
     "link_evidence": {
-      "closure_status": "input-classification-unverified",
+      "closure_status": "verified",
       "formats": [
         "lld-map",
         "lld-reproducer",
@@ -87,7 +87,7 @@
         "ffprobe.exe"
       ]
     },
-    "source_lock_sha256": "c4f222982b5f0d61f0a612108705802fa5aad139d195bc24561721c2320ad6ff",
+    "source_lock_sha256": "098d357f204882a1d8780b907f19ea8abd11903ae3dd60994720cfaf5e4796c6",
     "strip": {
       "arguments": [
         "--strip-all"

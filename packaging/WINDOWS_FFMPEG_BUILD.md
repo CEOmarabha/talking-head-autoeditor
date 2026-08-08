@@ -72,6 +72,10 @@ link-evidence/ffmpeg-reproduce.tar
 link-evidence/ffprobe-lld.map
 link-evidence/ffprobe-link.verbose.txt
 link-evidence/ffprobe-reproduce.tar
+linkage/ffmpeg-linkage-receipt.json
+linkage/ffmpeg_g.exe
+linkage/ffprobe-linkage-receipt.json
+linkage/ffprobe_g.exe
 windows-ffmpeg-corresponding-source.tar
 windows-ffmpeg-corresponding-source.manifest.json
 ```
@@ -92,6 +96,7 @@ python packaging/verify_windows_ffmpeg.py create-receipt `
   --ffprobe artifacts\ffprobe.exe `
   --license-dir artifacts\licenses `
   --link-evidence-dir artifacts\link-evidence `
+  --linkage-dir artifacts\linkage `
   --source-bundle artifacts\windows-ffmpeg-corresponding-source.tar `
   --source-manifest artifacts\windows-ffmpeg-corresponding-source.manifest.json `
   --repository-commit $env:GITHUB_SHA `
@@ -105,9 +110,10 @@ PE imports and hardening fields, the full parsed codec, encoder, decoder,
 filter, format, protocol, and device inventories, the exact build
 configuration, both tracked contract hashes, the source bundle, its manifest,
 the repository commit and tree, and canonical receipts for every regular file
-inside both LLD reproducer archives. Runtime smoke checks exercise lavfi,
-float PCM output, wrapped-frame video to the null muxer, libx264 and AAC in
-MP4, and FFprobe stream inspection.
+inside both LLD reproducer archives. It also binds each classified linkage
+receipt and the matching unstripped executable used to inspect PE imports.
+Runtime smoke checks exercise lavfi, float PCM output, wrapped-frame video to
+the null muxer, libx264 and AAC in MP4, and FFprobe stream inspection.
 
 Recompute the receipt before accepting an artifact:
 
@@ -118,6 +124,7 @@ python packaging/verify_windows_ffmpeg.py verify-receipt `
   --ffprobe artifacts\ffprobe.exe `
   --license-dir artifacts\licenses `
   --link-evidence-dir artifacts\link-evidence `
+  --linkage-dir artifacts\linkage `
   --source-bundle artifacts\windows-ffmpeg-corresponding-source.tar `
   --source-manifest artifacts\windows-ffmpeg-corresponding-source.manifest.json `
   --repository-commit $env:GITHUB_SHA `
@@ -136,44 +143,65 @@ python packaging/verify_windows_ffmpeg.py compare-receipts \
 ```
 
 This comparison covers both unsigned executables, the corresponding-source
-bundle, its manifest, the canonical receipt, and all recorded inventories.
-The workflow uploads one reproducible evidence candidate, source bundle,
-manifest, and receipt after this comparison passes. It does not upload an
-accepted or promotable runtime while link input classification is unverified.
+bundle, its manifest, the canonical receipt, all recorded inventories, and
+the classified linkage records. The workflow separately recomputes both
+linkage receipts, compares them byte for byte across the clean builds, runs
+the promotion gate, and only then uploads
+`windows-ffmpeg-accepted-${GITHUB_SHA}`.
 
-## Link-Closure Hold
+## Verified Link Closure
 
-The current source lock and receipt state is
-`input-classification-unverified`. This is intentional. The LLD map, verbose
-log, and reproducer tar collect the actual link inputs for each executable,
-but this patch does not classify every archive, object, startup file, or import
-library against its source archive. The deterministic source bundle is complete
-for the seven declared archives. That statement is limited to the declared
-archive set and is not a claim that every code-bearing link input has been
-mapped to source.
+The source lock and capability contract require `verified`. Each final link
+produces a canonical `autoeditor-windows-ffmpeg-linkage/v2` receipt. The
+receipt binds all seven pinned source identities and classifies every actual
+reproducer input plus every archive member selected by LLD. FFmpeg,
+LLVM compiler-rt, MinGW-w64, x264, and zlib are code-bearing sources.
+llvm-mingw and NASM are pinned build-only sources and cannot appear as claimed
+link-input origins.
+
+The initial closure pins were derived from workflow run `31267037435`, artifact
+ID `9024578626`, at repository commit
+`df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c`. The source lock records the
+exact artifact name, its 527332259-byte size, and archive SHA-256
+`e89dc5a20dc9b69aaa65c389f6accc39afccf0199820c1a1a57350e67ab9fe28`.
+
+For code-bearing archive selections, the classifier records the exact archive
+path, member name, global member ordinal, byte count, format, and SHA-256. A
+`Loaded` reason must resolve to one unique best COFF candidate. Exact symbol
+matches win, `__declspec(dllimport)` resolves only to its exact `__imp_`
+symbol, and compatibility normalization may add or remove exactly one leading
+underscore. Equal-rank collisions fail. `.drectve` members are recorded
+separately from code-bearing objects.
+
+LLD map paths that identify one archive are exact. When LLD prints only a
+same-name member such as `cpu.o` or `version.o`, the receipt conservatively
+binds every selected archive candidate with that name. The map is accepted
+only when those groups cover every verbose-selected code member and every
+direct object from the reproducer.
+
+Short-import members are allowed only from the pinned MinGW-w64 source. Every
+candidate byte is recorded. An exact selected member is used when the verbose
+reason proves it. Otherwise, same-name import candidates remain a conservative
+group, all candidates must name one DLL, and that DLL must appear in the
+unstripped executable's actual PE import table. The full classified import DLL
+set must equal the PE import set.
+
+Each reproducer input records the exact pinned upstream source archive name and
+SHA-256 for its source ID. Any unknown root, missing input, missing selected
+member, unmatched map entry, source mapping drift, ambiguous code resolution,
+extra evidence file, or receipt byte change fails verification.
 
 Helper staging, signing, release promotion, and distribution must call the
-promotion gate and must stop while this status is present:
+promotion gate:
 
 ```bash
 python packaging/verify_windows_ffmpeg.py assert-promotable \
   --receipt windows-ffmpeg-build-receipt.json
 ```
 
-The command currently fails by design. Change the status only after a hosted
-build has produced both reproducer archives and every actual input has an exact
-classification and source mapping. A source archive being present in the
-bundle is not enough by itself.
-
-The verified classification contract must have one record for every
-code-bearing input shown by the LLD map and reproducer. Each record needs the
-program, reproducer member path, byte count, SHA-256, classification, source
-ID, and source archive member when the input came from an archive. The allowed
-classifications are `project-static`, `toolchain-runtime-static`,
-`startup-object`, and `system-import`. A `system-import` record is allowed only
-when the imported DLL also appears in that executable's PE import receipt.
-Unknown records, duplicate records, unmatched map inputs, and code-bearing
-records without a pinned source ID must keep the status unverified.
+The command passes only for a canonical build receipt whose map, reproducer,
+verbose log, linkage receipt, and unstripped executable hashes equal the
+program-specific pins in the source lock.
 
 ## Required Runtime Contract
 
@@ -185,5 +213,5 @@ muxer. A missing item fails receipt creation.
 The executable license expression is `GPL-2.0-or-later` because libx264 is
 enabled. The source bundle uses the repository's deterministic source-bundle
 format and includes all seven declared upstream archives plus the exact
-AutoEditor repository tree and build scripts. The link-closure hold above stays
-in force until the actual hosted LLD inputs have been classified.
+AutoEditor repository tree and build scripts. Promotion still requires two
+byte-identical clean hosted builds and the verified link closure above.

@@ -171,6 +171,7 @@ inside_container() {
     install -m 0755 "${program}_g.exe" "/artifact/linkage/${program}_g.exe"
     python3 /repository/packaging/windows_ffmpeg_link_receipt.py create \
       --program "$program" \
+      --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
       --reproduce "/artifact/link-evidence/${program}-reproduce.tar" \
       --lld-map "/artifact/link-evidence/${program}-lld.map" \
       --verbose-log "/artifact/link-evidence/${program}-link.verbose.txt" \
@@ -178,6 +179,7 @@ inside_container() {
       --receipt "/artifact/linkage/$program-linkage-receipt.json"
     python3 /repository/packaging/windows_ffmpeg_link_receipt.py verify \
       --program "$program" \
+      --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
       --reproduce "/artifact/link-evidence/${program}-reproduce.tar" \
       --lld-map "/artifact/link-evidence/${program}-lld.map" \
       --verbose-log "/artifact/link-evidence/${program}-link.verbose.txt" \
@@ -187,7 +189,8 @@ inside_container() {
   python3 /repository/packaging/verify_windows_ffmpeg.py verify-link-evidence \
     --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
     --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
-    --link-evidence-dir /artifact/link-evidence
+    --link-evidence-dir /artifact/link-evidence \
+    --linkage-dir /artifact/linkage
   "$TARGET-strip" --strip-all ffmpeg.exe ffprobe.exe
   install -m 0755 ffmpeg.exe /artifact/ffmpeg.exe
   install -m 0755 ffprobe.exe /artifact/ffprobe.exe
@@ -374,6 +377,7 @@ PY
   for program in ffmpeg ffprobe; do
     python3 "$LINKAGE_VERIFIER" verify \
       --program "$program" \
+      --source-lock "$SOURCE_LOCK" \
       --reproduce "$output_dir/link-evidence/${program}-reproduce.tar" \
       --lld-map "$output_dir/link-evidence/${program}-lld.map" \
       --verbose-log "$output_dir/link-evidence/${program}-link.verbose.txt" \

@@ -124,6 +124,72 @@ def write_link_evidence(root):
     return root
 
 
+def write_verified_linkage(root, evidence_dir, source_value):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    changed_source = copy.deepcopy(source_value)
+    source_catalog = [
+        {
+            "archive": source["archive"],
+            "archive_bytes": source["archive_bytes"],
+            "archive_sha256": source["archive_sha256"],
+            "id": source["id"],
+            "role": source["role"],
+            "version": source["version"],
+        }
+        for source in changed_source["sources"]
+    ]
+    for program, names in verifier.LINK_EVIDENCE_FILES.items():
+        executable_name = f"{program}_g.exe"
+        executable_raw = make_pe()
+        (root / executable_name).write_bytes(executable_raw)
+        evidence_hashes = {
+            field: hashlib.sha256((Path(evidence_dir) / name).read_bytes()).hexdigest()
+            for field, name in names.items()
+        }
+        receipt = {
+            "closure": {
+                "reproducer_input_count": 1,
+                "selected_code_member_count": 1,
+                "selected_directive_member_count": 1,
+                "selected_import_member_count": 1,
+                "status": "verified",
+            },
+            "lld_map": {"sha256": evidence_hashes["lld_map"]},
+            "program": program,
+            "reproducer": {"sha256": evidence_hashes["reproducer"]},
+            "schema": "autoeditor-windows-ffmpeg-linkage/v2",
+            "sources": source_catalog,
+            "unstripped_executable": {
+                "bytes": len(executable_raw),
+                "filename": executable_name,
+                "imports": ["kernel32.dll"],
+                "sha256": hashlib.sha256(executable_raw).hexdigest(),
+            },
+            "verbose_log": {"sha256": evidence_hashes["verbose"]},
+        }
+        receipt_raw = canonical(receipt)
+        (root / f"{program}-linkage-receipt.json").write_bytes(receipt_raw)
+        changed_source["link_closure"]["programs"][program] = {
+            "linkage_receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+            "lld_map_sha256": evidence_hashes["lld_map"],
+            "reproducer_sha256": evidence_hashes["reproducer"],
+            "reproducer_input_count": 1,
+            "selected_code_member_count": 1,
+            "selected_directive_member_count": 1,
+            "selected_import_member_count": 1,
+            "unstripped_executable_sha256": hashlib.sha256(executable_raw).hexdigest(),
+            "verbose_sha256": evidence_hashes["verbose"],
+        }
+    source_raw = canonical(changed_source)
+    source = verifier.LoadedContract(
+        Path("fixture-source-lock.json"),
+        source_raw,
+        hashlib.sha256(source_raw).hexdigest(),
+    )
+    return root, source
+
+
 class WindowsFFmpegContractTests(unittest.TestCase):
     def setUp(self):
         self.source_value = json.loads(SOURCE_LOCK.read_text(encoding="utf-8"))
@@ -162,13 +228,20 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         ffprobe = copy.deepcopy(output)
         ffprobe["filename"] = "ffprobe.exe"
         link_programs = {}
+        closure_programs = self.source_value["link_closure"]["programs"]
         for program, names in verifier.LINK_EVIDENCE_FILES.items():
             reproducer_root = Path(names["reproducer"]).stem
+            closure = closure_programs[program]
             link_programs[program] = {
+                "linkage_receipt": {
+                    "bytes": 1,
+                    "filename": f"{program}-linkage-receipt.json",
+                    "sha256": closure["linkage_receipt_sha256"],
+                },
                 "lld_map": {
                     "bytes": 1,
                     "filename": names["lld_map"],
-                    "sha256": digest,
+                    "sha256": closure["lld_map_sha256"],
                 },
                 "reproducer": {
                     "bytes": 1,
@@ -178,12 +251,17 @@ class WindowsFFmpegContractTests(unittest.TestCase):
                         {"bytes": 1, "path": f"{reproducer_root}/input.o", "sha256": digest},
                         {"bytes": 1, "path": f"{reproducer_root}/response.txt", "sha256": digest},
                     ],
-                    "sha256": digest,
+                    "sha256": closure["reproducer_sha256"],
+                },
+                "unstripped_executable": {
+                    "bytes": 1,
+                    "filename": f"{program}_g.exe",
+                    "sha256": closure["unstripped_executable_sha256"],
                 },
                 "verbose": {
                     "bytes": 1,
                     "filename": names["verbose"],
-                    "sha256": digest,
+                    "sha256": closure["verbose_sha256"],
                 },
             }
         return {
@@ -213,7 +291,7 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             },
             "license_expression": "GPL-2.0-or-later",
             "link_evidence": {
-                "closure_status": "input-classification-unverified",
+                "closure_status": "verified",
                 "programs": link_programs,
             },
             "outputs": {"ffmpeg": output, "ffprobe": ffprobe},
@@ -319,13 +397,25 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             records["llvm-project"]["git_ref"]["object"],
             "e013073558445169e8732e25fa86e9913bfdd24e",
         )
+        closure = self.source_value["link_closure"]
+        self.assertEqual(closure["status"], "verified")
         self.assertEqual(
-            self.source_value["link_closure"],
-            {
-                "evidence": ["lld-map", "lld-reproducer", "lld-verbose"],
-                "status": "input-classification-unverified",
-            },
+            closure["evidence_artifact"],
+            verifier.EXPECTED_LINK_EVIDENCE_ARTIFACT,
         )
+        self.assertEqual(
+            closure["evidence"],
+            ["lld-map", "lld-reproducer", "lld-verbose"],
+        )
+        self.assertEqual(closure["non_linking_source_ids"], ["llvm-mingw", "nasm"])
+        self.assertEqual(set(closure["programs"]), {"ffmpeg", "ffprobe"})
+        for program in ("ffmpeg", "ffprobe"):
+            record = closure["programs"][program]
+            self.assertRegex(record["linkage_receipt_sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(record["reproducer_input_count"], 30)
+            self.assertGreater(record["selected_code_member_count"], 2400)
+            self.assertGreater(record["selected_directive_member_count"], 0)
+            self.assertGreater(record["selected_import_member_count"], 200)
 
     def test_bundle_lock_translation_is_accepted_by_source_bundle_contract(self):
         source = verifier.load_source_lock(SOURCE_LOCK)
@@ -484,14 +574,34 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "moving reference"):
                 verifier.load_source_lock(path)
 
-    def test_source_lock_cannot_claim_verified_link_closure_without_classification(self):
+    def test_source_lock_verified_closure_requires_pinned_classification(self):
         with tempfile.TemporaryDirectory() as td:
             changed = copy.deepcopy(self.source_value)
-            changed["link_closure"]["status"] = "verified"
-            path = self._write(td, "verified.json", changed)
+            changed["link_closure"]["status"] = "input-classification-unverified"
+            path = self._write(td, "unverified.json", changed)
             with self.assertRaisesRegex(
                 verifier.WindowsFFmpegError,
-                "must remain unverified",
+                "verified link closure identity drifted",
+            ):
+                verifier.load_source_lock(path)
+
+            changed = copy.deepcopy(self.source_value)
+            del changed["link_closure"]["programs"]["ffmpeg"][
+                "linkage_receipt_sha256"
+            ]
+            path = self._write(td, "missing-classification.json", changed)
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "missing linkage_receipt_sha256",
+            ):
+                verifier.load_source_lock(path)
+
+            changed = copy.deepcopy(self.source_value)
+            changed["link_closure"]["evidence_artifact"]["artifact_id"] += 1
+            path = self._write(td, "wrong-evidence-artifact.json", changed)
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "verified link closure identity drifted",
             ):
                 verifier.load_source_lock(path)
 
@@ -592,15 +702,17 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             ):
                 verifier._verify_toolchain_source_pins(loaded, cache)
 
-    def test_link_evidence_records_every_reproducer_member_and_stays_unverified(self):
+    def test_link_evidence_binds_verified_classification_and_every_reproducer_member(self):
         capabilities = verifier.load_capabilities(CAPABILITIES)
         with tempfile.TemporaryDirectory() as td:
             evidence_dir = write_link_evidence(Path(td) / "link-evidence")
-            receipt = verifier.link_evidence_receipt(evidence_dir, capabilities)
-            self.assertEqual(
-                receipt["closure_status"],
-                "input-classification-unverified",
+            linkage_dir, source = write_verified_linkage(
+                Path(td) / "linkage", evidence_dir, self.source_value
             )
+            receipt = verifier.link_evidence_receipt(
+                evidence_dir, linkage_dir, source, capabilities
+            )
+            self.assertEqual(receipt["closure_status"], "verified")
             for program in ("ffmpeg", "ffprobe"):
                 members = receipt["programs"][program]["reproducer"]["members"]
                 self.assertEqual(len(members), 3)
@@ -608,17 +720,28 @@ class WindowsFFmpegContractTests(unittest.TestCase):
                     [member["path"] for member in members],
                     sorted(member["path"] for member in members),
                 )
+                self.assertEqual(
+                    receipt["programs"][program]["linkage_receipt"]["sha256"],
+                    source.parsed()["link_closure"]["programs"][program][
+                        "linkage_receipt_sha256"
+                    ],
+                )
 
     def test_link_evidence_rejects_extra_files_and_recursive_reproducer(self):
         capabilities = verifier.load_capabilities(CAPABILITIES)
         with tempfile.TemporaryDirectory() as td:
             evidence_dir = write_link_evidence(Path(td) / "link-evidence")
+            linkage_dir, source = write_verified_linkage(
+                Path(td) / "linkage", evidence_dir, self.source_value
+            )
             (evidence_dir / "unexpected.txt").write_text("extra\n", encoding="utf-8")
             with self.assertRaisesRegex(
                 verifier.WindowsFFmpegError,
                 "evidence set drifted",
             ):
-                verifier.link_evidence_receipt(evidence_dir, capabilities)
+                verifier.link_evidence_receipt(
+                    evidence_dir, linkage_dir, source, capabilities
+                )
             (evidence_dir / "unexpected.txt").unlink()
 
             program = "ffmpeg"
@@ -641,7 +764,44 @@ class WindowsFFmpegContractTests(unittest.TestCase):
                 verifier.WindowsFFmpegError,
                 "recursively records reproduce",
             ):
-                verifier.link_evidence_receipt(evidence_dir, capabilities)
+                verifier.link_evidence_receipt(
+                    evidence_dir, linkage_dir, source, capabilities
+                )
+
+    def test_link_evidence_rejects_tampered_classification_or_unstripped_executable(self):
+        capabilities = verifier.load_capabilities(CAPABILITIES)
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = write_link_evidence(Path(td) / "link-evidence")
+            linkage_dir, source = write_verified_linkage(
+                Path(td) / "linkage", evidence_dir, self.source_value
+            )
+            receipt_path = linkage_dir / "ffmpeg-linkage-receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["closure"]["selected_code_member_count"] += 1
+            receipt_path.write_bytes(canonical(receipt))
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "differs from the pinned closure",
+            ):
+                verifier.link_evidence_receipt(
+                    evidence_dir, linkage_dir, source, capabilities
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = write_link_evidence(Path(td) / "link-evidence")
+            linkage_dir, source = write_verified_linkage(
+                Path(td) / "linkage", evidence_dir, self.source_value
+            )
+            changed = bytearray((linkage_dir / "ffprobe_g.exe").read_bytes())
+            changed[-1] ^= 1
+            (linkage_dir / "ffprobe_g.exe").write_bytes(changed)
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "differs from the classified closure",
+            ):
+                verifier.link_evidence_receipt(
+                    evidence_dir, linkage_dir, source, capabilities
+                )
 
     def test_runtime_notice_is_byte_identical_to_nested_source_archive(self):
         notice_raw = b"pinned upstream license text\n"
@@ -858,14 +1018,14 @@ Exiting with exit code 0
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "canonical sorted JSON"):
                 verifier.load_receipt(path)
 
-    def test_receipt_and_promotion_gate_fail_closed_on_unverified_link_inputs(self):
+    def test_receipt_and_promotion_gate_require_verified_pinned_link_inputs(self):
         receipt = self._receipt()
         verifier.validate_receipt_shape(receipt)
         changed = copy.deepcopy(receipt)
-        changed["link_evidence"]["closure_status"] = "verified"
+        changed["link_evidence"]["closure_status"] = "input-classification-unverified"
         with self.assertRaisesRegex(
             verifier.WindowsFFmpegError,
-            "may not claim verified closure",
+            "must bind the verified classified closure",
         ):
             verifier.validate_receipt_shape(changed)
         with tempfile.TemporaryDirectory() as td:
@@ -882,8 +1042,28 @@ Exiting with exit code 0
                 text=True,
                 check=False,
             )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("verified for promotion", result.stdout)
+
+            changed = copy.deepcopy(receipt)
+            changed["link_evidence"]["programs"]["ffmpeg"]["linkage_receipt"][
+                "sha256"
+            ] = "f" * 64
+            path.write_bytes(canonical(changed))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "assert-promotable",
+                    "--receipt",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("actual LLD link inputs remain unclassified", result.stderr)
+            self.assertIn("differs from the pinned closure", result.stderr)
 
     def test_dual_build_comparison_requires_byte_identical_canonical_receipts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1054,23 +1234,25 @@ print(json.dumps({"streams": [
         workflow = (
             ROOT / ".github" / "workflows" / "windows-ffmpeg.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("windows-ffmpeg-evidence-${{ github.sha }}", workflow)
-        self.assertNotIn("windows-ffmpeg-accepted-", workflow)
+        self.assertIn("windows-ffmpeg-accepted-${{ github.sha }}", workflow)
+        self.assertNotIn("windows-ffmpeg-evidence-${{ github.sha }}", workflow)
         self.assertIn("compare-receipts", workflow)
+        self.assertIn("assert-promotable", workflow)
         self.assertEqual(workflow.count("--license-dir"), 2)
         self.assertEqual(workflow.count("--link-evidence-dir"), 2)
+        self.assertEqual(workflow.count("--linkage-dir"), 2)
         self.assertEqual(workflow.count("overwrite: true"), 3)
         self.assertIn("workflow_call:", workflow)
         self.assertNotIn("push:\n    branches:", workflow)
-        self.assertIn("artifact_id: ${{ steps.evidence.outputs.artifact-id }}", workflow)
+        self.assertIn("artifact_id: ${{ steps.accepted.outputs.artifact-id }}", workflow)
         self.assertIn(
-            "artifact_digest: ${{ steps.evidence.outputs.artifact-digest }}",
+            "artifact_digest: ${{ steps.accepted.outputs.artifact-digest }}",
             workflow,
         )
-        self.assertIn("id: evidence", workflow)
+        self.assertIn("id: accepted", workflow)
         self.assertLess(
             workflow.index("compare-receipts"),
-            workflow.index("Upload reproducible unverified evidence candidate"),
+            workflow.index("Upload reproducible accepted Windows FFmpeg candidate"),
         )
 
     def test_nasm_source_contract_binds_timestamp_only_patch(self):
