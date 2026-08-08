@@ -1,0 +1,32 @@
+{
+  "approval": {
+    "approved_on": "REPLACE_WITH_APPROVAL_DATE",
+    "decision_record": "docs/REPLACE_WITH_DECISION_RECORD.md",
+    "decision_record_sha256": "pending",
+    "owner": "REPLACE_WITH_RELEASE_OWNER",
+    "reviewer": "REPLACE_WITH_POLICY_REVIEWER"
+  },
+  "distribution": {
+    "availability_rule": "while-corresponding-installer-is-offered",
+    "contact": "source-contact@example.invalid",
+    "installer_access_mode": "public",
+    "installer_route_template": "https://downloads.example.invalid/helper/{tag}/{commit}/{platform}",
+    "method": "internet-download-equivalent-access",
+    "source_access_mode": "public",
+    "source_route_template": "https://downloads.example.invalid/helper/{tag}/{commit}/{platform}/source/{sha256}"
+  },
+  "release_channel": "helper",
+  "schema": "autoeditor-corresponding-source-policy/v1",
+  "scope": {
+    "autoeditor_repository": "pending",
+    "build_scripts_complete": false,
+    "license_texts_complete": false,
+    "native_lineages_complete": false,
+    "platforms": [
+      "mac-arm64",
+      "mac-x64",
+      "windows-x64"
+    ]
+  },
+  "status": "pending"
+}
