@@ -299,7 +299,35 @@ class MacFFmpegReceiptTests(unittest.TestCase):
         }
 
     @staticmethod
-    def _generate(fixture: dict[str, object], arch: str = "arm64"):
+    def _source_whole_sha256(
+        fixture: dict[str, object],
+        source: Path,
+        arch: str,
+    ) -> str:
+        dependencies = tuple(
+            Path(item).resolve(strict=True)
+            for item in fixture["dependencies"](source)
+        )
+        executable_directories = tuple(sorted({
+            Path(fixture["ffmpeg"]).resolve(strict=True).parent,
+            Path(fixture["ffprobe"]).resolve(strict=True).parent,
+        }))
+        return receipt._macho_whole_sha256_path(
+            source,
+            "fixture SVT source",
+            arch,
+            "dylib",
+            final_path=receipt.SVT_AV1_FINAL_PATH,
+            source_dependencies=dependencies,
+            executable_directories=executable_directories,
+        )
+
+    @staticmethod
+    def _generate(
+        fixture: dict[str, object],
+        arch: str = "arm64",
+        fixture_member=None,
+    ):
         records, _ = receipt.read_formula_inventory(
             fixture["inventory"], arch
         )
@@ -308,14 +336,20 @@ class MacFFmpegReceiptTests(unittest.TestCase):
         )
         source = fixture["sources"][receipt.SVT_AV1_FINAL_PATH]
         source_raw = source.read_bytes()
-        fixture_member = receipt.BottleMemberRecord(
-            bottle_sha256=svt_formula.bottle_sha256,
-            member_path=(
-                "svt-av1/4.2.0/lib/libSvtAv1Enc.4.2.0.dylib"
-            ),
-            byte_count=len(source_raw),
-            sha256=hashlib.sha256(source_raw).hexdigest(),
-        )
+        if fixture_member is None:
+            fixture_member = receipt.BottleMemberRecord(
+                bottle_sha256=svt_formula.bottle_sha256,
+                member_path=(
+                    "svt-av1/4.2.0/lib/libSvtAv1Enc.4.2.0.dylib"
+                ),
+                byte_count=len(source_raw),
+                sha256=hashlib.sha256(source_raw).hexdigest(),
+                macho_whole_sha256=(
+                    MacFFmpegReceiptTests._source_whole_sha256(
+                        fixture, source, arch
+                    )
+                ),
+            )
         members = dict(receipt.PINNED_BOTTLE_MEMBERS)
         members[arch] = {receipt.SVT_AV1_FINAL_PATH: fixture_member}
         with mock.patch.object(receipt, "PINNED_BOTTLE_MEMBERS", members):
@@ -335,11 +369,13 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                 "2e6f7cbf3ff42f59ca251f3c84d4ad5a3ecfd518340237a6f70a54a428de1676",
                 3_090_544,
                 "72407e386bf6582771dd73ff51c6318201b7ad27a755d82efc64ea35db161d64",
+                "6cc66a9f91ccb6847811499b4e1678a600e9899dc6f52b36169935e4f2fae8d6",
             ),
             "x64": (
                 "413ca9c3ca785dcebb9baae17b4b86a70f1c86e5881fa8af87f55ac7e5d8a5eb",
                 5_450_640,
                 "b10c2dfc281d442691befb528090747f92a25ac12189b6689782cc259abdd4ad",
+                "f6df7162723c172eeccd73be4d9e69069028b029bb756d2b5ef810ca737941c9",
             ),
         }
         self.assertEqual(
@@ -350,7 +386,12 @@ class MacFFmpegReceiptTests(unittest.TestCase):
             "libSvtAv1Enc.4.1.0.dylib",
             receipt.LIBRARY_SOURCE_FORMULAE,
         )
-        for arch, (bottle_sha, byte_count, member_sha) in expected.items():
+        for arch, (
+            bottle_sha,
+            byte_count,
+            member_sha,
+            whole_sha,
+        ) in expected.items():
             records, _ = receipt.read_formula_inventory(
                 ROOT / "packaging" / f"macos-ffmpeg-formulae-{arch}.txt",
                 arch,
@@ -370,22 +411,98 @@ class MacFFmpegReceiptTests(unittest.TestCase):
             )
             self.assertEqual(member.byte_count, byte_count)
             self.assertEqual(member.sha256, member_sha)
+            self.assertEqual(member.macho_whole_sha256, whole_sha)
 
-    def test_locally_substituted_svt_member_fails_authenticated_bottle_gate(self):
+    def test_relocated_and_resigned_svt_matches_normalized_bottle_identity(self):
         with tempfile.TemporaryDirectory() as td:
             fixture = self._fixture(Path(td))
+            source = fixture["sources"][receipt.SVT_AV1_FINAL_PATH]
+            raw_member = Path(td) / "raw" / source.name
+            raw_member.parent.mkdir()
+            shutil.copy2(source, raw_member)
+            self._replace_loader_path(
+                raw_member,
+                str(source),
+                f"@rpath/{source.name}",
+            )
+            raw = raw_member.read_bytes()
+            self.assertEqual(raw.count(b"source-signature-"), 1)
+            raw_member.write_bytes(
+                raw.replace(b"source-signature-", b"bottle-signature-", 1)
+            )
+            source_raw = source.read_bytes()
+            member_raw = raw_member.read_bytes()
+            source_whole = self._source_whole_sha256(
+                fixture, source, "arm64"
+            )
+            member_whole = self._source_whole_sha256(
+                fixture, raw_member, "arm64"
+            )
+            self.assertEqual(len(source_raw), len(member_raw))
+            self.assertNotEqual(
+                hashlib.sha256(source_raw).hexdigest(),
+                hashlib.sha256(member_raw).hexdigest(),
+            )
+            self.assertEqual(source_whole, member_whole)
+
+            records, _ = receipt.read_formula_inventory(
+                fixture["inventory"], "arm64"
+            )
+            svt_formula = next(
+                record for record in records if record.formula == "svt-av1"
+            )
+            member = receipt.BottleMemberRecord(
+                bottle_sha256=svt_formula.bottle_sha256,
+                member_path=(
+                    "svt-av1/4.2.0/lib/libSvtAv1Enc.4.2.0.dylib"
+                ),
+                byte_count=len(member_raw),
+                sha256=hashlib.sha256(member_raw).hexdigest(),
+                macho_whole_sha256=member_whole,
+            )
+            self._generate(fixture, fixture_member=member)
+
+    def test_hostile_svt_substitution_fails_normalized_bottle_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][receipt.SVT_AV1_FINAL_PATH]
+            authenticated_whole = self._source_whole_sha256(
+                fixture, source, "arm64"
+            )
+            substituted = bytearray(source.read_bytes())
+            marker = b"unbound-file-bytes:" + receipt.SVT_AV1_FINAL_PATH.encode(
+                "utf-8"
+            )
+            self.assertEqual(substituted.count(marker), 1)
+            substituted[substituted.index(marker)] ^= 1
+            source.write_bytes(substituted)
+            substituted_whole = self._source_whole_sha256(
+                fixture, source, "arm64"
+            )
+            self.assertNotEqual(authenticated_whole, substituted_whole)
+
+            records, _ = receipt.read_formula_inventory(
+                fixture["inventory"], "arm64"
+            )
+            svt_formula = next(
+                record for record in records if record.formula == "svt-av1"
+            )
+            hostile_member = receipt.BottleMemberRecord(
+                bottle_sha256=svt_formula.bottle_sha256,
+                member_path=(
+                    "svt-av1/4.2.0/lib/libSvtAv1Enc.4.2.0.dylib"
+                ),
+                byte_count=len(substituted),
+                sha256=hashlib.sha256(substituted).hexdigest(),
+                macho_whole_sha256=authenticated_whole,
+            )
             with self.assertRaisesRegex(
                 receipt.MacFFmpegReceiptError,
                 "authenticated bottle member",
             ):
-                receipt.generate_receipt(
-                    fixture["app"],
-                    fixture["ffmpeg"],
-                    fixture["ffprobe"],
-                    fixture["cellar"],
-                    fixture["inventory"],
-                    "arm64",
-                    dependency_reader=fixture["dependencies"],
+                self._generate(
+                    fixture,
+                    fixture_member=hostile_member,
                 )
 
     def test_generate_validate_claims_and_verify_exact_final_app(self):

@@ -719,7 +719,8 @@ class _WindowsDirectoryOperations:
             source_identity = self._handle_identity(source_handle)
             target_bytes = target.encode("utf-16-le")
             offset = self.FileRenameInfoEx.FileName.offset
-            size = offset + len(target_bytes)
+            # Windows requires the full structure plus the variable name bytes.
+            size = self.ctypes.sizeof(self.FileRenameInfoEx) + len(target_bytes)
             raw = self.ctypes.create_string_buffer(size)
             information = self.FileRenameInfoEx.from_buffer(raw)
             information.Flags = 0

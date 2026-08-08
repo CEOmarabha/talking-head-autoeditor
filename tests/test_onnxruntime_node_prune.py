@@ -1,4 +1,5 @@
 import copy
+import ctypes
 import hashlib
 import importlib.util
 import json
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -298,6 +300,56 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
                     mock.patch.object(PRUNER.os, "name", "posix"):
                 with self.assertRaisesRegex(PRUNER.GateError, "unavailable"):
                     PRUNER._DirectoryRenamer(package_parent, transaction)
+
+    def test_windows_rename_buffer_includes_required_structure_padding(self):
+        class FileRenameInfoEx(ctypes.Structure):
+            _fields_ = [
+                ("Flags", ctypes.c_uint32),
+                ("RootDirectory", ctypes.c_void_p),
+                ("FileNameLength", ctypes.c_uint32),
+                ("FileName", ctypes.c_uint16 * 1),
+            ]
+
+        target = "published-package"
+        target_bytes = target.encode("utf-16-le")
+        required_size = ctypes.sizeof(FileRenameInfoEx) + len(target_bytes)
+
+        class Kernel32:
+            def __init__(self):
+                self.rename_size = None
+
+            def SetFileInformationByHandle(
+                self, _handle, _information_class, _information, size
+            ):
+                self.rename_size = size
+                return size >= required_size
+
+            def CloseHandle(self, _handle):
+                return True
+
+        operations = PRUNER._WindowsDirectoryOperations.__new__(
+            PRUNER._WindowsDirectoryOperations
+        )
+        operations.ctypes = ctypes
+        operations.wintypes = SimpleNamespace(HANDLE=ctypes.c_void_p)
+        operations.kernel32 = Kernel32()
+        operations.FileRenameInfoEx = FileRenameInfoEx
+        operations._open_relative = mock.Mock(side_effect=(101, 202))
+        operations._handle_identity = mock.Mock(return_value=(7, 11))
+        operations._last_error = mock.Mock(
+            return_value=PRUNER.GateError("Windows error 87")
+        )
+
+        operations._rename(1, "target-package", 2, target)
+
+        self.assertEqual(FileRenameInfoEx.FileName.offset, 20)
+        self.assertEqual(ctypes.sizeof(FileRenameInfoEx), 24)
+        self.assertEqual(operations.kernel32.rename_size, required_size)
+        self.assertGreater(
+            operations.kernel32.rename_size,
+            FileRenameInfoEx.FileName.offset + len(target_bytes),
+        )
+        operations._last_error.assert_not_called()
 
     def test_late_replacement_drift_leaves_published_package_byte_identical(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -178,6 +178,7 @@ class BottleMemberRecord:
     member_path: str
     byte_count: int
     sha256: str
+    macho_whole_sha256: str
 
 
 @dataclass(frozen=True)
@@ -249,9 +250,10 @@ class FileClaim:
 
 
 # These member observations were taken from the exact bottle archives whose
-# SHA256 values are pinned in macos-ffmpeg-formulae-{arch}.txt.  They prevent a
-# formula-version update from retaining the prior bottle's versioned dylib
-# name or accepting locally substituted Cellar bytes.
+# SHA256 values are pinned in macos-ffmpeg-formulae-{arch}.txt. Homebrew may
+# relocate and re-sign the poured Cellar file, so its raw member identity stays
+# recorded while the poured file is bound to the audited normalized whole
+# Mach-O identity.
 PINNED_BOTTLE_MEMBERS: Mapping[str, Mapping[str, BottleMemberRecord]] = (
     MappingProxyType({
         "arm64": MappingProxyType({
@@ -264,6 +266,9 @@ PINNED_BOTTLE_MEMBERS: Mapping[str, Mapping[str, BottleMemberRecord]] = (
                 sha256=(
                     "72407e386bf6582771dd73ff51c6318201b7ad27a755d82efc64ea35db161d64"
                 ),
+                macho_whole_sha256=(
+                    "6cc66a9f91ccb6847811499b4e1678a600e9899dc6f52b36169935e4f2fae8d6"
+                ),
             ),
         }),
         "x64": MappingProxyType({
@@ -275,6 +280,9 @@ PINNED_BOTTLE_MEMBERS: Mapping[str, Mapping[str, BottleMemberRecord]] = (
                 byte_count=5_450_640,
                 sha256=(
                     "b10c2dfc281d442691befb528090747f92a25ac12189b6689782cc259abdd4ad"
+                ),
+                macho_whole_sha256=(
+                    "f6df7162723c172eeccd73be4d9e69069028b029bb756d2b5ef810ca737941c9"
                 ),
             ),
         }),
@@ -2274,7 +2282,7 @@ def discover_source_graph(
             if (
                 cellar_path != bottle_member.member_path
                 or byte_count != bottle_member.byte_count
-                or digest != bottle_member.sha256
+                or whole_digest != bottle_member.macho_whole_sha256
             ):
                 raise MacFFmpegReceiptError(
                     "Homebrew source differs from its authenticated bottle "
