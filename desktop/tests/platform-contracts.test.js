@@ -176,7 +176,7 @@ assert.ok(ffmpegFormulaVerifier.includes('outside Homebrew Cellar'));
 for (const inventory of ffmpegFormulaInventories) {
   assert.ok(inventory.includes('ffmpeg 8.1.2_1'));
   assert.ok(inventory.includes('x264 r3222'));
-  const rows = inventory.trim().split('\n');
+  const rows = inventory.trim().split(/\r?\n/);
   assert.strictEqual(rows.length, 11);
   assert.ok(rows.every((row) =>
     /^[^ ]+ [^ ]+ [^ ]+ \d+ [0-9a-f]{64}$/.test(row)));
@@ -186,7 +186,7 @@ assert.ok(ffmpegFormulaInventories[1].includes(' sonoma '));
 assert.ok(ffmpegFormulaInventories[0].includes(
   'openssl@3 3.6.3 arm64_sequoia 1'));
 assert.ok(ffmpegFormulaInventories[1].includes(
-  'openssl@3 3.6.3 sonoma 1'));
+  'openssl@3 3.6.3 sequoia 1'));
 assert.ok(thirdPartyNotices.includes('Before any third-party handoff'));
 assert.ok(!thirdPartyNotices.includes('private acceptance testers'));
 assert.ok(helperWorkflow.includes('r2-release-storage.js upload'));
