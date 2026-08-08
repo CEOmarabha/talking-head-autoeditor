@@ -2064,7 +2064,10 @@ class SafetyContracts(unittest.TestCase):
         )
         raw_time, best, second = locator(target * 0.4 + 0.2)
 
-        self.assertEqual(raw_time, 2.0)
+        # Equal peaks may resolve to either duplicate depending on the FFT and
+        # NumPy implementation. The contract is that both remain visible as
+        # ambiguous, not which tied peak wins argmax.
+        self.assertIn(raw_time, (2.0, 5.0))
         self.assertGreater(best, 0.999)
         self.assertGreater(second, 0.999)
         self.assertLess(best - second, 0.08)
