@@ -175,18 +175,68 @@ jobs:
         shell: bash
         run: |
           brew install ffmpeg
-          # Accept Homebrew bottle revisions (8.1.2, 8.1.2_1, 8.1.2_2...): the
-          # _N suffix is a Homebrew rebuild of the same upstream 8.1.2 source,
-          # not a version change. Reject anything else.
-          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2(_[0-9]+)?([[:space:]]|$)' || {
-            echo "Homebrew FFmpeg moved from audited version 8.1.2. Review and repin before releasing." >&2
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          brew --version | head -n 1 | grep -Fx 'Homebrew 6.0.15'
+          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2_1([[:space:]]|$)' || {
+            echo "Homebrew FFmpeg moved from audited formula revision 8.1.2_1. Review and repin before releasing." >&2
             exit 1
           }
+          STAGE=desktop/helper-staging
+          EXPECTED="packaging/macos-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" \
+            --output "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           python packaging/bundle_macos_ffmpeg.py \
             --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
             --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
             --bin-dir desktop/helper-staging/bin \
             --lib-dir desktop/helper-staging/lib
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$BOTTLE_TAG" && -n "$BOTTLE_REBUILD" ]]
+            [[ -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            PREFIX=$(realpath "$(brew --prefix "$FORMULA")")
+            [[ "$(basename "$PREFIX")" == "$VERSION" ]] || {
+              echo "Installed $FORMULA prefix does not match $VERSION" >&2
+              exit 1
+            }
+            DEST="$STAGE/licenses/ffmpeg-components/${FORMULA/@/_}-$VERSION"
+            mkdir -p "$DEST"
+            test -f "$PREFIX/INSTALL_RECEIPT.json"
+            cp "$PREFIX/INSTALL_RECEIPT.json" "$DEST/"
+            FORMULA_FILE=$(find "$PREFIX/.brew" -maxdepth 1 -type f \
+              -name '*.rb' -print -quit)
+            test -n "$FORMULA_FILE"
+            cp "$FORMULA_FILE" "$DEST/"
+            FOUND_LICENSE=0
+            while IFS= read -r LICENSE_FILE; do
+              cp "$LICENSE_FILE" "$DEST/"
+              FOUND_LICENSE=1
+            done < <(find "$PREFIX" -maxdepth 2 -type f \
+              \( -iname 'COPYING*' -o -iname 'LICENSE*' \
+                 -o -iname 'COPYRIGHT*' -o -iname 'NOTICE*' \) \
+              -print | LC_ALL=C sort)
+            [[ "$FOUND_LICENSE" == 1 ]] || {
+              echo "No license text found for bundled formula $FORMULA" >&2
+              exit 1
+            }
+          done < "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           if otool -L desktop/helper-staging/bin/ffmpeg \
               desktop/helper-staging/bin/ffprobe desktop/helper-staging/lib/*.dylib | \
               grep -E '/opt/homebrew|/usr/local/(Cellar|opt)'; then
@@ -214,8 +264,10 @@ jobs:
           Expand-Archive ffmpeg.zip -DestinationPath fftmp
           Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/helper-staging/bin/"
           Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/helper-staging/bin/"
+          Copy-Item "fftmp/*/LICENSE.txt" `
+            "desktop/helper-staging/licenses/FFMPEG-GPL-3.0.txt"
           Set-Content "desktop/helper-staging/licenses/FFMPEG_BUILD.txt" `
-            "asset=$asset`nsha256=$actual`nsource=$($metadata.browser_download_url)"
+            "asset=$asset`nsha256=$actual`nbytes=$($metadata.size)`nrelease_id=$($release.id)`npublished_at=$($release.published_at)`nsource=$($metadata.browser_download_url)"
 
       - name: Verify required FFmpeg capabilities
         shell: bash
@@ -224,6 +276,7 @@ jobs:
           FFPROBE=desktop/helper-staging/bin/ffprobe
           [[ "${{ matrix.target_os }}" == "windows" ]] && FFMPEG="${FFMPEG}.exe" && FFPROBE="${FFPROBE}.exe"
           "$FFMPEG" -version | tee desktop/helper-staging/licenses/FFMPEG_VERSION.txt
+          "$FFMPEG" -buildconf > desktop/helper-staging/licenses/FFMPEG_BUILDCONF.txt 2>&1
           "$FFPROBE" -version >/dev/null
           "$FFMPEG" -hide_banner -encoders 2>&1 | grep -q libx264
           "$FFMPEG" -hide_banner -encoders 2>&1 | grep -Eiq '(^| )aac( |$)'
@@ -617,6 +670,7 @@ jobs:
         env:
           WIN_CERT: ${{ secrets.WIN_CSC_LINK }}
           WIN_CERT_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
           AZURE_TENANT_ID_VALUE: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID_VALUE: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET_VALUE: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -624,17 +678,20 @@ jobs:
           AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
           AZURE_PROFILE: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
           AZURE_ACCOUNT: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          AZURE_IDENTITY_EKU: ${{ secrets.WIN_AZURE_SUBSCRIBER_IDENTITY_EKU }}
         run: |
           if test -n "$AZURE_TENANT_ID_VALUE" && \
               test -n "$AZURE_CLIENT_ID_VALUE" && \
               test -n "$AZURE_CLIENT_SECRET_VALUE" && \
               test -n "$AZURE_PUBLISHER" && test -n "$AZURE_ENDPOINT" && \
-              test -n "$AZURE_PROFILE" && test -n "$AZURE_ACCOUNT"; then
+              test -n "$AZURE_PROFILE" && test -n "$AZURE_ACCOUNT" && \
+              test -n "$AZURE_IDENTITY_EKU"; then
             echo "kind=azure" >> "$GITHUB_OUTPUT"
-          elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD"; then
+          elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD" && \
+              test -n "$WIN_CERT_THUMBPRINT"; then
             echo "kind=pfx" >> "$GITHUB_OUTPUT"
           else
-            echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
+            echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD, and WIN_PFX_CERT_THUMBPRINT" >&2
             exit 1
           fi
 
@@ -674,14 +731,72 @@ jobs:
 
       - name: Verify installed Windows signatures and exact runtime
         shell: pwsh
+        env:
+          WINDOWS_SIGNER_KIND: ${{ steps.signer.outputs.kind }}
+          WIN_PFX_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
+          WIN_AZURE_SUBSCRIBER_IDENTITY_EKU: ${{ secrets.WIN_AZURE_SUBSCRIBER_IDENTITY_EKU }}
         run: |
+          function Normalize-Thumbprint([string]$value) {
+            return ($value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+          }
+          function Get-EnhancedKeyUsageValues($certificate) {
+            $extension = $certificate.Extensions | Where-Object {
+              $_.Oid.Value -eq "2.5.29.37"
+            } | Select-Object -First 1
+            if (-not $extension) { return @() }
+            $decoded = New-Object `
+              System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension
+            $decoded.CopyFrom($extension)
+            return @($decoded.EnhancedKeyUsages | ForEach-Object { $_.Value })
+          }
+          function Assert-AuthenticodeSigner(
+              [string]$file,
+              [string]$expectedThumbprint,
+              [string]$expectedIdentityEku) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") {
+              throw "$file signature is $($signature.Status)"
+            }
+            if (-not $signature.SignerCertificate) {
+              throw "$file has no Authenticode signer certificate"
+            }
+            $actual = Normalize-Thumbprint $signature.SignerCertificate.Thumbprint
+            if (-not $actual) { throw "$file signer thumbprint is empty" }
+            if ($expectedThumbprint -and $actual -ne (Normalize-Thumbprint $expectedThumbprint)) {
+              throw "$file signer thumbprint does not match the approved certificate"
+            }
+            $ekus = @(Get-EnhancedKeyUsageValues $signature.SignerCertificate)
+            if ($ekus -notcontains "1.3.6.1.5.5.7.3.3") {
+              throw "$file signer certificate lacks the code-signing EKU"
+            }
+            if ($expectedIdentityEku -and $ekus -notcontains $expectedIdentityEku) {
+              throw "$file signer certificate lacks the approved Artifact Signing subscriber identity EKU"
+            }
+            return $actual
+          }
           $installers = @(Get-ChildItem "$env:HELPER_DIST/*.exe" -File)
           if ($installers.Count -ne 1) {
             throw "Expected exactly one signed Windows installer, found $($installers.Count)"
           }
           $installer = $installers[0]
-          $signature = Get-AuthenticodeSignature $installer.FullName
-          if ($signature.Status -ne "Valid") { throw "Installer signature is $($signature.Status)" }
+          $approvedThumbprint = ""
+          $approvedIdentityEku = ""
+          if ($env:WINDOWS_SIGNER_KIND -eq "pfx") {
+            $approvedThumbprint = Normalize-Thumbprint $env:WIN_PFX_CERT_THUMBPRINT
+            if (-not $approvedThumbprint) {
+              throw "WIN_PFX_CERT_THUMBPRINT is required for PFX signing"
+            }
+          } elseif ($env:WINDOWS_SIGNER_KIND -eq "azure") {
+            $approvedIdentityEku = $env:WIN_AZURE_SUBSCRIBER_IDENTITY_EKU.Trim()
+            if ($approvedIdentityEku -notmatch '^1\.3\.6\.1\.4\.1\.311\.97\.[0-9.]+$' `
+                -or $approvedIdentityEku -eq "1.3.6.1.4.1.311.97.1.0") {
+              throw "WIN_AZURE_SUBSCRIBER_IDENTITY_EKU is not a durable Artifact Signing identity OID"
+            }
+          } else {
+            throw "Unknown protected Windows signer kind: $env:WINDOWS_SIGNER_KIND"
+          }
+          $installerThumbprint = Assert-AuthenticodeSigner `
+            $installer.FullName $approvedThumbprint $approvedIdentityEku
           $install = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
@@ -689,8 +804,10 @@ jobs:
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
           foreach ($file in @($app, $uninstaller)) {
             if (-not (Test-Path $file)) { throw "Signed installed file is missing: $file" }
-            $signature = Get-AuthenticodeSignature $file
-            if ($signature.Status -ne "Valid") { throw "$file signature is $($signature.Status)" }
+            $fileThumbprint = $installerThumbprint
+            if ($env:WINDOWS_SIGNER_KIND -eq "azure") { $fileThumbprint = "" }
+            [void](Assert-AuthenticodeSigner `
+              $file $fileThumbprint $approvedIdentityEku)
           }
           python packaging/verify_helper_manifest.py `
             --resources (Join-Path $root "resources") `

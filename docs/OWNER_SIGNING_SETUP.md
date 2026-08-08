@@ -61,7 +61,26 @@ Check the current price and identity-eligibility list before opening the account
 6. After validation succeeds, open **Certificate profiles**, choose **Create**,
    select **Public Trust**, and create the profile. Record its exact name.
 7. Copy the certificate subject or publisher name exactly as Azure displays it.
-   Capitalization, punctuation, and spacing must match.
+   Capitalization, punctuation, and spacing must match. Before adding GitHub
+   secrets, open PowerShell on a trusted owner computer and retrieve the durable
+   customer EKU directly from the approved account and profile:
+
+   ```powershell
+   Install-Module Az.ArtifactSigning -Scope CurrentUser
+   Connect-AzAccount
+   $customerEku = Get-AzArtifactSigningCustomerEku `
+     -AccountName '<artifact-signing-account>' `
+     -ProfileName '<certificate-profile>' `
+     -EndpointUrl '<artifact-signing-endpoint>'
+   $customerEku
+   ```
+
+   The command is documented by
+   [Microsoft](https://learn.microsoft.com/en-us/powershell/module/az.artifactsigning/get-azartifactsigningcustomereku).
+   Record the returned subscriber identity OID that begins
+   `1.3.6.1.4.1.311.97.`. Stop if the command returns nothing or a different
+   OID family. Do not use the daily leaf certificate thumbprint. Azure renews
+   that certificate every day.
 8. In Microsoft Entra ID, open **App registrations**, select **New
    registration**, and create a private CI application such as
    `autoeditor-github-signing`.
@@ -74,7 +93,7 @@ Check the current price and identity-eligibility list before opening the account
     Signing Certificate Profile Signer** role. Keep identity-validation roles
     on the owner account, not the CI application.
 12. In GitHub, open **Settings**, **Environments**,
-    **helper-windows-signing**, then add all seven as environment secrets:
+    **helper-windows-signing**, then add all eight as environment secrets:
 
     - `AZURE_TENANT_ID`: Directory tenant ID from step 9.
     - `AZURE_CLIENT_ID`: Application client ID from step 9.
@@ -83,6 +102,8 @@ Check the current price and identity-eligibility list before opening the account
     - `WIN_AZURE_ENDPOINT`: exact account endpoint from step 4.
     - `WIN_AZURE_CERTIFICATE_PROFILE_NAME`: exact profile name from step 6.
     - `WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME`: exact account name from step 4.
+    - `WIN_AZURE_SUBSCRIBER_IDENTITY_EKU`: exact durable subscriber identity
+      OID from step 7.
 
 13. Run the Helper workflow manually first. A manual build is an unsigned
     engineering-acceptance build and is never published to friends.
@@ -113,9 +134,12 @@ or identity type.
    a password-protected `.pfx`. Never commit it to Git.
 4. Convert the PFX to base64 locally or use a private authenticated download
    URL supported by Electron Builder.
-5. Add `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` only as
-   `helper-windows-signing` environment secrets.
-6. Leave the seven Azure secrets unset. The workflow uses PFX signing only when
+5. Copy the certificate SHA-1 thumbprint from the certificate authority or
+   Windows certificate viewer. Add `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and
+   `WIN_PFX_CERT_THUMBPRINT` only as `helper-windows-signing` environment
+   secrets. The workflow removes spaces and punctuation before comparing the
+   expected thumbprint with the installer, installed app, and uninstaller.
+6. Leave the eight Azure secrets unset. The workflow uses PFX signing only when
    the complete Azure setup is absent.
 
 Extended-validation certificates stored only on a USB hardware token often

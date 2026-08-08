@@ -9,9 +9,10 @@ the exact Windows `.exe` and Mac `.dmg` files friends will download.
   `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
   `WIN_AZURE_PUBLISHER_NAME`, `WIN_AZURE_ENDPOINT`,
   `WIN_AZURE_CERTIFICATE_PROFILE_NAME`, and
-  `WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME`.
-- Windows fallback: `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` for an
-  exportable code-signing PFX.
+  `WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME`, plus the durable
+  `WIN_AZURE_SUBSCRIBER_IDENTITY_EKU` OID.
+- Windows fallback: `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and
+  `WIN_PFX_CERT_THUMBPRINT` for an exportable code-signing PFX.
 - `CSC_LINK`: Apple Developer ID Application certificate for electron-builder.
 - `CSC_KEY_PASSWORD`: certificate password.
 - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: notarization.
@@ -96,9 +97,12 @@ release` workflow must:
 The release locks are `packaging/requirements-windows-x64.txt`,
 `packaging/requirements-mac-arm64.txt`, and
 `packaging/requirements-mac-x64.txt`. The current Windows FFmpeg archive is
-bound to its audited SHA-256. The Mac job stops if Homebrew moves away from
-the audited FFmpeg 8.1.2 formula version. A dependency change is a review and
-repin event, not an automatic release update.
+bound to its audited SHA-256. Each Mac architecture has a committed exact
+formula version, runner bottle tag, bottle rebuild, and bottle SHA-256
+inventory. The build also pins the audited Homebrew release, refetches and
+reinstalls those bottles, derives the recursive linked-library closure, and
+stops if the package manager, closure, or any bottle bytes change. A dependency
+change is a review and repin event, not an automatic release update.
 
 ## Website and local Helper gates
 
@@ -137,9 +141,13 @@ passed on August 7, 2026. Production deployment and live two-user acceptance
 remain separate gates.
 
 Because the current encoder requires libx264, the bundled FFmpeg is GPL. Before
-distribution beyond private acceptance testers, confirm the corresponding
-source delivery or written-offer process for the exact Windows and Mac builds.
-License notices alone are not treated as a complete GPL distribution gate.
+any third-party handoff, confirm a GPL-compliant corresponding-source delivery
+method for the exact Windows and Mac builds. For installer downloads, provide
+equivalent source access alongside the installer.
+This review must cover the top-level FFmpeg tools and linked libraries plus the
+native media copies inside PyAV, Electron or Chromium, and the Remotion
+compositor. License texts, formula receipts, and build configuration are
+required provenance, but they do not replace exact corresponding source.
 
 The owner approved proceeding with each friend’s own local free-license
 eligibility on August 7, 2026. Recheck Remotion’s terms before any public,

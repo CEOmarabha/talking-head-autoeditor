@@ -24,6 +24,79 @@ from autoeditor import (
 
 
 class SafetyContracts(unittest.TestCase):
+    def test_macos_ffmpeg_formula_path_mapping(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "verify_macos_ffmpeg_formulae.py")
+        )
+        identify = namespace["formula_version_from_cellar"]
+        self.assertEqual(
+            identify(
+                Path("/opt/homebrew/Cellar/x264/r3222/lib/libx264.165.dylib"),
+                Path("/opt/homebrew/Cellar"),
+            ),
+            ("x264", "r3222"),
+        )
+        self.assertEqual(
+            identify(
+                Path("/opt/homebrew/Cellar/ffmpeg/8.1.2_1"),
+                Path("/opt/homebrew/Cellar"),
+            ),
+            ("ffmpeg", "8.1.2_1"),
+        )
+        error = namespace["FormulaInventoryError"]
+        with self.assertRaisesRegex(error, "outside Homebrew Cellar"):
+            identify(
+                Path("/usr/local/lib/libunexpected.dylib"),
+                Path("/opt/homebrew/Cellar"),
+            )
+
+    def test_macos_ffmpeg_formula_inventory_comparison_fails_closed(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "verify_macos_ffmpeg_formulae.py")
+        )
+        compare = namespace["compare_inventories"]
+        error = namespace["FormulaInventoryError"]
+        record = namespace["BottleRecord"]
+        expected = {
+            "ffmpeg": record(
+                "ffmpeg", "8.1.2_1", "arm64_sequoia", 0, "a" * 64
+            ),
+            "x264": record(
+                "x264", "r3222", "arm64_sequoia", 0, "b" * 64
+            ),
+        }
+        compare({"ffmpeg": "8.1.2_1", "x264": "r3222"}, expected)
+        with self.assertRaisesRegex(error, "missing formulae: x264"):
+            compare({"ffmpeg": "8.1.2_1"}, expected)
+        with self.assertRaisesRegex(error, "unexpected formulae: libextra"):
+            compare({**expected, "libextra": "1.0"}, expected)
+        with self.assertRaisesRegex(
+            error, "x264 expected r3222, found r9999"
+        ):
+            compare({"ffmpeg": "8.1.2_1", "x264": "r9999"}, expected)
+        verify_archive = namespace["verify_bottle_archive"]
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / (
+                "cache--ffmpeg--8.1.2_1.arm64_sequoia.bottle.tar.gz"
+            )
+            archive.write_bytes(b"exact bottle")
+            exact = record(
+                "ffmpeg", "8.1.2_1", "arm64_sequoia", 0,
+                hashlib.sha256(b"exact bottle").hexdigest(),
+            )
+            verify_archive(archive, exact)
+            with self.assertRaisesRegex(error, "bottle SHA-256 drifted"):
+                verify_archive(archive, record(
+                    "ffmpeg", "8.1.2_1", "arm64_sequoia", 0, "0" * 64
+                ))
+            with self.assertRaisesRegex(error, "unexpected bottle filename"):
+                verify_archive(archive, record(
+                    "ffmpeg", "8.1.2_1", "arm64_sequoia", 1,
+                    exact.bottle_sha256,
+                ))
+
     def test_helper_manifest_ignores_packaging_placeholders_and_verifies(self):
         root = Path(__file__).resolve().parent.parent
         generator = root / "packaging" / "generate_helper_manifest.py"

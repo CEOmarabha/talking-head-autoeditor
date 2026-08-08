@@ -127,17 +127,68 @@ jobs:
         shell: bash
         run: |
           brew install ffmpeg
-          # Accept Homebrew bottle revisions of the audited upstream source,
-          # but fail closed when the upstream FFmpeg version changes.
-          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2(_[0-9]+)?([[:space:]]|$)' || {
-            echo "Homebrew FFmpeg moved from audited version 8.1.2. Review and repin before releasing." >&2
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          brew --version | head -n 1 | grep -Fx 'Homebrew 6.0.15'
+          brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2_1([[:space:]]|$)' || {
+            echo "Homebrew FFmpeg moved from audited formula revision 8.1.2_1. Review and repin before releasing." >&2
             exit 1
           }
+          STAGE=desktop/staging
+          EXPECTED="packaging/macos-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" \
+            --output "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           python packaging/bundle_macos_ffmpeg.py \
             --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
             --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
             --bin-dir desktop/staging/bin \
             --lib-dir desktop/staging/lib
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$BOTTLE_TAG" && -n "$BOTTLE_REBUILD" ]]
+            [[ -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            PREFIX=$(realpath "$(brew --prefix "$FORMULA")")
+            [[ "$(basename "$PREFIX")" == "$VERSION" ]] || {
+              echo "Installed $FORMULA prefix does not match $VERSION" >&2
+              exit 1
+            }
+            DEST="$STAGE/licenses/ffmpeg-components/${FORMULA/@/_}-$VERSION"
+            mkdir -p "$DEST"
+            test -f "$PREFIX/INSTALL_RECEIPT.json"
+            cp "$PREFIX/INSTALL_RECEIPT.json" "$DEST/"
+            FORMULA_FILE=$(find "$PREFIX/.brew" -maxdepth 1 -type f \
+              -name '*.rb' -print -quit)
+            test -n "$FORMULA_FILE"
+            cp "$FORMULA_FILE" "$DEST/"
+            FOUND_LICENSE=0
+            while IFS= read -r LICENSE_FILE; do
+              cp "$LICENSE_FILE" "$DEST/"
+              FOUND_LICENSE=1
+            done < <(find "$PREFIX" -maxdepth 2 -type f \
+              \( -iname 'COPYING*' -o -iname 'LICENSE*' \
+                 -o -iname 'COPYRIGHT*' -o -iname 'NOTICE*' \) \
+              -print | LC_ALL=C sort)
+            [[ "$FOUND_LICENSE" == 1 ]] || {
+              echo "No license text found for bundled formula $FORMULA" >&2
+              exit 1
+            }
+          done < "$STAGE/licenses/FFMPEG_FORMULAE.txt"
           file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe
           if [[ "${{ matrix.arch }}" == "arm64" ]]; then
             file desktop/staging/bin/ffmpeg desktop/staging/bin/ffprobe | \
@@ -177,7 +228,14 @@ jobs:
           Expand-Archive ffmpeg.zip -DestinationPath fftmp
           Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/staging/bin/"
           Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/staging/bin/"
-          & desktop/staging/bin/ffmpeg.exe -version | Out-Null
+          Copy-Item "fftmp/*/LICENSE.txt" `
+            "desktop/staging/licenses/FFMPEG-GPL-3.0.txt"
+          Set-Content "desktop/staging/licenses/FFMPEG_BUILD.txt" `
+            "asset=$asset`nsha256=$actual`nbytes=$($metadata.size)`nrelease_id=$($release.id)`npublished_at=$($release.published_at)`nsource=$($metadata.browser_download_url)"
+          & desktop/staging/bin/ffmpeg.exe -version | `
+            Set-Content "desktop/staging/licenses/FFMPEG_VERSION.txt"
+          & desktop/staging/bin/ffmpeg.exe -buildconf 2>&1 | `
+            Set-Content "desktop/staging/licenses/FFMPEG_BUILDCONF.txt"
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg did not start" }
           & desktop/staging/bin/ffprobe.exe -version | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe did not start" }

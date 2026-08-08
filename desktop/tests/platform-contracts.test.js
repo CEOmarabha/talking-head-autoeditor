@@ -24,6 +24,14 @@ const releaseStorage = fs.readFileSync(
   path.join(desktop, 'scripts', 'r2-release-storage.js'), 'utf8');
 const helperReleaseMetadata = fs.readFileSync(
   path.join(desktop, '..', 'packaging', 'helper_release_metadata.py'), 'utf8');
+const thirdPartyNotices = fs.readFileSync(
+  path.join(desktop, '..', 'packaging', 'THIRD_PARTY_NOTICES.md'), 'utf8');
+const ffmpegFormulaVerifier = fs.readFileSync(
+  path.join(desktop, '..', 'packaging',
+    'verify_macos_ffmpeg_formulae.py'), 'utf8');
+const ffmpegFormulaInventories = ['arm64', 'x64'].map((arch) =>
+  fs.readFileSync(path.join(desktop, '..', 'packaging',
+    `macos-ffmpeg-formulae-${arch}.txt`), 'utf8'));
 const desktopPackage = JSON.parse(fs.readFileSync(
   path.join(desktop, 'package.json'), 'utf8'));
 const ownerSigning = fs.readFileSync(
@@ -60,8 +68,23 @@ assert.ok(helperWorkflow.includes('macos-15-intel'));
 assert.ok(helperWorkflow.includes('Render real HyperFrames and Remotion probes'));
 assert.ok(helperWorkflow.includes('Get-AuthenticodeSignature'));
 assert.ok(helperWorkflow.includes('kind=azure'));
+assert.ok(helperWorkflow.includes('WIN_PFX_CERT_THUMBPRINT'));
+assert.ok(helperWorkflow.includes('WIN_AZURE_SUBSCRIBER_IDENTITY_EKU'));
+assert.ok(helperWorkflow.includes('Normalize-Thumbprint'));
+assert.ok(helperWorkflow.includes('Assert-AuthenticodeSigner'));
+assert.ok(helperWorkflow.includes('Get-EnhancedKeyUsageValues'));
+assert.ok(helperWorkflow.includes('1.3.6.1.4.1.311.97.1.0'));
+assert.ok(helperWorkflow.includes(
+  'signer thumbprint does not match the approved certificate'));
+assert.ok(helperWorkflow.includes(
+  'approved Artifact Signing subscriber identity EKU'));
 assert.ok(helperAzure.includes('azureSignOptions'));
 assert.ok(ownerSigning.includes('AZURE_TENANT_ID'));
+assert.ok(ownerSigning.includes('WIN_PFX_CERT_THUMBPRINT'));
+assert.ok(ownerSigning.includes('WIN_AZURE_SUBSCRIBER_IDENTITY_EKU'));
+assert.ok(ownerSigning.includes('Install-Module Az.ArtifactSigning'));
+assert.ok(ownerSigning.includes('Get-AzArtifactSigningCustomerEku'));
+assert.ok(ownerSigning.includes("-AccountName '<artifact-signing-account>'"));
 assert.ok(ownerSigning.includes('Signing Certificate Profile Signer'));
 assert.ok(ownerSigning.includes('APPLE_APP_SPECIFIC_PASSWORD'));
 // Signing and candidate credentials stay behind reviewer-approved platform
@@ -82,11 +105,59 @@ assert.ok(helperWorkflow.includes(
   'requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt'));
 assert.ok(helperWorkflow.includes(
   '8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331'));
+for (const releaseSource of [workflow, helperWorkflow]) {
+  assert.ok(releaseSource.includes('FFMPEG-GPL-3.0.txt'));
+  assert.ok(releaseSource.includes('FFMPEG_FORMULAE.txt'));
+  assert.ok(releaseSource.includes('verify_macos_ffmpeg_formulae.py'));
+  assert.ok(releaseSource.includes(
+    'macos-ffmpeg-formulae-${{ matrix.arch }}.txt'));
+  assert.ok(releaseSource.includes(
+    'done < "$STAGE/licenses/FFMPEG_FORMULAE.txt"'));
+  assert.ok(releaseSource.includes('brew fetch --force "$FORMULA"'));
+  assert.ok(releaseSource.includes('HOMEBREW_NO_AUTO_UPDATE=1'));
+  assert.ok(releaseSource.includes('HOMEBREW_NO_INSTALL_CLEANUP=1'));
+  assert.ok(releaseSource.includes("grep -Fx 'Homebrew 6.0.15'"));
+  assert.ok(releaseSource.includes(
+    'brew reinstall --force-bottle "$FORMULA"'));
+  assert.ok(releaseSource.includes('brew reinstall --force-bottle ffmpeg'));
+  assert.ok(releaseSource.includes('--expected-arch "${{ matrix.arch }}"'));
+  assert.ok(releaseSource.includes('8\\.1\\.2_1([[:space:]]|$)'));
+  assert.ok(!releaseSource.includes('FORMULAE=('));
+  assert.ok(!releaseSource.includes('8\\.1\\.2(_[0-9]+)?'));
+  assert.ok(releaseSource.includes('ffmpeg-components'));
+  assert.ok(releaseSource.includes('INSTALL_RECEIPT.json'));
+  assert.ok(releaseSource.includes('FFMPEG_BUILDCONF.txt'));
+}
+assert.ok(ffmpegFormulaVerifier.includes('otool_dependencies'));
+assert.ok(ffmpegFormulaVerifier.includes('compare_inventories'));
+assert.ok(ffmpegFormulaVerifier.includes('verify_bottle_archive'));
+assert.ok(ffmpegFormulaVerifier.includes('verify_cached_bottles'));
+assert.ok(ffmpegFormulaVerifier.includes('poured_from_bottle'));
+assert.ok(ffmpegFormulaVerifier.includes('outside Homebrew Cellar'));
+for (const inventory of ffmpegFormulaInventories) {
+  assert.ok(inventory.includes('ffmpeg 8.1.2_1'));
+  assert.ok(inventory.includes('x264 r3222'));
+  const rows = inventory.trim().split('\n');
+  assert.strictEqual(rows.length, 11);
+  assert.ok(rows.every((row) =>
+    /^[^ ]+ [^ ]+ [^ ]+ \d+ [0-9a-f]{64}$/.test(row)));
+}
+assert.ok(ffmpegFormulaInventories[0].includes('arm64_sequoia'));
+assert.ok(ffmpegFormulaInventories[1].includes(' sonoma '));
+assert.ok(ffmpegFormulaInventories[0].includes(
+  'openssl@3 3.6.3 arm64_sequoia 1'));
+assert.ok(ffmpegFormulaInventories[1].includes(
+  'openssl@3 3.6.3 sonoma 1'));
+assert.ok(thirdPartyNotices.includes('Before any third-party handoff'));
+assert.ok(!thirdPartyNotices.includes('private acceptance testers'));
 assert.ok(helperWorkflow.includes('r2-release-storage.js upload'));
 assert.ok(helperWorkflow.includes('R2_CANDIDATE_ACCESS_KEY_ID'));
 assert.ok(!helperWorkflow.includes('R2_RELEASE_ACCESS_KEY_ID'));
 assert.ok(helperPromotion.includes('R2_RELEASE_ACCESS_KEY_ID'));
 assert.ok(helperWorkflow.includes('"$ENGINE" --self-test'));
+for (const nativeMediaRuntime of ['PyAV', 'Electron', 'Remotion compositor']) {
+  assert.ok(thirdPartyNotices.includes(nativeMediaRuntime));
+}
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/client-s3'],
   '3.1106.0');
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/lib-storage'],
@@ -134,8 +205,6 @@ assert.ok(!helperWorkflow.includes('wrangler r2 object put'));
 assert.ok(!helperWorkflow.includes('aws s3 cp'));
 assert.ok(!helperPromotion.includes('wrangler r2 object put'));
 assert.ok(!helperPromotion.includes('aws s3 cp'));
-// Homebrew bottle revisions (8.1.2_1) of the audited FFmpeg are accepted.
-assert.ok(helperWorkflow.includes('8\\.1\\.2(_[0-9]+)?'));
 assert.ok(workflow.includes('CFBundleExecutable'));
 
 const ciWorkflow = fs.readFileSync(
@@ -346,7 +415,7 @@ for (const unsignedJob of [helperUnsigned, pseUnsigned]) {
 }
 assert.ok(workflow.includes(
   '8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331'));
-assert.ok(workflow.includes('8\\.1\\.2(_[0-9]+)?'));
+assert.ok(workflow.includes('8\\.1\\.2_1([[:space:]]|$)'));
 assert.ok(workflow.includes('2d85e20401920891efb7cd6272d6339685df2820'));
 assert.ok(workflow.includes(
   '0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7'));

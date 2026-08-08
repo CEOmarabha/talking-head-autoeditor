@@ -1,7 +1,10 @@
 # AutoEditor Helper release gate status
 
-Status date: August 8, 2026. Source branch: `web-app`. Local source commit:
-`3ad08be851adefbec15d4ceac307eca42758cfd4`.
+Status date: August 8, 2026. Source branch: `web-app`. The accepted runtime and
+unsigned artifact source commit is
+`3ad08be851adefbec15d4ceac307eca42758cfd4`. Later local commits harden the
+release gates and record evidence without changing those accepted runtime
+bytes.
 
 This file separates completed local engineering checks from the checks that
 need signing accounts, hosted infrastructure, or physical computers. A source
@@ -9,7 +12,7 @@ test pass is not approval to send an installer to friends.
 
 ## Passed locally
 
-- The unrestricted Python safety suite passed 101 tests, including 24
+- The unrestricted Python safety suite passed 103 tests, including 24
   subtests. The web suite passed 31 tests.
 - All five Desktop Helper test files passed. The Worker Miniflare suite passed
   all nine real D1/R2 route simulations.
@@ -78,9 +81,10 @@ test pass is not approval to send an installer to friends.
 - The six generic profiles, five exact DeepSeek operations, server-bound
   revision proposal, and six-item browser picker have not been accepted
   together from signed Windows and Mac artifacts.
-- GPL corresponding-source delivery or a valid written-offer process for the
-  exact bundled FFmpeg, x264, and linked GPL build remains unresolved. Notices
-  alone do not close this gate.
+- GPL-compliant corresponding-source delivery remains unresolved for the exact
+  top-level FFmpeg, x264, x265, and linked build, plus
+  the native media copies inside PyAV, Electron or Chromium, and the Remotion
+  compositor. Notices and build receipts alone do not close this gate.
 - Real full edits for Short, long talking head, Commercial, Podcast, Course,
   and Custom have not all been watched from beginning to end on the exact
   signed release artifacts. Long-to-clips is not a supported release type.
