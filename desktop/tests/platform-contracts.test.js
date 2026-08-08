@@ -883,6 +883,9 @@ assert.ok(helperMain.includes(
   "win.loadFile(path.join(__dirname, 'renderer', 'index.html'))"));
 
 function assertWindowsHelperAcceptance(gate) {
+  const manifestAt = gate.indexOf('verify_helper_manifest.py');
+  const manifestExitAt = gate.indexOf(
+    'runtime manifest verification failed', manifestAt);
   const selfTestAt = gate.indexOf('& $engine --self-test');
   const screenshotAt = gate.indexOf(
     '$env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot');
@@ -910,6 +913,11 @@ function assertWindowsHelperAcceptance(gate) {
   assert.ok(gate.includes(
     '-or (Test-Path -LiteralPath $installRegistryKey)'));
   assert.ok(!gate.includes('Programs/AutoEditor Helper'));
+  assert.ok(manifestAt > registryAt);
+  assert.ok(manifestExitAt > manifestAt);
+  assert.ok(gate.slice(manifestAt, manifestExitAt).includes(
+    '$LASTEXITCODE -ne 0'));
+  assert.ok(selfTestAt > manifestExitAt);
   assert.ok(gate.includes('$screenshot = Join-Path $env:RUNNER_TEMP'));
   assert.ok(gate.includes('$capture = Start-Process $app -Wait -PassThru'));
   assert.ok(gate.includes(
@@ -922,7 +930,6 @@ function assertWindowsHelperAcceptance(gate) {
     '[System.Drawing.Imaging.ImageFormat]::Png.Guid'));
   assert.ok(gate.includes('$image.Width -le 0 -or $image.Height -le 0'));
   assert.ok(gate.includes('screenshot is not a decodable PNG'));
-  assert.ok(selfTestAt > registryAt);
   assert.ok(screenshotAt > selfTestAt);
   assert.ok(skipAccountsAt > screenshotAt);
   assert.ok(captureAt > skipAccountsAt);

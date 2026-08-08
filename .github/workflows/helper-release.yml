@@ -665,6 +665,9 @@ jobs:
             --target-os "${{ matrix.target_os }}" `
             --target-arch "${{ matrix.arch }}" `
             --version "${{ steps.release.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Installed frozen engine is missing" }
           & $engine --self-test
@@ -1064,6 +1067,9 @@ jobs:
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
             --target-os windows --target-arch x64 `
             --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Signed installed frozen engine is missing" }
           & $engine --self-test
