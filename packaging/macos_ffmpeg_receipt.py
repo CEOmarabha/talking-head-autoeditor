@@ -99,6 +99,13 @@ CPU_TYPES = {
     "arm64": 0x0100000C,
     "x64": 0x01000007,
 }
+MACHO_PAGE_BYTES = {
+    # Exact native Homebrew pours of the pinned bottles use these
+    # architecture-specific __LINKEDIT allocation granularities.
+    CPU_TYPES["arm64"]: 16 * 1024,
+    CPU_TYPES["x64"]: 4 * 1024,
+}
+PACKAGING_DYLIB_TIMESTAMP = 0
 PLATFORMS = {
     "arm64": "mac-arm64",
     "x64": "mac-x64",
@@ -267,7 +274,7 @@ PINNED_BOTTLE_MEMBERS: Mapping[str, Mapping[str, BottleMemberRecord]] = (
                     "72407e386bf6582771dd73ff51c6318201b7ad27a755d82efc64ea35db161d64"
                 ),
                 macho_whole_sha256=(
-                    "6cc66a9f91ccb6847811499b4e1678a600e9899dc6f52b36169935e4f2fae8d6"
+                    "87f9d30d9c820b29a9657631114d01064d279c16bda3556d48d7d8547895aebe"
                 ),
             ),
         }),
@@ -282,7 +289,7 @@ PINNED_BOTTLE_MEMBERS: Mapping[str, Mapping[str, BottleMemberRecord]] = (
                     "b10c2dfc281d442691befb528090747f92a25ac12189b6689782cc259abdd4ad"
                 ),
                 macho_whole_sha256=(
-                    "f6df7162723c172eeccd73be4d9e69069028b029bb756d2b5ef810ca737941c9"
+                    "ec2ff23e2b0f841949b9ddcda1935e552fa77a3ae8be76f6b40d6da182f71da5"
                 ),
             ),
         }),
@@ -1023,6 +1030,60 @@ def _load_command_string(command: bytes, label: str) -> tuple[str, int, int, int
     return value, timestamp, current_version, compatibility_version
 
 
+def _round_up(value: int, alignment: int) -> int:
+    return (value + alignment - 1) // alignment * alignment
+
+
+def _canonical_signed_linkedit_command(
+    command_bytes: bytes,
+    macho: MachoIdentity,
+    signature: tuple[int, int, int],
+    binary: Path,
+) -> bytes:
+    """Remove only exact, signature-backed __LINKEDIT geometry."""
+    command, command_size = struct.unpack_from("<II", command_bytes)
+    if command != LC_SEGMENT_64 or command_size < 72:
+        raise MacFFmpegReceiptError(
+            f"invalid signed __LINKEDIT command: {binary}"
+        )
+    segment_name = _macho_name(
+        command_bytes[8:24], f"{binary} signed segment"
+    )
+    if segment_name != "__LINKEDIT":
+        raise MacFFmpegReceiptError(
+            f"signed segment is not __LINKEDIT: {binary}"
+        )
+    _vm_address, vm_size, file_offset, file_size = struct.unpack_from(
+        "<4Q", command_bytes, 24
+    )
+    signature_offset, signature_size, _signature_index = signature
+    page_bytes = MACHO_PAGE_BYTES.get(macho.header[1])
+    if page_bytes is None:
+        raise MacFFmpegReceiptError(
+            f"unsupported signed Mach-O page size: {binary}"
+        )
+    rounded_file_size = _round_up(file_size, page_bytes)
+    if (
+        file_size <= 0
+        or file_offset > signature_offset
+        or signature_offset + signature_size != file_offset + file_size
+        or vm_size not in {
+            rounded_file_size,
+            rounded_file_size + page_bytes,
+        }
+    ):
+        raise MacFFmpegReceiptError(
+            f"noncanonical signed __LINKEDIT extent: {binary}"
+        )
+    unsigned_file_size = signature_offset - file_offset
+    normalized = bytearray(command_bytes)
+    struct.pack_into(
+        "<Q", normalized, 32, _round_up(unsigned_file_size, page_bytes)
+    )
+    struct.pack_into("<Q", normalized, 48, unsigned_file_size)
+    return bytes(normalized)
+
+
 def _canonical_install_id(value: str, label: str) -> None:
     if value.startswith("/"):
         _canonical_absolute_otool_path(value, Path(label))
@@ -1075,24 +1136,7 @@ def _macho_load_command_profile(
                 f"duplicate source dependency from {binary}"
             )
 
-    signature: tuple[int, int] | None = None
-    for command_bytes in macho.commands:
-        command, command_size = struct.unpack_from("<II", command_bytes)
-        if command == LC_CODE_SIGNATURE:
-            if command_size != 16 or signature is not None:
-                raise MacFFmpegReceiptError(
-                    f"invalid Mach-O code signature command: {binary}"
-                )
-            data_offset, data_size = struct.unpack_from("<II", command_bytes, 8)
-            if (
-                data_size <= 0
-                or data_offset > macho.byte_count
-                or data_size != macho.byte_count - data_offset
-            ):
-                raise MacFFmpegReceiptError(
-                    f"out-of-bounds Mach-O code signature: {binary}"
-                )
-            signature = (data_offset, data_size)
+    signature = _macho_signature_extent(macho, binary)
 
     records: list[dict[str, Any]] = [{
         "header": list(macho.header),
@@ -1113,24 +1157,12 @@ def _macho_load_command_profile(
                 command_bytes[8:24], f"{label} segment"
             )
             if segment_name == "__LINKEDIT" and signature is not None:
-                segment_file_offset, segment_file_size = struct.unpack_from(
-                    "<QQ", command_bytes, 40
-                )
-                signature_offset, signature_size = signature
-                if (
-                    signature_offset < segment_file_offset
-                    or signature_offset + signature_size
-                    != segment_file_offset + segment_file_size
-                ):
-                    raise MacFFmpegReceiptError(
-                        f"code signature is not the final __LINKEDIT payload: {binary}"
-                    )
-                struct.pack_into(
-                    "<Q",
-                    normalized,
-                    48,
-                    signature_offset - segment_file_offset,
-                )
+                normalized = bytearray(_canonical_signed_linkedit_command(
+                    command_bytes,
+                    macho,
+                    signature,
+                    binary,
+                ))
                 normalized_signature_segments += 1
             records.append({
                 "command": command,
@@ -1145,7 +1177,6 @@ def _macho_load_command_profile(
                 "command": command,
                 "compatibility_version": compatibility_version,
                 "current_version": current_version,
-                "timestamp": timestamp,
             }
             if command == LC_ID_DYLIB:
                 install_ids += 1
@@ -1158,6 +1189,7 @@ def _macho_load_command_profile(
                         f"final dylib install ID drifted for {final_path}: {value}"
                     )
                 record["install_id"] = final_path
+                record["timestamp"] = PACKAGING_DYLIB_TIMESTAMP
                 records.append(record)
                 continue
 
@@ -1168,6 +1200,7 @@ def _macho_load_command_profile(
                 if is_system:
                     system_dependencies.append(value)
                     record["system_dependency"] = value
+                    record["timestamp"] = timestamp
                     records.append(record)
                     continue
                 if not source_mode:
@@ -1205,6 +1238,7 @@ def _macho_load_command_profile(
                     )
                 dependencies.append(target)
                 record["dependency"] = target
+                record["timestamp"] = PACKAGING_DYLIB_TIMESTAMP
                 records.append(record)
                 continue
 
@@ -1217,6 +1251,7 @@ def _macho_load_command_profile(
                 )
             dependencies.append(target)
             record["dependency"] = target
+            record["timestamp"] = PACKAGING_DYLIB_TIMESTAMP
             records.append(record)
             continue
 
@@ -1444,7 +1479,7 @@ def _macho_signature_extent(
 
 def _canonical_dylib_command(command_bytes: bytes, target: str) -> bytes:
     command, _ = struct.unpack_from("<II", command_bytes)
-    _, timestamp, current_version, compatibility_version = (
+    _, _timestamp, current_version, compatibility_version = (
         _load_command_string(command_bytes, target)
     )
     encoded_target = target.encode("utf-8") + b"\0"
@@ -1455,7 +1490,7 @@ def _canonical_dylib_command(command_bytes: bytes, target: str) -> bytes:
             command,
             command_size,
             24,
-            timestamp,
+            PACKAGING_DYLIB_TIMESTAMP,
             current_version,
             compatibility_version,
         )
@@ -1590,14 +1625,14 @@ def _macho_whole_sha256(
                 command_bytes[8:24], f"{binary} load command {index} segment"
             )
             if segment_name == "__LINKEDIT":
-                normalized = bytearray(command_bytes)
-                segment_file_offset = struct.unpack_from(
-                    "<Q", command_bytes, 40
-                )[0]
-                struct.pack_into(
-                    "<Q", normalized, 48, signature[0] - segment_file_offset
+                canonical_commands.append(
+                    _canonical_signed_linkedit_command(
+                        command_bytes,
+                        macho,
+                        signature,
+                        binary,
+                    )
                 )
-                canonical_commands.append(bytes(normalized))
                 continue
         if command == LC_ID_DYLIB:
             canonical_commands.append(

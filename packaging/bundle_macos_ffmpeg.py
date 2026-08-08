@@ -12,11 +12,26 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 
 SYSTEM_PREFIXES = ("/System/", "/usr/lib/")
+OTOOL = Path("/usr/bin/otool")
+INSTALL_NAME_TOOL = Path("/usr/bin/install_name_tool")
+CODESIGN = Path("/usr/bin/codesign")
+SYSTEM_TOOLS = (OTOOL, INSTALL_NAME_TOOL, CODESIGN)
+
+
+def validate_system_tools() -> None:
+    for tool in SYSTEM_TOOLS:
+        try:
+            metadata = tool.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"required macOS system tool is unavailable: {tool}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"required macOS system tool is not a regular file: {tool}")
 
 
 def run(*args: str | Path, capture: bool = False) -> str:
@@ -28,7 +43,7 @@ def run(*args: str | Path, capture: bool = False) -> str:
 
 
 def dependencies(binary: Path) -> list[tuple[str, Path]]:
-    output = run("otool", "-L", binary, capture=True)
+    output = run(OTOOL, "-L", binary, capture=True)
     found = []
     for line in output.splitlines()[1:]:
         match = re.match(r"\s*(\S+)\s+\(", line)
@@ -50,6 +65,7 @@ def main() -> None:
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--lib-dir", type=Path, required=True)
     args = parser.parse_args()
+    validate_system_tools()
 
     args.bin_dir.mkdir(parents=True, exist_ok=True)
     args.lib_dir.mkdir(parents=True, exist_ok=True)
@@ -85,12 +101,12 @@ def main() -> None:
         source: target for target, source in originals.items()
     }
     for target, source in originals.items():
-        run("install_name_tool", "-id", f"@loader_path/{target.name}", target)
+        run(INSTALL_NAME_TOOL, "-id", f"@loader_path/{target.name}", target)
         for load_path, dependency in dependencies(source):
             bundled = original_to_target.get(dependency.resolve())
             if bundled:
                 run(
-                    "install_name_tool", "-change", load_path,
+                    INSTALL_NAME_TOOL, "-change", load_path,
                     f"@loader_path/{bundled.name}", target,
                 )
     for executable in executables:
@@ -102,12 +118,12 @@ def main() -> None:
             bundled = original_to_target.get(dependency.resolve())
             if bundled:
                 run(
-                    "install_name_tool", "-change", load_path,
+                    INSTALL_NAME_TOOL, "-change", load_path,
                     f"@executable_path/../lib/{bundled.name}", executable,
                 )
 
     for binary in [*originals, *executables]:
-        run("codesign", "--force", "--sign", "-", binary)
+        run(CODESIGN, "--force", "--sign", "-", binary)
 
     print(
         f"bundled {len(executables)} executables and "

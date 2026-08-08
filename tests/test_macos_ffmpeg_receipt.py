@@ -129,13 +129,19 @@ class MacFFmpegReceiptTests(unittest.TestCase):
         )
         linkedit = b""
         if signature_payload:
+            page_bytes = 16 * 1024 if arch == "arm64" else 4 * 1024
+            linkedit_vm_size = (
+                (len(signature_payload) + page_bytes - 1)
+                // page_bytes
+                * page_bytes
+            )
             linkedit = struct.pack(
                 "<II16sQQQQIIII",
                 receipt.LC_SEGMENT_64,
                 72,
                 b"__LINKEDIT".ljust(16, b"\0"),
                 section_backed_size,
-                0x1000,
+                linkedit_vm_size,
                 signature_offset,
                 len(signature_payload),
                 1,
@@ -177,6 +183,96 @@ class MacFFmpegReceiptTests(unittest.TestCase):
         raw[offset:offset + len(old_raw) + 1] = (new_raw + b"\0").ljust(
             len(old_raw) + 1, b"\0"
         )
+        path.write_bytes(raw)
+
+    @staticmethod
+    def _replace_dylib_timestamp(
+        path: Path,
+        dylib_name: str,
+        timestamp: int,
+    ) -> None:
+        raw = bytearray(path.read_bytes())
+        command_count = struct.unpack_from("<I", raw, 16)[0]
+        cursor = 32
+        matches = 0
+        for _ in range(command_count):
+            command, command_size = struct.unpack_from("<II", raw, cursor)
+            if (
+                command == receipt.LC_ID_DYLIB
+                or command in receipt.DYNAMIC_LIBRARY_LOAD_COMMANDS
+            ):
+                name_offset = struct.unpack_from("<I", raw, cursor + 8)[0]
+                start = cursor + name_offset
+                end = raw.index(0, start, cursor + command_size)
+                if raw[start:end].decode("utf-8") == dylib_name:
+                    struct.pack_into("<I", raw, cursor + 12, timestamp)
+                    matches += 1
+            cursor += command_size
+        if matches != 1:
+            raise AssertionError(
+                f"expected one dylib command for {dylib_name}, found {matches}"
+            )
+        path.write_bytes(raw)
+
+    @staticmethod
+    def _replace_signature_payload(
+        path: Path,
+        arch: str,
+        payload: bytes,
+    ) -> None:
+        raw = bytearray(path.read_bytes())
+        command_count = struct.unpack_from("<I", raw, 16)[0]
+        cursor = 32
+        signature_command = None
+        linkedit_command = None
+        for _ in range(command_count):
+            command, command_size = struct.unpack_from("<II", raw, cursor)
+            if command == receipt.LC_CODE_SIGNATURE:
+                signature_command = cursor
+            elif command == receipt.LC_SEGMENT_64:
+                segment = raw[cursor + 8:cursor + 24].split(b"\0", 1)[0]
+                if segment == b"__LINKEDIT":
+                    linkedit_command = cursor
+            cursor += command_size
+        if signature_command is None or linkedit_command is None:
+            raise AssertionError("fixture lacks its signed __LINKEDIT commands")
+        signature_offset, signature_size = struct.unpack_from(
+            "<II", raw, signature_command + 8
+        )
+        if signature_offset + signature_size != len(raw):
+            raise AssertionError("fixture signature is not terminal")
+        file_offset = struct.unpack_from("<Q", raw, linkedit_command + 40)[0]
+        file_size = signature_offset + len(payload) - file_offset
+        page_bytes = 16 * 1024 if arch == "arm64" else 4 * 1024
+        vm_size = (file_size + page_bytes - 1) // page_bytes * page_bytes
+        del raw[signature_offset:]
+        raw.extend(payload)
+        struct.pack_into("<I", raw, signature_command + 12, len(payload))
+        struct.pack_into("<Q", raw, linkedit_command + 32, vm_size)
+        struct.pack_into("<Q", raw, linkedit_command + 48, file_size)
+        path.write_bytes(raw)
+
+    @staticmethod
+    def _add_to_linkedit_vmsize(path: Path, byte_count: int) -> None:
+        raw = bytearray(path.read_bytes())
+        command_count = struct.unpack_from("<I", raw, 16)[0]
+        cursor = 32
+        matches = 0
+        for _ in range(command_count):
+            command, command_size = struct.unpack_from("<II", raw, cursor)
+            if command == receipt.LC_SEGMENT_64:
+                segment = raw[cursor + 8:cursor + 24].split(b"\0", 1)[0]
+                if segment == b"__LINKEDIT":
+                    vm_size = struct.unpack_from("<Q", raw, cursor + 32)[0]
+                    struct.pack_into(
+                        "<Q", raw, cursor + 32, vm_size + byte_count
+                    )
+                    matches += 1
+            cursor += command_size
+        if matches != 1:
+            raise AssertionError(
+                f"expected one __LINKEDIT command, found {matches}"
+            )
         path.write_bytes(raw)
 
     def _fixture(
@@ -369,13 +465,13 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                 "2e6f7cbf3ff42f59ca251f3c84d4ad5a3ecfd518340237a6f70a54a428de1676",
                 3_090_544,
                 "72407e386bf6582771dd73ff51c6318201b7ad27a755d82efc64ea35db161d64",
-                "6cc66a9f91ccb6847811499b4e1678a600e9899dc6f52b36169935e4f2fae8d6",
+                "87f9d30d9c820b29a9657631114d01064d279c16bda3556d48d7d8547895aebe",
             ),
             "x64": (
                 "413ca9c3ca785dcebb9baae17b4b86a70f1c86e5881fa8af87f55ac7e5d8a5eb",
                 5_450_640,
                 "b10c2dfc281d442691befb528090747f92a25ac12189b6689782cc259abdd4ad",
-                "f6df7162723c172eeccd73be4d9e69069028b029bb756d2b5ef810ca737941c9",
+                "ec2ff23e2b0f841949b9ddcda1935e552fa77a3ae8be76f6b40d6da182f71da5",
             ),
         }
         self.assertEqual(
@@ -461,6 +557,72 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                 macho_whole_sha256=member_whole,
             )
             self._generate(fixture, fixture_member=member)
+
+    def test_legacy_rewrite_timestamps_do_not_weaken_system_loads(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            relative = receipt.SVT_AV1_FINAL_PATH
+            source = fixture["sources"][relative]
+            target = fixture["finals"][relative]
+            dependency = fixture["dependencies"](source)[0]
+            self._replace_dylib_timestamp(
+                target,
+                f"@loader_path/{target.name}",
+                1_786_231_089,
+            )
+            self._replace_dylib_timestamp(
+                target,
+                f"@loader_path/{dependency.name}",
+                1_786_231_090,
+            )
+            self._generate(fixture)
+
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            target = fixture["finals"]["Contents/Resources/bin/ffmpeg"]
+            self._replace_dylib_timestamp(
+                target,
+                "/usr/lib/libSystem.B.dylib",
+                1_786_231_089,
+            )
+            with self.assertRaisesRegex(
+                receipt.MacFFmpegReceiptError,
+                "load-command semantics",
+            ):
+                self._generate(fixture)
+
+    def test_signature_growth_normalizes_only_canonical_linkedit_vmsize(self):
+        for arch in ("arm64", "x64"):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as td:
+                fixture = self._fixture(Path(td), arch)
+                target = fixture["finals"][receipt.SVT_AV1_FINAL_PATH]
+                self._replace_signature_payload(
+                    target,
+                    arch,
+                    b"resigned-signature" + b"x" * (20 * 1024),
+                )
+                self._generate(fixture, arch)
+
+        for arch in ("arm64", "x64"):
+            with self.subTest(
+                hostile_arch=arch
+            ), tempfile.TemporaryDirectory() as td:
+                fixture = self._fixture(Path(td), arch)
+                target = fixture["finals"][receipt.SVT_AV1_FINAL_PATH]
+                self._replace_signature_payload(
+                    target,
+                    arch,
+                    b"resigned-signature" + b"x" * (20 * 1024),
+                )
+                self._add_to_linkedit_vmsize(
+                    target,
+                    2 * (16 * 1024 if arch == "arm64" else 4 * 1024),
+                )
+                with self.assertRaisesRegex(
+                    receipt.MacFFmpegReceiptError,
+                    "noncanonical signed __LINKEDIT extent",
+                ):
+                    self._generate(fixture, arch)
 
     def test_hostile_svt_substitution_fails_normalized_bottle_gate(self):
         with tempfile.TemporaryDirectory() as td:
