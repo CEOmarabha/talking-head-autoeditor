@@ -80,6 +80,15 @@ inside_container() {
   extract_source \
     /source-cache/zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca.tar.gz \
     sources
+  tar --no-same-owner --no-same-permissions -xzf \
+    /source-cache/llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1.tar.gz \
+    -C sources \
+    llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/LICENSE.TXT \
+    llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/compiler-rt/LICENSE.TXT
+  tar --no-same-owner --no-same-permissions -xzf \
+    /source-cache/mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz \
+    -C sources \
+    mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt
 
   find sources -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
@@ -139,31 +148,35 @@ inside_container() {
     --config-mak ffbuild/config.mak
   make -j2 ffmpeg.exe ffprobe.exe
   rm -f -- ffmpeg.exe ffmpeg_g.exe ffprobe.exe ffprobe_g.exe
-  mkdir -p /artifact/linkage
+  mkdir -p /artifact/link-evidence /artifact/linkage
   local program
   for program in ffmpeg ffprobe; do
     local link_flags
-    link_flags="-Wl,--Map=/artifact/linkage/$program.lldmap,--verbose,--threads=1,--reproduce=/artifact/linkage/$program-reproduce.tar"
+    link_flags="-Wl,--Map=/artifact/link-evidence/${program}-lld.map,--verbose,--threads=1,--reproduce=/artifact/link-evidence/${program}-reproduce.tar"
     make -j1 "$program.exe" "LDFLAGS-$program=$link_flags" 2>&1 | \
-      tee "/artifact/linkage/$program.verbose.log"
+      tee "/artifact/link-evidence/${program}-link.verbose.txt"
     [[ -f "$program.exe" && -f "${program}_g.exe" ]] || \
       fail "The captured $program link did not create both executables"
     install -m 0755 "${program}_g.exe" "/artifact/linkage/${program}_g.exe"
     python3 /repository/packaging/windows_ffmpeg_link_receipt.py create \
       --program "$program" \
-      --reproduce "/artifact/linkage/$program-reproduce.tar" \
-      --lld-map "/artifact/linkage/$program.lldmap" \
-      --verbose-log "/artifact/linkage/$program.verbose.log" \
+      --reproduce "/artifact/link-evidence/${program}-reproduce.tar" \
+      --lld-map "/artifact/link-evidence/${program}-lld.map" \
+      --verbose-log "/artifact/link-evidence/${program}-link.verbose.txt" \
       --unstripped-executable "/artifact/linkage/${program}_g.exe" \
       --receipt "/artifact/linkage/$program-linkage-receipt.json"
     python3 /repository/packaging/windows_ffmpeg_link_receipt.py verify \
       --program "$program" \
-      --reproduce "/artifact/linkage/$program-reproduce.tar" \
-      --lld-map "/artifact/linkage/$program.lldmap" \
-      --verbose-log "/artifact/linkage/$program.verbose.log" \
+      --reproduce "/artifact/link-evidence/${program}-reproduce.tar" \
+      --lld-map "/artifact/link-evidence/${program}-lld.map" \
+      --verbose-log "/artifact/link-evidence/${program}-link.verbose.txt" \
       --unstripped-executable "/artifact/linkage/${program}_g.exe" \
       --receipt "/artifact/linkage/$program-linkage-receipt.json"
   done
+  python3 /repository/packaging/verify_windows_ffmpeg.py verify-link-evidence \
+    --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
+    --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
+    --link-evidence-dir /artifact/link-evidence
   "$TARGET-strip" --strip-all ffmpeg.exe ffprobe.exe
   install -m 0755 ffmpeg.exe /artifact/ffmpeg.exe
   install -m 0755 ffprobe.exe /artifact/ffprobe.exe
@@ -174,13 +187,23 @@ inside_container() {
     sources/FFmpeg-9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b/COPYING.GPLv2 \
     /artifact/licenses/FFmpeg-COPYING.GPLv2
   install -m 0644 \
+    sources/llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/LICENSE.TXT \
+    /artifact/licenses/LLVM-LICENSE.TXT
+  install -m 0644 \
+    sources/llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/compiler-rt/LICENSE.TXT \
+    /artifact/licenses/LLVM-compiler-rt-LICENSE.TXT
+  install -m 0644 \
+    sources/mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt \
+    /artifact/licenses/MinGW-w64-runtime-NOTICES.txt
+  install -m 0644 \
     sources/x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING \
     /artifact/licenses/x264-COPYING
   install -m 0644 \
     sources/zlib-e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca/LICENSE \
     /artifact/licenses/zlib-LICENSE
   touch -d "@$SOURCE_DATE_EPOCH" \
-    /artifact/ffmpeg.exe /artifact/ffprobe.exe /artifact/licenses/*
+    /artifact/ffmpeg.exe /artifact/ffprobe.exe \
+    /artifact/licenses/* /artifact/link-evidence/*
   find /artifact/linkage -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
   if find /artifact -maxdepth 1 -type f -iname '*.dll' -print -quit | grep -q .; then
     fail "The Windows FFmpeg artifact unexpectedly contains a DLL"
@@ -339,9 +362,9 @@ PY
   for program in ffmpeg ffprobe; do
     python3 "$LINKAGE_VERIFIER" verify \
       --program "$program" \
-      --reproduce "$output_dir/linkage/$program-reproduce.tar" \
-      --lld-map "$output_dir/linkage/$program.lldmap" \
-      --verbose-log "$output_dir/linkage/$program.verbose.log" \
+      --reproduce "$output_dir/link-evidence/${program}-reproduce.tar" \
+      --lld-map "$output_dir/link-evidence/${program}-lld.map" \
+      --verbose-log "$output_dir/link-evidence/${program}-link.verbose.txt" \
       --unstripped-executable "$output_dir/linkage/${program}_g.exe" \
       --receipt "$output_dir/linkage/$program-linkage-receipt.json"
   done

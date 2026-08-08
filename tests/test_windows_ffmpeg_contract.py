@@ -83,6 +83,36 @@ def make_pe(import_name="kernel32.dll", *, timestamp=0, dll_characteristics=0x01
     return bytes(data)
 
 
+def write_link_evidence(root):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    for program, names in verifier.LINK_EVIDENCE_FILES.items():
+        (root / names["lld_map"]).write_text(
+            "Address  Size     Align Out     In      Symbol\n"
+            "00001000 00000010  4096 .text\n",
+            encoding="utf-8",
+        )
+        (root / names["verbose"]).write_text(
+            f"{program}_g.exe --Map={program}-lld.map --verbose "
+            f"--reproduce={program}-reproduce.tar\n",
+            encoding="utf-8",
+        )
+        reproducer_root = Path(names["reproducer"]).stem
+        members = {
+            f"{reproducer_root}/input.a": b"archive input\n",
+            f"{reproducer_root}/input.o": b"object input\n",
+            f"{reproducer_root}/response.txt": (
+                f"-lldmap:{program}-lld.map\n-verbose\n/out:{program}_g.exe\n"
+            ).encode("utf-8"),
+        }
+        with tarfile.open(root / names["reproducer"], mode="w") as archive:
+            for name, raw in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(raw)
+                archive.addfile(info, io.BytesIO(raw))
+    return root
+
+
 class WindowsFFmpegContractTests(unittest.TestCase):
     def setUp(self):
         self.source_value = json.loads(SOURCE_LOCK.read_text(encoding="utf-8"))
@@ -120,12 +150,38 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         }
         ffprobe = copy.deepcopy(output)
         ffprobe["filename"] = "ffprobe.exe"
+        link_programs = {}
+        for program, names in verifier.LINK_EVIDENCE_FILES.items():
+            reproducer_root = Path(names["reproducer"]).stem
+            link_programs[program] = {
+                "lld_map": {
+                    "bytes": 1,
+                    "filename": names["lld_map"],
+                    "sha256": digest,
+                },
+                "reproducer": {
+                    "bytes": 1,
+                    "filename": names["reproducer"],
+                    "members": [
+                        {"bytes": 1, "path": f"{reproducer_root}/input.a", "sha256": digest},
+                        {"bytes": 1, "path": f"{reproducer_root}/input.o", "sha256": digest},
+                        {"bytes": 1, "path": f"{reproducer_root}/response.txt", "sha256": digest},
+                    ],
+                    "sha256": digest,
+                },
+                "verbose": {
+                    "bytes": 1,
+                    "filename": names["verbose"],
+                    "sha256": digest,
+                },
+            }
         return {
             "build": {
                 "capabilities_sha256": verifier.EXPECTED_CAPABILITIES_SHA256,
                 "configure_args": self.capability_value["build"]["configure_args"],
                 "container_image": self.capability_value["build"]["container_image"],
                 "environment": self.capability_value["build"]["environment"],
+                "link_evidence": self.capability_value["build"]["link_evidence"],
                 "make": self.capability_value["build"]["make"],
                 "source_date_epoch": 1785458830,
                 "strip": self.capability_value["build"]["strip"],
@@ -145,6 +201,10 @@ class WindowsFFmpegContractTests(unittest.TestCase):
                 "protocols": required["protocols"],
             },
             "license_expression": "GPL-2.0-or-later",
+            "link_evidence": {
+                "closure_status": "input-classification-unverified",
+                "programs": link_programs,
+            },
             "outputs": {"ffmpeg": output, "ffprobe": ffprobe},
             "runtime_notices": [
                 {**notice, "bytes": 1, "sha256": digest}
@@ -199,6 +259,30 @@ class WindowsFFmpegContractTests(unittest.TestCase):
                 "7e779215eae16ad7e93ddad59bd82822bd3d34e4dc61f9996f9481b2c0605bc3",
                 16903934,
             ),
+            "llvm-project": (
+                "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
+                "1e4fdb95266974a0cbca9ec4c6f740488322f238",
+                "9dd0aba32a0c2b9e8e808e9b67502cc977f22220f67268bbfd937fa07e5ee6ce",
+                258325313,
+            ),
+            "llvm-mingw": (
+                "170b7e1ec4ad1d9264e6ba320cd4d02f96299c60",
+                "bc5f7040c389e8862daaee41c2fb837b2f1cad5a",
+                "be6c80d7a8ac205b2b7da676030a4fd4e0a7f40e95cd3fdba772f325639c6117",
+                70880,
+            ),
+            "mingw-w64": (
+                "c28e9555bb8800c53449f42a465ad9a5676fce88",
+                "16044fc7a8a2b36978b82ce8572f7280ba581268",
+                "f07cfc452676fe1061c4b6c062335903dbe0d5d18cda6ab8ee6d94637d32a87a",
+                15766022,
+            ),
+            "nasm": (
+                "e9fac2faa62647bb50f1a61c26212c63c87090ae",
+                "f780f92b74638c0d3daf5ffffdb3c36c2ad8cc25",
+                "b7324cbe86e767b65f26f467ed8b12ad80e124e3ccb89076855c98e43a9eddd4",
+                1499136,
+            ),
             "x264": (
                 "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
                 "0b8e15dd14ad8d2fb8905df7785003b475236315",
@@ -220,6 +304,17 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             self.assertEqual(records[source_id]["archive_bytes"], size)
         self.assertEqual(records["nasm"]["git_ref"]["object"], "19fd1bb434f2fed19b0eb82b1b42c5608b601134")
         self.assertEqual(records["nasm"]["git_ref"]["commit"], "e9fac2faa62647bb50f1a61c26212c63c87090ae")
+        self.assertEqual(
+            records["llvm-project"]["git_ref"]["object"],
+            "e013073558445169e8732e25fa86e9913bfdd24e",
+        )
+        self.assertEqual(
+            self.source_value["link_closure"],
+            {
+                "evidence": ["lld-map", "lld-reproducer", "lld-verbose"],
+                "status": "input-classification-unverified",
+            },
+        )
 
     def test_bundle_lock_translation_is_accepted_by_source_bundle_contract(self):
         source = verifier.load_source_lock(SOURCE_LOCK)
@@ -228,7 +323,10 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         self.assertEqual(normalized, translated)
         self.assertEqual(
             [item["id"] for item in translated["sources"]],
-            ["ffmpeg", "llvm-mingw", "nasm", "x264", "zlib"],
+            [
+                "ffmpeg", "llvm-mingw", "llvm-project", "mingw-w64",
+                "nasm", "x264", "zlib",
+            ],
         )
 
     def test_real_source_bundle_round_trip_links_prefixed_manifest_archive(self):
@@ -375,6 +473,17 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "moving reference"):
                 verifier.load_source_lock(path)
 
+    def test_source_lock_cannot_claim_verified_link_closure_without_classification(self):
+        with tempfile.TemporaryDirectory() as td:
+            changed = copy.deepcopy(self.source_value)
+            changed["link_closure"]["status"] = "verified"
+            path = self._write(td, "verified.json", changed)
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "must remain unverified",
+            ):
+                verifier.load_source_lock(path)
+
     def test_capability_contract_rejects_unknown_field_and_mutable_image(self):
         with tempfile.TemporaryDirectory() as td:
             changed = copy.deepcopy(self.capability_value)
@@ -415,6 +524,113 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             (cache / "source.tar.gz").write_bytes(b"changed")
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "archive drifted"):
                 verifier.verify_source_cache(loaded, cache)
+
+    def test_llvm_mingw_wrapper_binds_underlying_toolchain_sources(self):
+        wrapper_archive_name = "llvm-mingw-deadbeef.tar.gz"
+        source_value = {
+            "sources": [
+                {
+                    "archive": wrapper_archive_name,
+                    "id": "llvm-mingw",
+                },
+                {
+                    "id": "llvm-project",
+                    "version": "llvmorg-22.1.8",
+                },
+                {
+                    "git_ref": {
+                        "commit": "c28e9555bb8800c53449f42a465ad9a5676fce88",
+                    },
+                    "id": "mingw-w64",
+                },
+            ],
+        }
+        loaded = verifier.LoadedContract(
+            Path("fixture"),
+            canonical(source_value),
+            hashlib.sha256(canonical(source_value)).hexdigest(),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            scripts = {
+                "llvm-mingw-deadbeef/build-llvm.sh": (
+                    b": ${LLVM_VERSION:=llvmorg-22.1.8}\n"
+                ),
+                "llvm-mingw-deadbeef/build-mingw-w64.sh": (
+                    b": ${MINGW_W64_VERSION:=c28e9555bb8800c53449f42a465ad9a5676fce88}\n"
+                ),
+            }
+            with tarfile.open(cache / wrapper_archive_name, mode="w:gz") as archive:
+                for name, raw in scripts.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(raw)
+                    archive.addfile(info, io.BytesIO(raw))
+            verifier._verify_toolchain_source_pins(loaded, cache)
+
+            scripts["llvm-mingw-deadbeef/build-llvm.sh"] = (
+                b": ${LLVM_VERSION:=llvmorg-22.1.7}\n"
+            )
+            with tarfile.open(cache / wrapper_archive_name, mode="w:gz") as archive:
+                for name, raw in scripts.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(raw)
+                    archive.addfile(info, io.BytesIO(raw))
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "does not bind LLVM_VERSION",
+            ):
+                verifier._verify_toolchain_source_pins(loaded, cache)
+
+    def test_link_evidence_records_every_reproducer_member_and_stays_unverified(self):
+        capabilities = verifier.load_capabilities(CAPABILITIES)
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = write_link_evidence(Path(td) / "link-evidence")
+            receipt = verifier.link_evidence_receipt(evidence_dir, capabilities)
+            self.assertEqual(
+                receipt["closure_status"],
+                "input-classification-unverified",
+            )
+            for program in ("ffmpeg", "ffprobe"):
+                members = receipt["programs"][program]["reproducer"]["members"]
+                self.assertEqual(len(members), 3)
+                self.assertEqual(
+                    [member["path"] for member in members],
+                    sorted(member["path"] for member in members),
+                )
+
+    def test_link_evidence_rejects_extra_files_and_recursive_reproducer(self):
+        capabilities = verifier.load_capabilities(CAPABILITIES)
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = write_link_evidence(Path(td) / "link-evidence")
+            (evidence_dir / "unexpected.txt").write_text("extra\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "evidence set drifted",
+            ):
+                verifier.link_evidence_receipt(evidence_dir, capabilities)
+            (evidence_dir / "unexpected.txt").unlink()
+
+            program = "ffmpeg"
+            name = verifier.LINK_EVIDENCE_FILES[program]["reproducer"]
+            reproducer_root = Path(name).stem
+            response = (
+                f"-lldmap:{program}-lld.map\n-verbose\n"
+                f"-reproduce:{name}\n/out:{program}_g.exe\n"
+            ).encode("utf-8")
+            with tarfile.open(evidence_dir / name, mode="w") as archive:
+                for member_name, raw in {
+                    f"{reproducer_root}/input.a": b"archive\n",
+                    f"{reproducer_root}/input.o": b"object\n",
+                    f"{reproducer_root}/response.txt": response,
+                }.items():
+                    info = tarfile.TarInfo(member_name)
+                    info.size = len(raw)
+                    archive.addfile(info, io.BytesIO(raw))
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "recursively records reproduce",
+            ):
+                verifier.link_evidence_receipt(evidence_dir, capabilities)
 
     def test_runtime_notice_is_byte_identical_to_nested_source_archive(self):
         notice_raw = b"pinned upstream license text\n"
@@ -631,6 +847,33 @@ Exiting with exit code 0
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "canonical sorted JSON"):
                 verifier.load_receipt(path)
 
+    def test_receipt_and_promotion_gate_fail_closed_on_unverified_link_inputs(self):
+        receipt = self._receipt()
+        verifier.validate_receipt_shape(receipt)
+        changed = copy.deepcopy(receipt)
+        changed["link_evidence"]["closure_status"] = "verified"
+        with self.assertRaisesRegex(
+            verifier.WindowsFFmpegError,
+            "may not claim verified closure",
+        ):
+            verifier.validate_receipt_shape(changed)
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, "receipt.json", receipt)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "assert-promotable",
+                    "--receipt",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("actual LLD link inputs remain unclassified", result.stderr)
+
     def test_dual_build_comparison_requires_byte_identical_canonical_receipts(self):
         with tempfile.TemporaryDirectory() as td:
             first = self._write(td, "first.json", self._receipt())
@@ -761,9 +1004,22 @@ print(json.dumps({"streams": [
         self.assertIn("verify-source-cache", text)
         self.assertIn("verify-configure-help", text)
         self.assertIn("verify-makefile", text)
+        self.assertIn("verify-link-evidence", text)
         self.assertIn("make -j2 ffmpeg.exe ffprobe.exe", text)
+        self.assertIn("--Map=/artifact/link-evidence/", text)
+        self.assertIn("--verbose", text)
+        self.assertIn("--reproduce=/artifact/link-evidence/", text)
+        self.assertIn("--threads=1", text)
+        for archive in (
+            "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1.tar.gz",
+            "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz",
+        ):
+            self.assertIn(archive, text)
         for filename in (
             "FFmpeg-COPYING.GPLv2",
+            "LLVM-LICENSE.TXT",
+            "LLVM-compiler-rt-LICENSE.TXT",
+            "MinGW-w64-runtime-NOTICES.txt",
             "x264-COPYING",
             "zlib-LICENSE",
         ):
@@ -781,21 +1037,23 @@ print(json.dumps({"streams": [
         workflow = (
             ROOT / ".github" / "workflows" / "windows-ffmpeg.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("windows-ffmpeg-accepted-${{ github.sha }}", workflow)
+        self.assertIn("windows-ffmpeg-evidence-${{ github.sha }}", workflow)
+        self.assertNotIn("windows-ffmpeg-accepted-", workflow)
         self.assertIn("compare-receipts", workflow)
         self.assertEqual(workflow.count("--license-dir"), 2)
+        self.assertEqual(workflow.count("--link-evidence-dir"), 2)
         self.assertEqual(workflow.count("overwrite: true"), 3)
         self.assertIn("workflow_call:", workflow)
         self.assertNotIn("push:\n    branches:", workflow)
-        self.assertIn("artifact_id: ${{ steps.accepted.outputs.artifact-id }}", workflow)
+        self.assertIn("artifact_id: ${{ steps.evidence.outputs.artifact-id }}", workflow)
         self.assertIn(
-            "artifact_digest: ${{ steps.accepted.outputs.artifact-digest }}",
+            "artifact_digest: ${{ steps.evidence.outputs.artifact-digest }}",
             workflow,
         )
-        self.assertIn("id: accepted", workflow)
+        self.assertIn("id: evidence", workflow)
         self.assertLess(
             workflow.index("compare-receipts"),
-            workflow.index("Upload accepted source-built runtime"),
+            workflow.index("Upload reproducible unverified evidence candidate"),
         )
 
 

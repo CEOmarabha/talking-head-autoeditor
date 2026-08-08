@@ -68,6 +68,18 @@
       "TZ": "UTC",
       "ZERO_AR_DATE": "1"
     },
+    "link_evidence": {
+      "closure_status": "input-classification-unverified",
+      "formats": [
+        "lld-map",
+        "lld-reproducer",
+        "lld-verbose"
+      ],
+      "programs": [
+        "ffmpeg",
+        "ffprobe"
+      ]
+    },
     "make": {
       "jobs": 2,
       "targets": [
@@ -75,7 +87,7 @@
         "ffprobe.exe"
       ]
     },
-    "source_lock_sha256": "9ddeb34ef69d577c77379dfeeccb7414400495119c9ca5d5888ea703fa5f63ab",
+    "source_lock_sha256": "e0aa5a65142d0d9c70fe6cdad7e147662b038f1f6a39d733c64c1a1d25407cd8",
     "strip": {
       "arguments": [
         "--strip-all"
@@ -257,6 +269,24 @@
       "filename": "FFmpeg-COPYING.GPLv2",
       "license_expression": "GPL-2.0-or-later",
       "source_id": "ffmpeg"
+    },
+    {
+      "archive_member": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/LICENSE.TXT",
+      "filename": "LLVM-LICENSE.TXT",
+      "license_expression": "Apache-2.0 WITH LLVM-exception",
+      "source_id": "llvm-project"
+    },
+    {
+      "archive_member": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/compiler-rt/LICENSE.TXT",
+      "filename": "LLVM-compiler-rt-LICENSE.TXT",
+      "license_expression": "Apache-2.0 WITH LLVM-exception",
+      "source_id": "llvm-project"
+    },
+    {
+      "archive_member": "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt",
+      "filename": "MinGW-w64-runtime-NOTICES.txt",
+      "license_expression": "LicenseRef-MinGW-w64-runtime",
+      "source_id": "mingw-w64"
     },
     {
       "archive_member": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING",

@@ -17,20 +17,20 @@ import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-SOURCE_LOCK_SCHEMA = "autoeditor-windows-ffmpeg-sources/v1"
+SOURCE_LOCK_SCHEMA = "autoeditor-windows-ffmpeg-sources/v2"
 CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
-RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v2"
+RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v3"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "9ddeb34ef69d577c77379dfeeccb7414400495119c9ca5d5888ea703fa5f63ab"
+    "e0aa5a65142d0d9c70fe6cdad7e147662b038f1f6a39d733c64c1a1d25407cd8"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "19cfae4a5a705bc64d284cdf03de45233160dfc381c8ef3ff2d9d843b92c40e8"
+    "c1eb5452bcc23514dab8c2ac0b8c3419757951f8e8a14d23d84bd9be65e1152d"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -41,9 +41,10 @@ MOVING_REF_RE = re.compile(
     re.IGNORECASE,
 )
 ROOT_SOURCE_FIELDS = {
-    "license_expression", "schema", "source_date_epoch", "sources",
-    "target", "toolchain",
+    "license_expression", "link_closure", "schema", "source_date_epoch",
+    "sources", "target", "toolchain",
 }
+LINK_CLOSURE_FIELDS = {"evidence", "status"}
 SOURCE_FIELDS = {
     "archive", "archive_bytes", "archive_sha256", "build", "fetch",
     "git_ref", "id", "license", "patches", "role", "version",
@@ -59,8 +60,9 @@ CAPABILITY_ROOT_FIELDS = {
 }
 CAPABILITY_BUILD_FIELDS = {
     "configure_args", "container_image", "environment", "make",
-    "source_lock_sha256", "strip",
+    "link_evidence", "source_lock_sha256", "strip",
 }
+LINK_EVIDENCE_CONTRACT_FIELDS = {"closure_status", "formats", "programs"}
 CAPABILITY_REQUIRED_FIELDS = {
     "decoders", "demuxers", "encoders", "filters", "input_devices",
     "muxers", "output_devices", "programs", "protocols",
@@ -69,8 +71,8 @@ CAPABILITY_FORBIDDEN_FIELDS = {
     "buildconf_tokens", "pe_import_patterns", "protocols",
 }
 RECEIPT_FIELDS = {
-    "build", "inventory", "license_expression", "outputs", "runtime_notices",
-    "schema", "runtime_smoke", "source", "target",
+    "build", "inventory", "license_expression", "link_evidence", "outputs",
+    "runtime_notices", "schema", "runtime_smoke", "source", "target",
 }
 RUNTIME_NOTICE_CONTRACT_FIELDS = {
     "archive_member", "filename", "license_expression", "source_id",
@@ -83,8 +85,15 @@ RECEIPT_SOURCE_FIELDS = {
 }
 RECEIPT_BUILD_FIELDS = {
     "capabilities_sha256", "configure_args", "container_image",
-    "environment", "make", "source_date_epoch", "strip",
+    "environment", "link_evidence", "make", "source_date_epoch", "strip",
 }
+LINK_EVIDENCE_RECEIPT_FIELDS = {"closure_status", "programs"}
+LINK_EVIDENCE_PROGRAM_FIELDS = {"lld_map", "reproducer", "verbose"}
+LINK_EVIDENCE_FILE_FIELDS = {"bytes", "filename", "sha256"}
+LINK_EVIDENCE_REPRODUCER_FIELDS = {
+    "bytes", "filename", "members", "sha256",
+}
+LINK_EVIDENCE_MEMBER_FIELDS = {"bytes", "path", "sha256"}
 RECEIPT_OUTPUT_FIELDS = {
     "authenticode_content_bytes", "authenticode_content_sha256",
     "buildconf_sha256", "bytes", "filename", "pe", "sha256",
@@ -121,6 +130,33 @@ EXPECTED_RUNTIME_NOTICES = [
     },
     {
         "archive_member": (
+            "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/"
+            "LICENSE.TXT"
+        ),
+        "filename": "LLVM-LICENSE.TXT",
+        "license_expression": "Apache-2.0 WITH LLVM-exception",
+        "source_id": "llvm-project",
+    },
+    {
+        "archive_member": (
+            "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/"
+            "compiler-rt/LICENSE.TXT"
+        ),
+        "filename": "LLVM-compiler-rt-LICENSE.TXT",
+        "license_expression": "Apache-2.0 WITH LLVM-exception",
+        "source_id": "llvm-project",
+    },
+    {
+        "archive_member": (
+            "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/"
+            "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt"
+        ),
+        "filename": "MinGW-w64-runtime-NOTICES.txt",
+        "license_expression": "LicenseRef-MinGW-w64-runtime",
+        "source_id": "mingw-w64",
+    },
+    {
+        "archive_member": (
             "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/COPYING"
         ),
         "filename": "x264-COPYING",
@@ -136,6 +172,23 @@ EXPECTED_RUNTIME_NOTICES = [
         "source_id": "zlib",
     },
 ]
+EXPECTED_LINK_EVIDENCE_CONTRACT = {
+    "closure_status": "input-classification-unverified",
+    "formats": ["lld-map", "lld-reproducer", "lld-verbose"],
+    "programs": ["ffmpeg", "ffprobe"],
+}
+LINK_EVIDENCE_FILES = {
+    "ffmpeg": {
+        "lld_map": "ffmpeg-lld.map",
+        "reproducer": "ffmpeg-reproduce.tar",
+        "verbose": "ffmpeg-link.verbose.txt",
+    },
+    "ffprobe": {
+        "lld_map": "ffprobe-lld.map",
+        "reproducer": "ffprobe-reproduce.tar",
+        "verbose": "ffprobe-link.verbose.txt",
+    },
+}
 
 
 class WindowsFFmpegError(ValueError):
@@ -314,6 +367,203 @@ def runtime_notice_receipts(
         raise WindowsFFmpegError(f"cannot verify Windows FFmpeg runtime notices: {exc}") from exc
 
 
+def _link_evidence_text(path: Path, label: str) -> tuple[bytes, str]:
+    raw = _read_regular_file(path, label)
+    if not raw or b"\0" in raw or b"\r" in raw:
+        raise WindowsFFmpegError(f"{label} must be nonempty LF-only text")
+    try:
+        return raw, raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WindowsFFmpegError(f"{label} must be UTF-8 text") from exc
+
+
+def _link_evidence_file_receipt(path: Path, expected_name: str) -> dict[str, Any]:
+    if path.name != expected_name:
+        raise WindowsFFmpegError(
+            f"link evidence filename drifted: expected {expected_name}, found {path.name}"
+        )
+    metadata = _require_regular_file(path, f"link evidence {expected_name}")
+    if metadata.st_size <= 0:
+        raise WindowsFFmpegError(f"link evidence {expected_name} is empty")
+    digest, size = sha256_file(path)
+    return {"bytes": size, "filename": expected_name, "sha256": digest}
+
+
+def _safe_link_member_path(name: str, expected_root: str) -> None:
+    if (
+        not name
+        or "\\" in name
+        or name.startswith("/")
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
+        raise WindowsFFmpegError(f"LLD reproducer member path is unsafe: {name!r}")
+    raw_parts = name.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise WindowsFFmpegError(f"LLD reproducer member path is unsafe: {name!r}")
+    path = PurePosixPath(name)
+    if path.is_absolute() or not path.parts or path.parts[0] != expected_root:
+        raise WindowsFFmpegError(
+            f"LLD reproducer member is outside {expected_root}: {name}"
+        )
+
+
+def _lld_reproducer_receipt(path: Path, program: str) -> dict[str, Any]:
+    expected_name = LINK_EVIDENCE_FILES[program]["reproducer"]
+    base = _link_evidence_file_receipt(path, expected_name)
+    expected_root = Path(expected_name).stem
+    members = []
+    seen_names: set[str] = set()
+    seen_casefold: set[str] = set()
+    response_raw = None
+    response_name = f"{expected_root}/response.txt"
+    try:
+        with tarfile.open(path, mode="r:") as archive:
+            for member in archive.getmembers():
+                _safe_link_member_path(member.name, expected_root)
+                folded = member.name.casefold()
+                if member.name in seen_names or folded in seen_casefold:
+                    raise WindowsFFmpegError(
+                        f"LLD reproducer contains duplicate member {member.name}"
+                    )
+                seen_names.add(member.name)
+                seen_casefold.add(folded)
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise WindowsFFmpegError(
+                        f"LLD reproducer member is not a regular file: {member.name}"
+                    )
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise WindowsFFmpegError(
+                        f"cannot read LLD reproducer member {member.name}"
+                    )
+                raw = handle.read()
+                if len(raw) != member.size:
+                    raise WindowsFFmpegError(
+                        f"LLD reproducer member size drifted: {member.name}"
+                    )
+                if member.name == response_name:
+                    response_raw = raw
+                members.append({
+                    "bytes": len(raw),
+                    "path": member.name,
+                    "sha256": sha256_bytes(raw),
+                })
+    except WindowsFFmpegError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise WindowsFFmpegError(f"cannot inspect LLD reproducer {path}: {exc}") from exc
+    if response_raw is None:
+        raise WindowsFFmpegError(
+            f"LLD reproducer lacks its exact response file {response_name}"
+        )
+    if not any(PurePosixPath(item["path"]).suffix.casefold() in {".a", ".lib"} for item in members):
+        raise WindowsFFmpegError("LLD reproducer records no static or import archive")
+    if not any(PurePosixPath(item["path"]).suffix.casefold() in {".o", ".obj"} for item in members):
+        raise WindowsFFmpegError("LLD reproducer records no object input")
+    if b"\0" in response_raw or b"\r" in response_raw:
+        raise WindowsFFmpegError("LLD reproducer response must be LF-only text")
+    try:
+        response_text = response_raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WindowsFFmpegError("LLD reproducer response must be UTF-8") from exc
+    response_lower = response_text.casefold()
+    if "reproduce" in response_lower:
+        raise WindowsFFmpegError("LLD reproducer response recursively records reproduce output")
+    if "lldmap:" not in response_lower or "verbose" not in response_lower:
+        raise WindowsFFmpegError("LLD reproducer response lacks map or verbose evidence flags")
+    if f"{program}_g.exe" not in response_lower:
+        raise WindowsFFmpegError(
+            f"LLD reproducer response is not bound to {program}_g.exe"
+        )
+    members.sort(key=lambda item: item["path"].encode("utf-8"))
+    return {**base, "members": members}
+
+
+def link_evidence_receipt(
+    evidence_dir: Path,
+    capabilities: LoadedContract,
+) -> dict[str, Any]:
+    try:
+        metadata = evidence_dir.lstat()
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot inspect Windows FFmpeg link evidence directory {evidence_dir}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise WindowsFFmpegError(
+            "Windows FFmpeg link evidence path must be a directory, not a symlink"
+        )
+    expected_names = {
+        filename
+        for program_files in LINK_EVIDENCE_FILES.values()
+        for filename in program_files.values()
+    }
+    try:
+        actual_names = {item.name for item in evidence_dir.iterdir()}
+    except OSError as exc:
+        raise WindowsFFmpegError(
+            f"cannot enumerate Windows FFmpeg link evidence directory: {exc}"
+        ) from exc
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        extra = sorted(actual_names - expected_names)
+        raise WindowsFFmpegError(
+            f"Windows FFmpeg link evidence set drifted (missing {missing}; extra {extra})"
+        )
+
+    programs = {}
+    for program in capabilities.parsed()["build"]["link_evidence"]["programs"]:
+        names = LINK_EVIDENCE_FILES[program]
+        map_path = evidence_dir / names["lld_map"]
+        map_raw, map_text = _link_evidence_text(
+            map_path, f"{program} LLD map"
+        )
+        map_lines = map_text.splitlines()
+        if (
+            not map_lines
+            or map_lines[0] != "Address  Size     Align Out     In      Symbol"
+            or not any(" .text" in line for line in map_lines[1:])
+        ):
+            raise WindowsFFmpegError(f"{program} LLD map has an invalid structure")
+
+        verbose_path = evidence_dir / names["verbose"]
+        verbose_raw, verbose_text = _link_evidence_text(
+            verbose_path, f"{program} LLD verbose log"
+        )
+        verbose_lower = verbose_text.casefold()
+        if (
+            f"{program}_g.exe" not in verbose_lower
+            or not any(marker in verbose_lower for marker in ("--map=", "lldmap:"))
+            or not any(marker in verbose_lower for marker in ("--verbose", "-verbose"))
+            or not any(marker in verbose_lower for marker in ("--reproduce=", "-reproduce:"))
+        ):
+            raise WindowsFFmpegError(
+                f"{program} LLD verbose log lacks the actual evidence-bearing link command"
+            )
+        programs[program] = {
+            "lld_map": {
+                "bytes": len(map_raw),
+                "filename": names["lld_map"],
+                "sha256": sha256_bytes(map_raw),
+            },
+            "reproducer": _lld_reproducer_receipt(
+                evidence_dir / names["reproducer"], program
+            ),
+            "verbose": {
+                "bytes": len(verbose_raw),
+                "filename": names["verbose"],
+                "sha256": sha256_bytes(verbose_raw),
+            },
+        }
+    contract = capabilities.parsed()["build"]["link_evidence"]
+    return {
+        "closure_status": contract["closure_status"],
+        "programs": programs,
+    }
+
+
 def _exact_fields(value: dict[str, Any], expected: set[str], label: str) -> None:
     actual = set(value)
     missing = sorted(expected - actual)
@@ -408,6 +658,18 @@ def _validate_source_lock(value: dict[str, Any]) -> None:
         raise WindowsFFmpegError("source lock SOURCE_DATE_EPOCH drifted")
     _validate_target(value["target"], include_machine=False, label="source lock target")
 
+    link_closure = value["link_closure"]
+    if not isinstance(link_closure, dict):
+        raise WindowsFFmpegError("source lock link_closure must be an object")
+    _exact_fields(link_closure, LINK_CLOSURE_FIELDS, "source lock link_closure")
+    if link_closure != {
+        "evidence": ["lld-map", "lld-reproducer", "lld-verbose"],
+        "status": "input-classification-unverified",
+    }:
+        raise WindowsFFmpegError(
+            "source lock link closure must remain unverified until every actual link input is classified"
+        )
+
     toolchain = value["toolchain"]
     if not isinstance(toolchain, dict):
         raise WindowsFFmpegError("source lock toolchain must be an object")
@@ -422,9 +684,12 @@ def _validate_source_lock(value: dict[str, Any]) -> None:
         raise WindowsFFmpegError("source lock toolchain drifted")
 
     sources = value["sources"]
-    if not isinstance(sources, list) or len(sources) != 5:
-        raise WindowsFFmpegError("source lock must contain exactly five sources")
-    expected_ids = ["ffmpeg", "llvm-mingw", "nasm", "x264", "zlib"]
+    if not isinstance(sources, list) or len(sources) != 7:
+        raise WindowsFFmpegError("source lock must contain exactly seven sources")
+    expected_ids = [
+        "ffmpeg", "llvm-mingw", "llvm-project", "mingw-w64", "nasm",
+        "x264", "zlib",
+    ]
     actual_ids = []
     archives = set()
     urls = set()
@@ -559,6 +824,18 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
         raise WindowsFFmpegError("build SOURCE_DATE_EPOCH drifted")
     if environment["LC_ALL"] != "C" or environment["TZ"] != "UTC":
         raise WindowsFFmpegError("build locale or timezone drifted")
+    link_evidence = build["link_evidence"]
+    if not isinstance(link_evidence, dict):
+        raise WindowsFFmpegError("build.link_evidence must be an object")
+    _exact_fields(
+        link_evidence,
+        LINK_EVIDENCE_CONTRACT_FIELDS,
+        "build.link_evidence",
+    )
+    if link_evidence != EXPECTED_LINK_EVIDENCE_CONTRACT:
+        raise WindowsFFmpegError(
+            "build.link_evidence must remain fail-closed until actual link inputs are classified"
+        )
     make = build["make"]
     if not isinstance(make, dict):
         raise WindowsFFmpegError("build.make must be an object")
@@ -687,6 +964,69 @@ def bundle_lock_value(source_lock: LoadedContract) -> dict[str, Any]:
     }
 
 
+def _source_archive_member_bytes(
+    archive_path: Path,
+    member_name: str,
+    label: str,
+) -> bytes:
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            matches = [
+                member for member in archive.getmembers()
+                if member.name == member_name
+            ]
+            if len(matches) != 1 or not matches[0].isfile():
+                raise WindowsFFmpegError(
+                    f"{label} lacks one regular {member_name}"
+                )
+            handle = archive.extractfile(matches[0])
+            if handle is None:
+                raise WindowsFFmpegError(f"cannot read {label} member {member_name}")
+            return handle.read()
+    except WindowsFFmpegError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise WindowsFFmpegError(f"cannot inspect {label}: {exc}") from exc
+
+
+def _verify_toolchain_source_pins(source_lock: LoadedContract, cache: Path) -> None:
+    sources = {item["id"]: item for item in source_lock.parsed()["sources"]}
+    required_ids = {"llvm-mingw", "llvm-project", "mingw-w64"}
+    if not required_ids.issubset(sources):
+        return
+    wrapper = sources["llvm-mingw"]
+    wrapper_archive = cache / wrapper["archive"]
+    wrapper_root = Path(wrapper["archive"]).name.removesuffix(".tar.gz")
+    expected = {
+        "build-llvm.sh": ("LLVM_VERSION", sources["llvm-project"]["version"]),
+        "build-mingw-w64.sh": (
+            "MINGW_W64_VERSION",
+            sources["mingw-w64"]["git_ref"]["commit"],
+        ),
+    }
+    for filename, (variable, expected_value) in expected.items():
+        raw = _source_archive_member_bytes(
+            wrapper_archive,
+            f"{wrapper_root}/{filename}",
+            "pinned llvm-mingw source archive",
+        )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise WindowsFFmpegError(
+                f"llvm-mingw {filename} must be UTF-8"
+            ) from exc
+        pattern = re.compile(
+            rf"^: \$\{{{re.escape(variable)}:=([^}}]+)\}}$",
+            re.MULTILINE,
+        )
+        values = pattern.findall(text)
+        if values != [expected_value]:
+            raise WindowsFFmpegError(
+                f"llvm-mingw {filename} does not bind {variable} to {expected_value}"
+            )
+
+
 def verify_source_cache(source_lock: LoadedContract, cache: Path) -> None:
     if not cache.is_dir():
         raise WindowsFFmpegError(f"source cache is missing: {cache}")
@@ -710,6 +1050,7 @@ def verify_source_cache(source_lock: LoadedContract, cache: Path) -> None:
         raise WindowsFFmpegError(
             f"source cache member set drifted (missing {missing}; extra {extra})"
         )
+    _verify_toolchain_source_pins(source_lock, cache)
 
 
 def _rva_to_offset(
@@ -1326,6 +1667,7 @@ def create_receipt(
     ffmpeg: Path,
     ffprobe: Path,
     license_dir: Path,
+    link_evidence_dir: Path,
     source_bundle: Path,
     source_manifest: Path,
     repository_commit: str,
@@ -1354,12 +1696,17 @@ def create_receipt(
             "configure_args": contract["build"]["configure_args"],
             "container_image": contract["build"]["container_image"],
             "environment": contract["build"]["environment"],
+            "link_evidence": contract["build"]["link_evidence"],
             "make": contract["build"]["make"],
             "source_date_epoch": int(contract["build"]["environment"]["SOURCE_DATE_EPOCH"]),
             "strip": contract["build"]["strip"],
         },
         "inventory": inventory,
         "license_expression": contract["license_expression"],
+        "link_evidence": link_evidence_receipt(
+            link_evidence_dir,
+            capabilities,
+        ),
         "outputs": {
             "ffmpeg": ffmpeg_receipt,
             "ffprobe": ffprobe_receipt,
@@ -1382,6 +1729,111 @@ def create_receipt(
 
 def _sorted_receipt_list(value: Any, label: str) -> None:
     _string_list(value, label, sorted_required=True)
+
+
+def _validate_link_evidence_shape(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise WindowsFFmpegError("receipt link_evidence must be an object")
+    _exact_fields(value, LINK_EVIDENCE_RECEIPT_FIELDS, "receipt link_evidence")
+    if value["closure_status"] != "input-classification-unverified":
+        raise WindowsFFmpegError(
+            "receipt link evidence may not claim verified closure without classified inputs"
+        )
+    programs = value["programs"]
+    if not isinstance(programs, dict):
+        raise WindowsFFmpegError("receipt link_evidence.programs must be an object")
+    _exact_fields(programs, set(LINK_EVIDENCE_FILES), "receipt link_evidence.programs")
+    for program, names in LINK_EVIDENCE_FILES.items():
+        record = programs[program]
+        if not isinstance(record, dict):
+            raise WindowsFFmpegError(f"receipt link evidence {program} must be an object")
+        _exact_fields(
+            record,
+            LINK_EVIDENCE_PROGRAM_FIELDS,
+            f"receipt link evidence {program}",
+        )
+        for field in ("lld_map", "verbose"):
+            file_record = record[field]
+            if not isinstance(file_record, dict):
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field} must be an object"
+                )
+            _exact_fields(
+                file_record,
+                LINK_EVIDENCE_FILE_FIELDS,
+                f"receipt link evidence {program}.{field}",
+            )
+            if file_record["filename"] != names[field]:
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field} filename drifted"
+                )
+            _positive_int(
+                file_record["bytes"],
+                f"receipt link evidence {program}.{field}.bytes",
+            )
+            if not SHA256_RE.fullmatch(str(file_record["sha256"])):
+                raise WindowsFFmpegError(
+                    f"receipt link evidence {program}.{field}.sha256 is invalid"
+                )
+
+        reproducer = record["reproducer"]
+        if not isinstance(reproducer, dict):
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program}.reproducer must be an object"
+            )
+        _exact_fields(
+            reproducer,
+            LINK_EVIDENCE_REPRODUCER_FIELDS,
+            f"receipt link evidence {program}.reproducer",
+        )
+        if reproducer["filename"] != names["reproducer"]:
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program}.reproducer filename drifted"
+            )
+        _positive_int(
+            reproducer["bytes"],
+            f"receipt link evidence {program}.reproducer.bytes",
+        )
+        if not SHA256_RE.fullmatch(str(reproducer["sha256"])):
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program}.reproducer.sha256 is invalid"
+            )
+        members = reproducer["members"]
+        if not isinstance(members, list) or not members:
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program}.reproducer.members must be nonempty"
+            )
+        paths = []
+        expected_root = Path(names["reproducer"]).stem
+        for index, member in enumerate(members):
+            label = f"receipt link evidence {program}.reproducer.members[{index}]"
+            if not isinstance(member, dict):
+                raise WindowsFFmpegError(f"{label} must be an object")
+            _exact_fields(member, LINK_EVIDENCE_MEMBER_FIELDS, label)
+            path = _trimmed_string(member["path"], f"{label}.path")
+            _safe_link_member_path(path, expected_root)
+            _positive_int(member["bytes"], f"{label}.bytes")
+            if not SHA256_RE.fullmatch(str(member["sha256"])):
+                raise WindowsFFmpegError(f"{label}.sha256 is invalid")
+            paths.append(path)
+        if paths != sorted(paths, key=lambda item: item.encode("utf-8")):
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program} reproducer members are not sorted"
+            )
+        if len(paths) != len(set(paths)) or len(paths) != len({item.casefold() for item in paths}):
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program} reproducer members are duplicated"
+            )
+        response_name = f"{expected_root}/response.txt"
+        if response_name not in paths:
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program} lacks {response_name}"
+            )
+        suffixes = {PurePosixPath(path).suffix.casefold() for path in paths}
+        if not suffixes.intersection({".a", ".lib"}) or not suffixes.intersection({".o", ".obj"}):
+            raise WindowsFFmpegError(
+                f"receipt link evidence {program} lacks archive or object inputs"
+            )
 
 
 def validate_receipt_shape(receipt: dict[str, Any]) -> None:
@@ -1410,6 +1862,7 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
             raise WindowsFFmpegError(
                 f"build receipt runtime_notices[{index}].sha256 is invalid"
             )
+    _validate_link_evidence_shape(receipt["link_evidence"])
     _validate_target(receipt["target"], include_machine=True, label="receipt target")
     source = receipt["source"]
     if not isinstance(source, dict):
@@ -1449,6 +1902,8 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
     )
     for field, value in environment.items():
         _trimmed_string(value, f"receipt build.environment.{field}")
+    if build["link_evidence"] != EXPECTED_LINK_EVIDENCE_CONTRACT:
+        raise WindowsFFmpegError("receipt build.link_evidence contract drifted")
     make = build["make"]
     if not isinstance(make, dict):
         raise WindowsFFmpegError("receipt build.make must be an object")
@@ -1550,6 +2005,7 @@ def validate_receipt_against_contracts(
         "configure_args": capability_contract["build"]["configure_args"],
         "container_image": capability_contract["build"]["container_image"],
         "environment": capability_contract["build"]["environment"],
+        "link_evidence": capability_contract["build"]["link_evidence"],
         "make": capability_contract["build"]["make"],
         "source_date_epoch": source_contract["source_date_epoch"],
         "strip": capability_contract["build"]["strip"],
@@ -1560,6 +2016,16 @@ def validate_receipt_against_contracts(
         raise WindowsFFmpegError("build receipt target differs from the pinned contract")
     if receipt["license_expression"] != source_contract["license_expression"]:
         raise WindowsFFmpegError("build receipt license differs from the pinned contract")
+    if receipt["link_evidence"]["closure_status"] != source_contract["link_closure"]["status"]:
+        raise WindowsFFmpegError(
+            "build receipt link closure status differs from the fail-closed source contract"
+        )
+    if set(receipt["link_evidence"]["programs"]) != set(
+        capability_contract["build"]["link_evidence"]["programs"]
+    ):
+        raise WindowsFFmpegError(
+            "build receipt link evidence program set differs from the pinned contract"
+        )
     notice_contracts = [
         {field: notice[field] for field in RUNTIME_NOTICE_CONTRACT_FIELDS}
         for notice in receipt["runtime_notices"]
@@ -1628,6 +2094,7 @@ def _add_artifact_paths(parser: argparse.ArgumentParser, defaults: tuple[Path, P
     parser.add_argument("--ffmpeg", type=Path, required=True)
     parser.add_argument("--ffprobe", type=Path, required=True)
     parser.add_argument("--license-dir", type=Path, required=True)
+    parser.add_argument("--link-evidence-dir", type=Path, required=True)
     parser.add_argument("--source-bundle", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--repository-commit", required=True)
@@ -1683,6 +2150,13 @@ def _parser() -> argparse.ArgumentParser:
     pe.add_argument("--ffmpeg", type=Path, required=True)
     pe.add_argument("--ffprobe", type=Path, required=True)
 
+    link_evidence = commands.add_parser(
+        "verify-link-evidence",
+        help="verify exact LLD map, verbose, and reproducer evidence",
+    )
+    _add_contract_paths(link_evidence, defaults)
+    link_evidence.add_argument("--link-evidence-dir", type=Path, required=True)
+
     create = commands.add_parser("create-receipt", help="create a canonical build receipt")
     _add_contract_paths(create, defaults)
     _add_artifact_paths(create, defaults)
@@ -1697,6 +2171,13 @@ def _parser() -> argparse.ArgumentParser:
     _add_contract_paths(compare, defaults)
     compare.add_argument("--first", type=Path, required=True)
     compare.add_argument("--second", type=Path, required=True)
+
+    promotable = commands.add_parser(
+        "assert-promotable",
+        help="fail unless link input classification has verified full source closure",
+    )
+    _add_contract_paths(promotable, defaults)
+    promotable.add_argument("--receipt", type=Path, required=True)
     return parser
 
 
@@ -1736,7 +2217,10 @@ def main() -> None:
             print(f"source-bundle lock written: {output}")
         elif args.command == "verify-source-cache":
             verify_source_cache(source_lock, args.cache)
-            print("Windows FFmpeg source cache verified: 5 archives")
+            print(
+                "Windows FFmpeg source cache verified: "
+                f"{len(source_lock.parsed()['sources'])} archives"
+            )
         elif args.command == "emit-fetch-plan":
             for source in source_lock.parsed()["sources"]:
                 fetch = source["fetch"]
@@ -1788,6 +2272,27 @@ def main() -> None:
                 if pe["certificate_bytes"]:
                     raise WindowsFFmpegError(f"{path.name} must be unsigned")
             print("Windows FFmpeg PE artifacts verified")
+        elif args.command == "verify-link-evidence":
+            evidence = link_evidence_receipt(args.link_evidence_dir, capabilities)
+            member_count = sum(
+                len(program["reproducer"]["members"])
+                for program in evidence["programs"].values()
+            )
+            print(
+                "Windows FFmpeg LLD link evidence verified: "
+                f"{member_count} recorded reproducer members; closure remains unverified"
+            )
+        elif args.command == "assert-promotable":
+            receipt = load_receipt(args.receipt)
+            validate_receipt_against_contracts(
+                receipt.parsed(), source_lock, capabilities
+            )
+            status = receipt.parsed()["link_evidence"]["closure_status"]
+            if status != "verified":
+                raise WindowsFFmpegError(
+                    "Windows FFmpeg is not promotable: actual LLD link inputs remain unclassified"
+                )
+            print("Windows FFmpeg link source closure is verified for promotion")
         elif args.command in {"create-receipt", "verify-receipt"}:
             receipt = create_receipt(
                 source_lock_path=args.source_lock,
@@ -1795,6 +2300,7 @@ def main() -> None:
                 ffmpeg=args.ffmpeg,
                 ffprobe=args.ffprobe,
                 license_dir=args.license_dir,
+                link_evidence_dir=args.link_evidence_dir,
                 source_bundle=args.source_bundle,
                 source_manifest=args.source_manifest,
                 repository_commit=args.repository_commit,

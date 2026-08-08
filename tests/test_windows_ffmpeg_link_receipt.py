@@ -348,10 +348,14 @@ class WindowsFFmpegLinkReceiptTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("make -j2 ffmpeg.exe ffprobe.exe", build)
         self.assertIn('make -j1 "$program.exe" "LDFLAGS-$program=$link_flags"', build)
-        self.assertIn("--Map=/artifact/linkage/$program.lldmap", build)
+        self.assertIn(
+            "--Map=/artifact/link-evidence/${program}-lld.map", build
+        )
         self.assertIn("--verbose", build)
         self.assertIn("--threads=1", build)
-        self.assertIn("--reproduce=/artifact/linkage/$program-reproduce.tar", build)
+        self.assertIn(
+            "--reproduce=/artifact/link-evidence/${program}-reproduce.tar", build
+        )
         self.assertNotIn("--trace", build)
         self.assertNotIn("--cref", build)
         self.assertGreaterEqual(build.count("windows_ffmpeg_link_receipt.py verify"), 1)

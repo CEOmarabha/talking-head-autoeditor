@@ -1,6 +1,14 @@
 {
   "license_expression": "GPL-2.0-or-later",
-  "schema": "autoeditor-windows-ffmpeg-sources/v1",
+  "link_closure": {
+    "evidence": [
+      "lld-map",
+      "lld-reproducer",
+      "lld-verbose"
+    ],
+    "status": "input-classification-unverified"
+  },
+  "schema": "autoeditor-windows-ffmpeg-sources/v2",
   "source_date_epoch": 1785458830,
   "sources": [
     {
@@ -60,6 +68,66 @@
       ],
       "role": "build-tool-source",
       "version": "20260616"
+    },
+    {
+      "archive": "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1.tar.gz",
+      "archive_bytes": 258325313,
+      "archive_sha256": "9dd0aba32a0c2b9e8e808e9b67502cc977f22220f67268bbfd937fa07e5ee6ce",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/llvm/llvm-project/tar.gz/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1"
+      },
+      "git_ref": {
+        "commit": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
+        "kind": "annotated-tag",
+        "object": "e013073558445169e8732e25fa86e9913bfdd24e",
+        "tree": "1e4fdb95266974a0cbca9ec4c6f740488322f238"
+      },
+      "id": "llvm-project",
+      "license": [
+        "Apache-2.0 WITH LLVM-exception",
+        "LICENSE.TXT",
+        "compiler-rt/LICENSE.TXT"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "toolchain-runtime-source",
+      "version": "llvmorg-22.1.8"
+    },
+    {
+      "archive": "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz",
+      "archive_bytes": 15766022,
+      "archive_sha256": "f07cfc452676fe1061c4b6c062335903dbe0d5d18cda6ab8ee6d94637d32a87a",
+      "build": [
+        "packaging/build_windows_ffmpeg.sh",
+        "packaging/WINDOWS_FFMPEG_BUILD.md"
+      ],
+      "fetch": {
+        "method": "https-archive",
+        "url": "https://codeload.github.com/mingw-w64/mingw-w64/tar.gz/c28e9555bb8800c53449f42a465ad9a5676fce88"
+      },
+      "git_ref": {
+        "commit": "c28e9555bb8800c53449f42a465ad9a5676fce88",
+        "kind": "commit",
+        "object": "c28e9555bb8800c53449f42a465ad9a5676fce88",
+        "tree": "16044fc7a8a2b36978b82ce8572f7280ba581268"
+      },
+      "id": "mingw-w64",
+      "license": [
+        "LicenseRef-MinGW-w64-runtime",
+        "COPYING",
+        "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt"
+      ],
+      "patches": [
+        "none"
+      ],
+      "role": "toolchain-runtime-source",
+      "version": "c28e9555bb8800c53449f42a465ad9a5676fce88"
     },
     {
       "archive": "nasm-3.01.tar.xz",
