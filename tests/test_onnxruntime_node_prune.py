@@ -301,7 +301,7 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
                 with self.assertRaisesRegex(PRUNER.GateError, "unavailable"):
                     PRUNER._DirectoryRenamer(package_parent, transaction)
 
-    def test_windows_handle_relative_rename_uses_classic_information_contract(self):
+    def test_windows_handle_relative_rename_uses_native_information_contract(self):
         class FileRenameMode(ctypes.Union):
             _fields_ = [
                 ("ReplaceIfExists", ctypes.c_byte),
@@ -321,14 +321,15 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
         target_bytes = target.encode("utf-16-le")
         required_size = ctypes.sizeof(FileRenameInfo) + len(target_bytes)
 
-        class Kernel32:
+        class Ntdll:
             def __init__(self):
                 self.rename_class = None
                 self.rename_size = None
                 self.rename_information = None
 
-            def SetFileInformationByHandle(
-                self, _handle, _information_class, _information, size
+            def NtSetInformationFile(
+                self, _handle, _status_block, _information, size,
+                _information_class,
             ):
                 information = ctypes.cast(
                     _information,
@@ -346,14 +347,17 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
                     "filename_length": information.FileNameLength,
                     "filename": filename,
                 }
-                return (
-                    _information_class == 3
+                accepted = (
+                    _information_class == 10
                     and information.ReplaceIfExists == 0
                     and information.RootDirectory == 2
                     and information.FileNameLength == len(target_bytes)
                     and filename == target_bytes
                     and size >= required_size
                 )
+                return 0 if accepted else 0xC000000D
+
+        class Kernel32:
 
             def CloseHandle(self, _handle):
                 return True
@@ -364,7 +368,15 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
         operations.ctypes = ctypes
         operations.wintypes = SimpleNamespace(HANDLE=ctypes.c_void_p)
         operations.kernel32 = Kernel32()
+        operations.ntdll = Ntdll()
+        operations.IoStatusBlock = type(
+            "IoStatusBlock",
+            (ctypes.Structure,),
+            {"_fields_": [("Status", ctypes.c_void_p),
+                           ("Information", ctypes.c_size_t)]},
+        )
         operations.FileRenameInfo = FileRenameInfo
+        operations.FILE_RENAME_INFORMATION = 10
         operations._open_relative = mock.Mock(side_effect=(101, 202))
         operations._handle_identity = mock.Mock(return_value=(7, 11))
         operations._last_error = mock.Mock(
@@ -375,10 +387,10 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
 
         self.assertEqual(FileRenameInfo.FileName.offset, 20)
         self.assertEqual(ctypes.sizeof(FileRenameInfo), 24)
-        self.assertEqual(operations.kernel32.rename_class, 3)
-        self.assertEqual(operations.kernel32.rename_size, required_size)
+        self.assertEqual(operations.ntdll.rename_class, 10)
+        self.assertEqual(operations.ntdll.rename_size, required_size)
         self.assertEqual(
-            operations.kernel32.rename_information,
+            operations.ntdll.rename_information,
             {
                 "replace_if_exists": 0,
                 "root_directory": 2,
@@ -387,7 +399,7 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
             },
         )
         self.assertGreater(
-            operations.kernel32.rename_size,
+            operations.ntdll.rename_size,
             FileRenameInfo.FileName.offset + len(target_bytes),
         )
         operations._last_error.assert_not_called()

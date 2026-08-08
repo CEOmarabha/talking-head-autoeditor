@@ -470,7 +470,7 @@ class _WindowsDirectoryOperations:
     FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
     FILE_OPEN_REPARSE_POINT = 0x00200000
     OBJ_CASE_INSENSITIVE = 0x00000040
-    FILE_RENAME_INFO = 3
+    FILE_RENAME_INFORMATION = 10
 
     def __init__(
         self,
@@ -562,13 +562,6 @@ class _WindowsDirectoryOperations:
             ctypes.POINTER(ByHandleFileInformation),
         ]
         self.kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-        self.kernel32.SetFileInformationByHandle.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_int,
-            wintypes.LPVOID,
-            wintypes.DWORD,
-        ]
-        self.kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
         self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self.kernel32.CloseHandle.restype = wintypes.BOOL
         self.ntdll.NtCreateFile.argtypes = [
@@ -585,6 +578,14 @@ class _WindowsDirectoryOperations:
             wintypes.ULONG,
         ]
         self.ntdll.NtCreateFile.restype = ctypes.c_long
+        self.ntdll.NtSetInformationFile.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(IoStatusBlock),
+            wintypes.LPVOID,
+            wintypes.ULONG,
+            ctypes.c_int,
+        ]
+        self.ntdll.NtSetInformationFile.restype = ctypes.c_long
         self.package_handle: int | None = None
         self.transaction_handle: int | None = None
         try:
@@ -738,13 +739,19 @@ class _WindowsDirectoryOperations:
                 target_bytes,
                 len(target_bytes),
             )
-            if not self.kernel32.SetFileInformationByHandle(
+            status_block = self.IoStatusBlock()
+            status = self.ntdll.NtSetInformationFile(
                 self.wintypes.HANDLE(source_handle),
-                self.FILE_RENAME_INFO,
+                self.ctypes.byref(status_block),
                 self.ctypes.byref(raw),
                 size,
-            ):
-                raise self._last_error("SetFileInformationByHandle(FileRenameInfo)")
+                self.FILE_RENAME_INFORMATION,
+            )
+            if status != 0:
+                raise GateError(
+                    "NtSetInformationFile(FileRenameInformation) failed with "
+                    f"NTSTATUS 0x{status & 0xFFFFFFFF:08x}"
+                )
             target_handle = self._open_relative(
                 target_root,
                 target,
