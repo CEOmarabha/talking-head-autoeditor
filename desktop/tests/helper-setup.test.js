@@ -66,8 +66,8 @@ assert.ok(!helperMain.includes(
 assert.ok(helperHtml.includes(
   'HyperFrames and Remotion stay on for every edit'));
 assert.ok(!helperHtml.includes('For every other account below, choose Skip'));
-assert.ok(friendSiteHtml.includes(
-  'HyperFrames and Remotion\n      are required and already included'));
+assert.ok(/HyperFrames and Remotion\r?\n      are required and already included/
+  .test(friendSiteHtml));
 assert.ok(friendSiteHtml.includes(
   'Remotion stays enabled and asks you to choose the free or paid license'));
 assert.ok(!friendSiteHtml.includes(

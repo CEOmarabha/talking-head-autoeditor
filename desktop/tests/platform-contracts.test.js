@@ -150,7 +150,11 @@ for (const releaseSource of [workflow, helperWorkflow]) {
   assert.ok(releaseSource.includes('HOMEBREW_NO_INSTALL_CLEANUP=1'));
   assert.ok(releaseSource.includes('BREW_VERSION=$(brew --version)'));
   assert.ok(releaseSource.includes(
-    'test "${BREW_VERSION%%$\'\\n\'*}" = \'Homebrew 6.0.15\''));
+    'test "${BREW_VERSION%%$\'\\n\'*}" = \'Homebrew 6.0.12\''));
+  assert.ok(releaseSource.indexOf('HOMEBREW_NO_AUTO_UPDATE=1') <
+    releaseSource.indexOf('brew install ffmpeg'));
+  assert.ok(releaseSource.indexOf('BREW_VERSION=$(brew --version)') <
+    releaseSource.indexOf('brew install ffmpeg'));
   assert.ok(!releaseSource.includes('| head'));
   assert.ok(releaseSource.includes(
     'brew reinstall --force-bottle "$FORMULA"'));

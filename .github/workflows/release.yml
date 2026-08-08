@@ -156,11 +156,11 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          brew install ffmpeg
           export HOMEBREW_NO_AUTO_UPDATE=1
           export HOMEBREW_NO_INSTALL_CLEANUP=1
           BREW_VERSION=$(brew --version)
-          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.15'
+          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.12'
+          brew install ffmpeg
           brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2_1([[:space:]]|$)' || {
             echo "Homebrew FFmpeg moved from audited formula revision 8.1.2_1. Review and repin before releasing." >&2
             exit 1
