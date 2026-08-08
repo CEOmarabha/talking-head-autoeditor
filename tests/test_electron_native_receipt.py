@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -10,7 +11,9 @@ import struct
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +27,16 @@ SPEC.loader.exec_module(receipt)
 
 
 class ElectronNativeReceiptTests(unittest.TestCase):
+    @staticmethod
+    def _windows_archive(marker: bytes) -> bytes:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as bundle:
+            for name in receipt.WINDOWS_ARCHIVE_NAMES:
+                info = zipfile.ZipInfo(name)
+                info.external_attr = 0o644 << 16
+                bundle.writestr(info, marker + b":" + name.encode("ascii"))
+        return output.getvalue()
+
     @staticmethod
     def _pe(*, certificate: bytes = b"", bad_certificate_offset: bool = False) -> bytes:
         data = bytearray(0x400)
@@ -164,6 +177,45 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         self.assertEqual(details["certificate_sha256"], hashlib.sha256(certificate).hexdigest())
         with self.assertRaisesRegex(receipt.ElectronNativeReceiptError, "non-terminal Authenticode"):
             receipt._parse_pe(self._pe(certificate=certificate, bad_certificate_offset=True), "hostile")
+
+    def test_archive_members_use_authenticated_buffer_after_atomic_path_swap(self):
+        trusted = self._windows_archive(b"trusted")
+        hostile = self._windows_archive(b"hostile")
+        filename = receipt.ARCHIVE_RECORDS["windows-x64"]["filename"]
+        record = {
+            "bytes": len(trusted),
+            "filename": filename,
+            "sha256": hashlib.sha256(trusted).hexdigest(),
+        }
+        real_read = receipt._read_regular
+        with tempfile.TemporaryDirectory() as td:
+            archive_path = Path(td) / filename
+            hostile_path = Path(td) / "hostile.zip"
+            archive_path.write_bytes(trusted)
+            hostile_path.write_bytes(hostile)
+
+            def authenticate_then_swap(path, label, maximum):
+                authenticated = real_read(path, label, maximum)
+                os.replace(hostile_path, archive_path)
+                return authenticated
+
+            with mock.patch.dict(
+                receipt.ARCHIVE_RECORDS,
+                {"windows-x64": record},
+            ), mock.patch.object(
+                receipt,
+                "_read_regular",
+                side_effect=authenticate_then_swap,
+            ):
+                members, authenticated = receipt._archive_members(
+                    archive_path,
+                    "windows-x64",
+                )
+
+        self.assertEqual(authenticated.raw, trusted)
+        self.assertEqual(set(members), set(receipt.WINDOWS_ARCHIVE_NAMES))
+        for member in members.values():
+            self.assertTrue(member.raw.startswith(b"trusted:"))
 
     def test_resource_parser_rejects_unowned_rsrc_bytes(self):
         image = receipt._parse_pe(self._resource_pe(b"manifest"), "resource")

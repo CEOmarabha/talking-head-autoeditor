@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -407,7 +408,7 @@ def _archive_members(path: Path, target: str) -> tuple[dict[str, _FileData], _Fi
     wanted = {source for source, _ in _mappings(target)}
     result: dict[str, _FileData] = {}
     try:
-        with zipfile.ZipFile(path) as bundle:
+        with zipfile.ZipFile(io.BytesIO(archive.raw)) as bundle:
             seen: set[str] = set()
             for info in bundle.infolist():
                 name = info.filename.rstrip("/")
