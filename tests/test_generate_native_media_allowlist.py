@@ -510,7 +510,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             generator.AllowlistGenerationError,
-            "scan roots do not cover.*Helper \(Renderer\)",
+            r"scan roots do not cover.*Helper \(Renderer\)",
         ):
             generator._validate_generator_scan_coverage(
                 tuple(root for root in roots if root != renderer_root),
@@ -846,31 +846,40 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                 raw,
                 hashlib.sha256(raw).hexdigest(),
             )
-            self.assertEqual(
-                generator._validate_normalization(
-                    authenticated, app_root, "mac-arm64"
-                ),
-                payload,
-            )
-
-            forged = copy.deepcopy(payload)
-            forged["runtimes"]["engine"]["source_inventory_sha256"] = "0" * 64
-            forged_raw = generator.canonical_json_bytes(forged)
-            embedded.write_bytes(forged_raw)
-            with self.assertRaisesRegex(
-                generator.AllowlistGenerationError,
-                "source inventory digest does not match",
+            # The normalization implementation intentionally refuses to run
+            # off macOS.  This contract test exercises the generator's
+            # authenticated-receipt seam on every CI host, while the
+            # normalizer's own suite covers the physical stage verification.
+            with mock.patch.object(
+                generator.normalizer, "verify_stage", return_value=payload
             ):
-                generator._validate_normalization(
-                    generator.AuthenticatedJson(
-                        embedded,
-                        forged,
-                        forged_raw,
-                        hashlib.sha256(forged_raw).hexdigest(),
+                self.assertEqual(
+                    generator._validate_normalization(
+                        authenticated, app_root, "mac-arm64"
                     ),
-                    app_root,
-                    "mac-arm64",
+                    payload,
                 )
+
+                forged = copy.deepcopy(payload)
+                forged["runtimes"]["engine"]["source_inventory_sha256"] = (
+                    "0" * 64
+                )
+                forged_raw = generator.canonical_json_bytes(forged)
+                embedded.write_bytes(forged_raw)
+                with self.assertRaisesRegex(
+                    generator.AllowlistGenerationError,
+                    "source inventory digest does not match",
+                ):
+                    generator._validate_normalization(
+                        generator.AuthenticatedJson(
+                            embedded,
+                            forged,
+                            forged_raw,
+                            hashlib.sha256(forged_raw).hexdigest(),
+                        ),
+                        app_root,
+                        "mac-arm64",
+                    )
 
     def test_macos_fails_with_precise_missing_contracts_after_usable_inputs(self):
         fixture = self._authenticated({"fixture": True})
