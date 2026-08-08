@@ -619,7 +619,27 @@ jobs:
             -Target $package.FullName | Out-Null
           $run = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
           if ($run.ExitCode -ne 0) { throw "Installer exited $($run.ExitCode)" }
-          $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
+          # electron-builder keys InstallLocation by the UUIDv5 of appId. Read
+          # the installer's exact registry receipt instead of guessing a folder
+          # from productName (one-click uses the sanitized package name).
+          $installRegistryKey = `
+            "HKCU:\Software\35e34d8c-801d-53c1-a216-54f6187b5698"
+          if (-not (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Installed Helper registry receipt is missing"
+          }
+          $registeredRoot = Get-ItemPropertyValue `
+            -LiteralPath $installRegistryKey -Name InstallLocation
+          if ([string]::IsNullOrWhiteSpace($registeredRoot)) {
+            throw "Installed Helper registry receipt has no InstallLocation"
+          }
+          $root = [System.IO.Path]::GetFullPath($registeredRoot)
+          $programsRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $env:LOCALAPPDATA "Programs"))
+          $relativeRoot = [System.IO.Path]::GetRelativePath($programsRoot, $root)
+          if ($relativeRoot -eq "." -or $relativeRoot.StartsWith("..") `
+              -or [System.IO.Path]::IsPathRooted($relativeRoot)) {
+            throw "Installed Helper registry path is outside per-user Programs"
+          }
           $app = Join-Path $root "AutoEditor Helper.exe"
           $runtimeCache = Join-Path $env:LOCALAPPDATA `
             "autoeditor-desktop-updater/package.7z"
@@ -673,7 +693,8 @@ jobs:
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
           $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
           if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
-              -or (Test-Path $runtimeCache)) {
+              -or (Test-Path $runtimeCache) `
+              -or (Test-Path -LiteralPath $installRegistryKey)) {
             throw "Windows uninstall smoke test failed"
           }
 
@@ -983,7 +1004,24 @@ jobs:
             -Target $package.FullName | Out-Null
           $install = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
-          $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
+          $installRegistryKey = `
+            "HKCU:\Software\35e34d8c-801d-53c1-a216-54f6187b5698"
+          if (-not (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Signed installed Helper registry receipt is missing"
+          }
+          $registeredRoot = Get-ItemPropertyValue `
+            -LiteralPath $installRegistryKey -Name InstallLocation
+          if ([string]::IsNullOrWhiteSpace($registeredRoot)) {
+            throw "Signed installed Helper registry receipt has no InstallLocation"
+          }
+          $root = [System.IO.Path]::GetFullPath($registeredRoot)
+          $programsRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $env:LOCALAPPDATA "Programs"))
+          $relativeRoot = [System.IO.Path]::GetRelativePath($programsRoot, $root)
+          if ($relativeRoot -eq "." -or $relativeRoot.StartsWith("..") `
+              -or [System.IO.Path]::IsPathRooted($relativeRoot)) {
+            throw "Signed installed Helper path is outside per-user Programs"
+          }
           $app = Join-Path $root "AutoEditor Helper.exe"
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
           $runtimeCache = Join-Path $env:LOCALAPPDATA `
@@ -1053,7 +1091,8 @@ jobs:
           if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
           $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
           if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
-              -or (Test-Path $runtimeCache)) {
+              -or (Test-Path $runtimeCache) `
+              -or (Test-Path -LiteralPath $installRegistryKey)) {
             throw "Windows uninstall smoke test failed"
           }
 
