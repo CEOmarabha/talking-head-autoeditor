@@ -205,7 +205,8 @@ jobs:
           brew install ffmpeg
           export HOMEBREW_NO_AUTO_UPDATE=1
           export HOMEBREW_NO_INSTALL_CLEANUP=1
-          brew --version | head -n 1 | grep -Fx 'Homebrew 6.0.15'
+          BREW_VERSION=$(brew --version)
+          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.15'
           brew list --versions ffmpeg | grep -Eq '^ffmpeg 8\.1\.2_1([[:space:]]|$)' || {
             echo "Homebrew FFmpeg moved from audited formula revision 8.1.2_1. Review and repin before releasing." >&2
             exit 1
@@ -318,6 +319,20 @@ jobs:
             }
           done
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            packaging/helper-runtime/package-lock.json
+
+      - name: Install desktop packaging dependencies for safety contracts
+        shell: bash
+        run: |
+          npm ci --prefix desktop
+          npm audit --prefix desktop --audit-level=high
+
       - name: Run safety tests against the verified platform FFmpeg
         shell: bash
         run: |
@@ -332,14 +347,6 @@ jobs:
           export AUTOEDITOR_FFMPEG="$FFMPEG"
           export AUTOEDITOR_FFPROBE="$FFPROBE"
           python -m unittest tests.test_safety
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: |
-            desktop/package-lock.json
-            packaging/helper-runtime/package-lock.json
 
       - name: Bundle pinned Node, HyperFrames, Remotion and rendering browser
         shell: bash
@@ -383,11 +390,11 @@ jobs:
             browser ensure
           if [[ "${{ matrix.target_os }}" == "windows" ]]; then
             BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell.exe | head -1)
+              -name chrome-headless-shell.exe -print -quit)
             DEST=chrome-headless-shell-win64
           else
             BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell | head -1)
+              -name chrome-headless-shell -print -quit)
             DEST=chrome-headless-shell-mac
           fi
           test -n "$BROWSER" && test -f "$BROWSER"
@@ -439,8 +446,6 @@ jobs:
         shell: bash
         working-directory: desktop
         run: |
-          npm ci
-          npm audit --audit-level=high
           python ../packaging/prepare_nsis_web.py \
             --build-resources build \
             --licenses helper-staging/licenses
@@ -509,10 +514,6 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
-          if [[ "${{ matrix.target_os }}" != "windows" ]]; then
-            npm ci
-            npm audit --audit-level=high
-          fi
           npm version "${{ steps.release.outputs.version }}" \
             --no-git-tag-version --allow-same-version
           node --check helper/main.js
@@ -539,12 +540,14 @@ jobs:
           # were missing from the actual DMG while every earlier stage passed.
           # This gate inspects the PACKED app, not the staging directory.
           if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            RES=$(find "$HELPER_DIST" -maxdepth 2 -type d -name resources | head -1)
+            RES=$(find "$HELPER_DIST" -maxdepth 2 -type d -name resources \
+              -print -quit)
             NODE_BIN="$RES/node/node.exe"
             ENGINE_BIN="$RES/engine/autoeditor-engine.exe"
             DAEMON_BIN="$RES/helper/autoeditor-helper-daemon.exe"
           else
-            APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' | head -1)
+            APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' \
+              -print -quit)
             RES="$APP/Contents/Resources"
             NODE_BIN="$RES/node/node"
             ENGINE_BIN="$RES/engine/autoeditor-engine"
@@ -678,8 +681,10 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' | head -1)
-          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' | head -1)
+          APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' \
+            -print -quit)
+          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' \
+            -print -quit)
           test -n "$APP" && test -n "$DMG"
           # Never hardcode the binary name: resolve it from the bundle itself
           # (2026-08 acceptance found the workflow calling the wrong name).
@@ -698,7 +703,8 @@ jobs:
           MOUNT=$(mktemp -d)
           hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
-          MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' | head -1)
+          MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' \
+            -print -quit)
           test -n "$MOUNTED_APP"
           if xattr -lr "$MOUNTED_APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
