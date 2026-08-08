@@ -10,14 +10,19 @@ import sys
 from pathlib import Path
 
 
-SCHEMA = "autoeditor-helper-candidate/v1"
-RELEASE_SCHEMA = "autoeditor-helper-release/v1"
+SCHEMA = "autoeditor-helper-candidate/v2"
+RELEASE_SCHEMA = "autoeditor-helper-release/v2"
 GITHUB_ASSETS_SCHEMA = "autoeditor-helper-github-assets/v1"
 TAG_PATTERN = re.compile(
     r"^helper-v(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\."
     r"(?P<patch>[0-9]+)(?P<suffix>[.-][A-Za-z0-9.-]+)?$"
 )
 MAX_COPY_OBJECT_BYTES = 5 * 1024 * 1024 * 1024
+MAX_NSIS_WEB_PACKAGE_BYTES = 4_294_967_295
+WINDOWS_RUNTIME_PACKAGE = (
+    "AutoEditor-Helper-Windows.nsis.7z",
+    "application/x-7z-compressed",
+)
 PLATFORMS = {
     ("windows", "x64"): (
         "windows-x64", "AutoEditor-Helper.exe",
@@ -64,7 +69,7 @@ def write_candidate(args: argparse.Namespace) -> None:
     if args.file.stat().st_size > MAX_COPY_OBJECT_BYTES:
         raise SystemExit("installer exceeds the 5 GiB server-side copy limit")
     try:
-        runtime = json.loads(args.runtime_manifest.read_text())
+        runtime = json.loads(args.runtime_manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid runtime manifest: {exc}") from exc
     if runtime.get("target") != {"os": args.target_os, "arch": args.arch}:
@@ -85,6 +90,34 @@ def write_candidate(args: argparse.Namespace) -> None:
     installer_sha = sha256(args.file)
     key = (f"dist/helper/objects/{installer_sha}/{platform_id}/"
            f"{stored_name}")
+    runtime_package = None
+    if args.target_os == "windows":
+        if args.runtime_package is None:
+            raise SystemExit("Windows candidate requires one .nsis.7z runtime package")
+        if not args.runtime_package.name.endswith(".nsis.7z"):
+            raise SystemExit("Windows runtime package must end in .nsis.7z")
+        if not args.runtime_package.is_file() or \
+                args.runtime_package.stat().st_size <= 0:
+            raise SystemExit(
+                f"Windows runtime package is missing or empty: {args.runtime_package}"
+            )
+        package_bytes = args.runtime_package.stat().st_size
+        if package_bytes >= MAX_NSIS_WEB_PACKAGE_BYTES:
+            raise SystemExit(
+                "Windows runtime package must be smaller than 4294967295 bytes"
+            )
+        package_sha = sha256(args.runtime_package)
+        package_name, package_content_type = WINDOWS_RUNTIME_PACKAGE
+        runtime_package = {
+            "key": (f"dist/helper/objects/{package_sha}/{platform_id}/"
+                    f"{package_name}"),
+            "filename": package_name,
+            "content_type": package_content_type,
+            "bytes": package_bytes,
+            "sha256": package_sha,
+        }
+    elif args.runtime_package is not None:
+        raise SystemExit("macOS candidates must not include a Windows runtime package")
     receipt = {
         "schema": SCHEMA,
         "tag": args.tag,
@@ -109,13 +142,18 @@ def write_candidate(args: argparse.Namespace) -> None:
             "sha256": sha256(args.runtime_manifest),
         },
     }
+    if runtime_package is not None:
+        receipt["runtime_package"] = runtime_package
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    args.output.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def load_receipt(path: Path, tag: str) -> dict:
     try:
-        receipt = json.loads(path.read_text())
+        receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid candidate receipt {path}: {exc}") from exc
     if receipt.get("schema") != SCHEMA or receipt.get("tag") != tag:
@@ -150,6 +188,31 @@ def load_receipt(path: Path, tag: str) -> dict:
                 r"[a-f0-9]{64}", str(runtime.get("sha256", ""))
             ):
         raise SystemExit(f"invalid runtime manifest receipt: {path}")
+    package = receipt.get("runtime_package")
+    if platform_id == "windows-x64":
+        package_name, package_content_type = WINDOWS_RUNTIME_PACKAGE
+        if not isinstance(package, dict):
+            raise SystemExit(f"missing Windows runtime package receipt: {path}")
+        package_digest = str(package.get("sha256", ""))
+        package_exact = {
+            "key": (f"dist/helper/objects/{package_digest}/{platform_id}/"
+                    f"{package_name}"),
+            "filename": package_name,
+            "content_type": package_content_type,
+        }
+        for field, value in package_exact.items():
+            if package.get(field) != value:
+                raise SystemExit(
+                    f"invalid runtime package {field} in candidate receipt: {path}"
+                )
+        package_bytes = package.get("bytes")
+        if not isinstance(package_bytes, int) or package_bytes <= 0 or \
+                package_bytes >= MAX_NSIS_WEB_PACKAGE_BYTES:
+            raise SystemExit(f"invalid runtime package byte count: {path}")
+        if not re.fullmatch(r"[a-f0-9]{64}", package_digest):
+            raise SystemExit(f"invalid runtime package digest: {path}")
+    elif "runtime_package" in receipt:
+        raise SystemExit(f"macOS receipt includes a Windows runtime package: {path}")
     source = receipt.get("source")
     if not isinstance(source, dict) or not re.fullmatch(
             r"[a-f0-9]{40}", str(source.get("commit", ""))) or not re.fullmatch(
@@ -173,10 +236,16 @@ def verify_head(args: argparse.Namespace) -> None:
         head = json.loads(args.head.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid R2 HEAD response: {exc}") from exc
+    selected = receipt if args.object == "installer" \
+        else receipt.get("runtime_package")
+    if not isinstance(selected, dict):
+        raise SystemExit(
+            f"candidate has no {args.object} object to verify"
+        )
     metadata = head.get("Metadata") or {}
-    if head.get("ContentLength") != receipt["bytes"]:
+    if head.get("ContentLength") != selected["bytes"]:
         raise SystemExit("R2 object size does not match candidate receipt")
-    if metadata.get("sha256") != receipt["sha256"]:
+    if metadata.get("sha256") != selected["sha256"]:
         raise SystemExit("R2 object digest metadata does not match candidate receipt")
 
 
@@ -244,10 +313,20 @@ def assemble_release(args: argparse.Namespace) -> None:
         "schema": GITHUB_ASSETS_SCHEMA,
         "assets": github_assets,
     }, indent=2, sort_keys=True) + "\n")
-    checksum_lines = [
-        f"{receipt['sha256']}  {receipt['download_name']}"
-        for receipt in sorted(receipts, key=lambda item: item["platform"])
-    ]
+    checksum_lines = []
+    for receipt in sorted(receipts, key=lambda item: item["platform"]):
+        checksum_lines.append(
+            f"{receipt['sha256']}  {receipt['download_name']}"
+        )
+        checksum_lines.append(
+            f"{receipt['runtime_manifest']['sha256']}  "
+            f"{receipt['runtime_manifest']['filename']}"
+        )
+        if receipt["platform"] == "windows-x64":
+            package = receipt["runtime_package"]
+            checksum_lines.append(
+                f"{package['sha256']}  {package['filename']}"
+            )
     checksums = args.output / "SHA256SUMS.txt"
     checksums.write_text("\n".join(checksum_lines) + "\n")
     checksum_sha = sha256(checksums)
@@ -262,19 +341,23 @@ def assemble_release(args: argparse.Namespace) -> None:
             "sha256": checksum_sha,
             "bytes": checksums.stat().st_size,
         },
-        "platforms": {
-            receipt["platform"]: {
-                "key": receipt["key"],
-                "sha256": receipt["sha256"],
-                "bytes": receipt["bytes"],
-            }
-            for receipt in receipts
-        },
+        "platforms": {},
         "verification": {
             receipt["platform"]: receipt["verification"]
             for receipt in receipts
         },
     }
+    for receipt in receipts:
+        platform_entry = {
+            "key": receipt["key"],
+            "sha256": receipt["sha256"],
+            "bytes": receipt["bytes"],
+        }
+        if receipt["platform"] == "windows-x64":
+            platform_entry["runtime_package"] = dict(
+                receipt["runtime_package"]
+            )
+        pointer["platforms"][receipt["platform"]] = platform_entry
     (args.output / "current.json").write_text(
         json.dumps(pointer, indent=2, sort_keys=True) + "\n"
     )
@@ -389,6 +472,7 @@ def parser() -> argparse.ArgumentParser:
     candidate = commands.add_parser("candidate")
     candidate.add_argument("--file", type=Path, required=True)
     candidate.add_argument("--runtime-manifest", type=Path, required=True)
+    candidate.add_argument("--runtime-package", type=Path)
     candidate.add_argument("--target-os", required=True)
     candidate.add_argument("--arch", required=True)
     candidate.add_argument("--tag", required=True)
@@ -403,6 +487,10 @@ def parser() -> argparse.ArgumentParser:
     head.add_argument("--receipt", type=Path, required=True)
     head.add_argument("--head", type=Path, required=True)
     head.add_argument("--tag", required=True)
+    head.add_argument(
+        "--object", choices=("installer", "runtime-package"),
+        default="installer",
+    )
     head.set_defaults(run=verify_head)
     assemble = commands.add_parser("assemble")
     assemble.add_argument("--receipts", type=Path, required=True)

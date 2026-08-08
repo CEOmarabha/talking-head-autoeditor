@@ -15,6 +15,8 @@ permissions:
 
 env:
   NODE_VERSION: 22.23.2
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
   HYPERFRAMES_VERSION: 0.7.99
   HYPERFRAMES_CHROME_VERSION: 152.0.7928.2
   REMOTION_VERSION: 4.0.507
@@ -111,7 +113,6 @@ jobs:
           python -m pip --version
           python -m pip install --require-hashes -r "$LOCK"
           python -m pip check
-          python -m unittest tests.test_safety
           python -m pytest -q webapp/tests/test_web.py
           pyinstaller packaging/engine.spec --distpath packaging/dist
           pyinstaller packaging/helper_daemon.spec --distpath packaging/dist
@@ -317,6 +318,21 @@ jobs:
             }
           done
 
+      - name: Run safety tests against the verified platform FFmpeg
+        shell: bash
+        run: |
+          FFMPEG=desktop/helper-staging/bin/ffmpeg
+          FFPROBE=desktop/helper-staging/bin/ffprobe
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            FFMPEG="${FFMPEG}.exe"
+            FFPROBE="${FFPROBE}.exe"
+          fi
+          test -x "$FFMPEG" || test -f "$FFMPEG"
+          test -x "$FFPROBE" || test -f "$FFPROBE"
+          export AUTOEDITOR_FFMPEG="$FFMPEG"
+          export AUTOEDITOR_FFPROBE="$FFPROBE"
+          python -m unittest tests.test_safety
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -385,6 +401,7 @@ jobs:
           NODE_PATH: ${{ github.workspace }}/desktop/helper-staging/creative-runtime/node_modules
           REMOTION_LICENSE_KEY: free-license
         run: |
+          STAGE=$(realpath "$STAGE")
           NODE="$STAGE/node/node"
           FFMPEG="$STAGE/bin/ffmpeg"
           FFPROBE="$STAGE/bin/ffprobe"
@@ -399,7 +416,7 @@ jobs:
           "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
             check --json "$STAGE/creative/hyperframes-graphics"
           (cd "$STAGE/creative/hyperframes-graphics" && \
-            "$NODE" "$GITHUB_WORKSPACE/$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
               render -o "$RUNNER_TEMP/hyperframes-probe.mp4" --quality draft)
           "$NODE" "$STAGE/creative-runtime/node_modules/@remotion/cli/remotion-cli.js" \
             render "$STAGE/creative/remotion-viz/src/index.ts" FlowViz \
@@ -417,9 +434,36 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare the hash-locked large-file Windows web installer
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: desktop
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          python ../packaging/prepare_nsis_web.py \
+            --build-resources build \
+            --licenses helper-staging/licenses
+          python ../packaging/patch_nsis_web_integrity.py \
+            --node-modules node_modules \
+            --plugin build/x86-unicode/AutoEditorINetC.dll
+
       - name: Strip packaging metadata before writing receipts
         shell: bash
         run: |
+          # Only the staged payload is part of the artifact from this point on.
+          # Drop duplicate build and download caches before electron-builder
+          # creates another unpacked copy and the external NSIS package.
+          rm -rf packaging/dist packaging/build \
+            build/autoeditor-engine build/autoeditor-helper-daemon \
+            "$HOME/.cache/huggingface" "$HOME/.cache/hyperframes"
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            rm -rf ffmpeg.zip fftmp
+          fi
+          python -m pip cache purge >/dev/null || true
+          npm cache clean --force >/dev/null 2>&1 || true
+          test -s desktop/helper-staging/models/faster-whisper-small/model.bin
+          test -s desktop/helper-staging/models/faster-whisper-medium/model.bin
           find desktop/helper-staging \
             \( -name '.DS_Store' -o -name '._*' \) -delete
           if [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -436,14 +480,39 @@ jobs:
             --target-arch "${{ matrix.arch }}" \
             --version "${{ steps.release.outputs.version }}"
 
+      - name: Seal prepared runtime for tag-only signing jobs
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          tar -czf "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz" \
+            -C desktop helper-staging
+
+      - name: Upload prepared runtime to isolated signing job
+        if: steps.release.outputs.tagged == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prepared-${{ steps.release.outputs.artifact }}
+          path: ${{ runner.temp }}/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Release local signing archive before packaging
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz"
+
       - name: Build installer
         shell: bash
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
-          npm ci
-          npm audit --audit-level=high
+          if [[ "${{ matrix.target_os }}" != "windows" ]]; then
+            npm ci
+            npm audit --audit-level=high
+          fi
           npm version "${{ steps.release.outputs.version }}" \
             --no-git-tag-version --allow-same-version
           node --check helper/main.js
@@ -451,10 +520,16 @@ jobs:
           node --check helper/renderer/app.js
           node --check scripts/notarize-artifacts.js
           npm test
+          EXTRA_CONFIG=()
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/helper-v${{ steps.release.outputs.version }}/$GITHUB_SHA"
+            EXTRA_CONFIG+=(--config.nsisWeb.appPackageUrl="$PACKAGE_URL")
+          fi
           npx electron-builder --config electron-builder.helper.yml \
             --${{ matrix.electron_target }} \
             --${{ matrix.arch }} --publish never \
-            --config.directories.output="$HELPER_DIST"
+            --config.directories.output="$HELPER_DIST" \
+            "${EXTRA_CONFIG[@]}"
 
       - name: Verify the packed app ships the complete creative runtime
         shell: bash
@@ -500,17 +575,55 @@ jobs:
             --version "${{ steps.release.outputs.version }}"
           echo "Packed creative runtime is complete."
 
+      - name: Release duplicate staging bytes before artifact acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
+
       - name: Smoke-test installed Windows app and signature
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "$env:HELPER_DIST/*.exe" | Select-Object -First 1
-          if (-not $installer) { throw "Windows installer was not created" }
-          $run = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          $webOutput = Join-Path $env:HELPER_DIST "nsis-web"
+          $installers = @(Get-ChildItem "$webOutput/*.exe" -File)
+          $packages = @(Get-ChildItem "$webOutput/*.nsis.7z" -File)
+          if ($installers.Count -ne 1 -or $packages.Count -ne 1) {
+            throw "Windows web installer must contain one EXE and one runtime package"
+          }
+          $installer = $installers[0]
+          $package = $packages[0]
+          if ($package.Length -le 0 -or $package.Length -ge [uint64]4294967295) {
+            throw "Windows runtime package must be nonempty and smaller than INetC's 4 GiB limit"
+          }
+          $corrupt = Join-Path $env:RUNNER_TEMP "corrupt-runtime.nsis.7z"
+          [System.IO.File]::WriteAllBytes($corrupt, [byte[]](1, 2, 3, 4))
+          $rejected = Start-Process $installer.FullName `
+            -ArgumentList @("/S", "--package-file=$corrupt") -Wait -PassThru
+          if ($rejected.ExitCode -eq 0) {
+            throw "Windows web installer accepted a runtime package with the wrong hash"
+          }
+          $acceptance = Join-Path $env:RUNNER_TEMP "helper-web-acceptance"
+          New-Item -ItemType Directory -Force -Path $acceptance | Out-Null
+          $acceptanceInstaller = Join-Path $acceptance $installer.Name
+          $acceptancePackage = Join-Path $acceptance $package.Name
+          Copy-Item $installer.FullName $acceptanceInstaller
+          New-Item -ItemType HardLink -Path $acceptancePackage `
+            -Target $package.FullName | Out-Null
+          $run = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
           if ($run.ExitCode -ne 0) { throw "Installer exited $($run.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
           $app = Join-Path $root "AutoEditor Helper.exe"
+          $runtimeCache = Join-Path $env:LOCALAPPDATA `
+            "autoeditor-desktop-updater/package.7z"
           if (-not (Test-Path $app)) { throw "Installed Helper app is missing" }
+          if (-not (Test-Path $runtimeCache)) {
+            throw "Installed Helper did not retain its verified runtime package"
+          }
           python packaging/verify_helper_manifest.py `
             --resources (Join-Path $root "resources") `
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
@@ -556,7 +669,8 @@ jobs:
           if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
           $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
-          if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
+              -or (Test-Path $runtimeCache)) {
             throw "Windows uninstall smoke test failed"
           }
 
@@ -623,38 +737,26 @@ jobs:
           hdiutil detach "$MOUNT" -force
           trap - EXIT
 
-      - name: Seal prepared runtime for tag-only signing jobs
-        if: steps.release.outputs.tagged == 'true'
-        shell: bash
-        run: |
-          tar -czf "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz" \
-            -C desktop helper-staging
-
-      - name: Upload prepared runtime to isolated signing job
-        if: steps.release.outputs.tagged == 'true'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: prepared-${{ steps.release.outputs.artifact }}
-          path: ${{ runner.temp }}/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz
-          if-no-files-found: error
-
       - name: Upload unsigned acceptance artifact
         if: steps.release.outputs.tagged != 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ steps.release.outputs.artifact }}
           path: |
-            ${{ runner.temp }}/helper-dist/*.exe
+            ${{ runner.temp }}/helper-dist/nsis-web/*.exe
+            ${{ runner.temp }}/helper-dist/nsis-web/*.nsis.7z
             ${{ runner.temp }}/helper-dist/*.dmg
             ${{ runner.temp }}/helper-dist/*.blockmap
             desktop/helper-staging/runtime-manifest.json
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   sign-windows:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')
     needs: build
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 150
     permissions:
       contents: read
     environment: helper-windows-signing
@@ -678,6 +780,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-windows-x64.tar.gz" \
             -C desktop
           test -f desktop/helper-staging/runtime-manifest.json
+          rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-windows-x64.tar.gz"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -691,7 +794,16 @@ jobs:
 
       - name: Install locked packaging dependencies without signing credentials
         working-directory: desktop
-        run: npm ci
+        shell: bash
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          python ../packaging/prepare_nsis_web.py \
+            --build-resources build \
+            --licenses helper-staging/licenses
+          python ../packaging/patch_nsis_web_integrity.py \
+            --node-modules node_modules \
+            --plugin build/x86-unicode/AutoEditorINetC.dll
 
       - name: Select the protected Windows signer
         id: signer
@@ -739,9 +851,11 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#helper-v}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
+          PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.azure.js \
             --win --x64 --publish never \
-            --config.directories.output="$HELPER_DIST"
+            --config.directories.output="$HELPER_DIST" \
+            --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
 
       - name: Build the signed Windows installer with PFX
         if: steps.signer.outputs.kind == 'pfx'
@@ -754,9 +868,21 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#helper-v}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
+          PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.yml \
             --win --x64 --publish never \
-            --config.directories.output="$HELPER_DIST"
+            --config.directories.output="$HELPER_DIST" \
+            --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
+
+      - name: Release duplicate signed staging bytes before acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
 
       - name: Verify installed Windows signatures and exact runtime
         shell: pwsh
@@ -803,11 +929,20 @@ jobs:
             }
             return $actual
           }
-          $installers = @(Get-ChildItem "$env:HELPER_DIST/*.exe" -File)
+          $webOutput = Join-Path $env:HELPER_DIST "nsis-web"
+          $installers = @(Get-ChildItem "$webOutput/*.exe" -File)
           if ($installers.Count -ne 1) {
             throw "Expected exactly one signed Windows installer, found $($installers.Count)"
           }
+          $packages = @(Get-ChildItem "$webOutput/*.nsis.7z" -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one signed Windows runtime package"
+          }
           $installer = $installers[0]
+          $package = $packages[0]
+          if ($package.Length -le 0 -or $package.Length -ge [uint64]4294967295) {
+            throw "Signed Windows runtime package must be nonempty and smaller than INetC's 4 GiB limit"
+          }
           $approvedThumbprint = ""
           $approvedIdentityEku = ""
           if ($env:WINDOWS_SIGNER_KIND -eq "pfx") {
@@ -826,11 +961,27 @@ jobs:
           }
           $installerThumbprint = Assert-AuthenticodeSigner `
             $installer.FullName $approvedThumbprint $approvedIdentityEku
-          $install = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          $corrupt = Join-Path $env:RUNNER_TEMP "corrupt-signed-runtime.nsis.7z"
+          [System.IO.File]::WriteAllBytes($corrupt, [byte[]](1, 2, 3, 4))
+          $rejected = Start-Process $installer.FullName `
+            -ArgumentList @("/S", "--package-file=$corrupt") -Wait -PassThru
+          if ($rejected.ExitCode -eq 0) {
+            throw "Signed web installer accepted a runtime package with the wrong hash"
+          }
+          $acceptance = Join-Path $env:RUNNER_TEMP "helper-signed-web-acceptance"
+          New-Item -ItemType Directory -Force -Path $acceptance | Out-Null
+          $acceptanceInstaller = Join-Path $acceptance $installer.Name
+          $acceptancePackage = Join-Path $acceptance $package.Name
+          Copy-Item $installer.FullName $acceptanceInstaller
+          New-Item -ItemType HardLink -Path $acceptancePackage `
+            -Target $package.FullName | Out-Null
+          $install = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
           $app = Join-Path $root "AutoEditor Helper.exe"
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
+          $runtimeCache = Join-Path $env:LOCALAPPDATA `
+            "autoeditor-desktop-updater/package.7z"
           foreach ($file in @($app, $uninstaller)) {
             if (-not (Test-Path $file)) { throw "Signed installed file is missing: $file" }
             $fileThumbprint = $installerThumbprint
@@ -838,8 +989,22 @@ jobs:
             [void](Assert-AuthenticodeSigner `
               $file $fileThumbprint $approvedIdentityEku)
           }
+          if (-not (Test-Path $runtimeCache)) {
+            throw "Signed Helper did not retain its verified runtime package"
+          }
+          $resources = Join-Path $root "resources"
+          $resourceExecutables = @(Get-ChildItem $resources -Recurse -Filter *.exe -File)
+          if ($resourceExecutables.Count -eq 0) {
+            throw "Signed Helper runtime contains no executable payloads"
+          }
+          foreach ($file in $resourceExecutables) {
+            $fileThumbprint = $installerThumbprint
+            if ($env:WINDOWS_SIGNER_KIND -eq "azure") { $fileThumbprint = "" }
+            [void](Assert-AuthenticodeSigner `
+              $file.FullName $fileThumbprint $approvedIdentityEku)
+          }
           python packaging/verify_helper_manifest.py `
-            --resources (Join-Path $root "resources") `
+            --resources $resources `
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
             --target-os windows --target-arch x64 `
             --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
@@ -881,7 +1046,8 @@ jobs:
           Remove-Item Env:AUTOEDITOR_SMOKE_TEST
           if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
           $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
-          if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
+              -or (Test-Path $runtimeCache)) {
             throw "Windows uninstall smoke test failed"
           }
 
@@ -894,14 +1060,18 @@ jobs:
         run: |
           test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && \
             test -n "$R2_ACCOUNT_ID"
-          INSTALLER=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.exe' -print -quit)
-          test -f "$INSTALLER"
+          INSTALLER=$(find "$HELPER_DIST/nsis-web" -maxdepth 1 \
+            -type f -name '*.exe' -print -quit)
+          RUNTIME_PACKAGE=$(find "$HELPER_DIST/nsis-web" -maxdepth 1 \
+            -type f -name '*.nsis.7z' -print -quit)
+          test -f "$INSTALLER" && test -f "$RUNTIME_PACKAGE"
           RECEIPT_DIR=release-receipt/helper-windows-x64
           mkdir -p "$RECEIPT_DIR"
           RECEIPT="$RECEIPT_DIR/candidate-windows-x64.json"
           python packaging/helper_release_metadata.py candidate \
             --file "$INSTALLER" \
             --runtime-manifest desktop/helper-staging/runtime-manifest.json \
+            --runtime-package "$RUNTIME_PACKAGE" \
             --target-os windows --arch x64 \
             --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
@@ -915,6 +1085,13 @@ jobs:
           node desktop/scripts/r2-release-storage.js upload \
             --bucket autoeditor-release-candidates --key "$KEY" \
             --file "$INSTALLER" --content-type "$TYPE" --sha256 "$SHA"
+          PACKAGE_KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["key"])' "$RECEIPT")
+          PACKAGE_SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["sha256"])' "$RECEIPT")
+          PACKAGE_TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$PACKAGE_KEY" \
+            --file "$RUNTIME_PACKAGE" --content-type "$PACKAGE_TYPE" \
+            --sha256 "$PACKAGE_SHA"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -927,7 +1104,8 @@ jobs:
         with:
           name: signed-candidate-helper-windows-x64
           path: |
-            ${{ runner.temp }}/helper-signed-dist/*.exe
+            ${{ runner.temp }}/helper-signed-dist/nsis-web/*.exe
+            ${{ runner.temp }}/helper-signed-dist/nsis-web/*.nsis.7z
             release-receipt/helper-windows-x64
           if-no-files-found: error
           compression-level: 0
@@ -945,7 +1123,7 @@ jobs:
           - os: macos-15-intel
             arch: x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 150
     permissions:
       contents: read
     environment: helper-macos-signing
@@ -969,6 +1147,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz" \
             -C desktop
           test -f desktop/helper-staging/runtime-manifest.json
+          rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -1006,6 +1185,16 @@ jobs:
           npx electron-builder --config electron-builder.helper.yml \
             --mac --${{ matrix.arch }} --publish never \
             --config.directories.output="$HELPER_DIST"
+
+      - name: Release duplicate signed staging bytes before acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
 
       - name: Verify the final mounted Mac artifact
         shell: bash

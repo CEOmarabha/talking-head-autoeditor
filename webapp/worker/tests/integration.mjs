@@ -795,10 +795,35 @@ test('browser and daemon routes enforce two-user ownership', async (t) => {
   assert.equal(await ownerMedia.text(), 'source');
 });
 
-test('installer routes require auth and preserve headers and byte ranges',
+test('public Helper runtime contract exposes only the fixed v2 contract',
+  async (t) => {
+    const h = await createHarness(t);
+    const response = await h.request('/download/helper/runtime/contract');
+    assert.equal(response.status, 200);
+    securityHeaders(response);
+    assert.equal(response.headers.get('content-type'), 'application/json');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await json(response), {
+      schema: 'autoeditor-helper-runtime-route/v2',
+      release_schema: 'autoeditor-helper-release/v2',
+      route: '/download/helper/runtime/windows-x64/{tag}/{commit}',
+      max_package_bytes: 4_294_967_294,
+    });
+
+    const nearMiss = await h.request('/download/helper/runtime/contract/');
+    assert.equal(nearMiss.status, 404);
+    securityHeaders(nearMiss);
+    assert.equal(nearMiss.headers.get('cache-control'), 'no-store');
+  });
+
+test('installer and immutable runtime routes enforce the live release receipt',
   async (t) => {
     const h = await createHarness(t);
     const user = await h.seedUser({ id: 'installeruser' });
+    const tag = 'helper-v1.2.3';
+    const commit = 'a'.repeat(40);
+    const runtimePath =
+      `/download/helper/runtime/windows-x64/${tag}/${commit}`;
     const releases = {
       'windows-x64': Buffer.from('windows-installer-bytes'),
       'mac-arm64': Buffer.from('mac-arm-installer-bytes'),
@@ -818,9 +843,30 @@ test('installer routes require auth and preserve headers and byte ranges',
       });
       platforms[platform] = { key, bytes: bytes.length, sha256: hash };
     }
+    const runtimeBytes = Buffer.from('windows-nsis-web-runtime-package');
+    const runtimeHash = sha256(runtimeBytes);
+    const runtimePackage = {
+      key: `dist/helper/objects/${runtimeHash}/windows-x64/` +
+        'AutoEditor-Helper-Windows.nsis.7z',
+      filename: 'AutoEditor-Helper-Windows.nsis.7z',
+      content_type: 'application/x-7z-compressed',
+      bytes: runtimeBytes.length,
+      sha256: runtimeHash,
+    };
+    platforms['windows-x64'].runtime_package = runtimePackage;
+    await h.releases.put(runtimePackage.key, runtimeBytes, {
+      customMetadata: { sha256: runtimeHash },
+    });
+
+    const beforePromotion = await h.request(runtimePath);
+    assert.equal(beforePromotion.status, 404);
+    securityHeaders(beforePromotion);
+
     await h.releases.put('dist/helper/current.json', JSON.stringify({
-      schema: 'autoeditor-helper-release/v1',
-      tag: 'helper-v1.2.3',
+      schema: 'autoeditor-helper-release/v2',
+      tag,
+      version: '1.2.3',
+      source: { commit, run_id: '123', run_attempt: '1' },
       platforms,
     }));
 
@@ -830,6 +876,9 @@ test('installer routes require auth and preserve headers and byte ranges',
     const unauthenticatedBinary = await h.request('/download/helper/windows');
     assert.equal(unauthenticatedBinary.status, 401);
     securityHeaders(unauthenticatedBinary);
+    const unauthenticatedMac = await h.request('/download/helper/mac-arm64');
+    assert.equal(unauthenticatedMac.status, 401);
+    securityHeaders(unauthenticatedMac);
     const availability = await h.request('/download/helper/availability', {
       cookie: user.session,
     });
@@ -865,6 +914,120 @@ test('installer routes require auth and preserve headers and byte ranges',
     assert.deepEqual(Buffer.from(await ranged.arrayBuffer()),
       releases['windows-x64'].subarray(2, 8));
 
+    const mac = await h.request('/download/helper/mac-arm64', {
+      cookie: user.session,
+    });
+    assert.equal(mac.status, 200);
+    securityHeaders(mac);
+    assert.deepEqual(Buffer.from(await mac.arrayBuffer()),
+      releases['mac-arm64']);
+
+    const runtimeFull = await h.request(runtimePath);
+    assert.equal(runtimeFull.status, 200);
+    securityHeaders(runtimeFull);
+    assert.equal(runtimeFull.headers.get('accept-ranges'), 'bytes');
+    assert.equal(runtimeFull.headers.get('content-type'),
+      'application/x-7z-compressed');
+    assert.equal(runtimeFull.headers.get('cache-control'), 'no-store');
+    assert.equal(runtimeFull.headers.get('content-length'),
+      String(runtimeBytes.length));
+    assert.deepEqual(Buffer.from(await runtimeFull.arrayBuffer()), runtimeBytes);
+
+    const runtimeRange = await h.request(runtimePath, {
+      headers: { range: 'bytes=4-11' },
+    });
+    assert.equal(runtimeRange.status, 206);
+    securityHeaders(runtimeRange);
+    assert.equal(runtimeRange.headers.get('content-range'),
+      `bytes 4-11/${runtimeBytes.length}`);
+    assert.equal(runtimeRange.headers.get('content-length'), '8');
+    assert.deepEqual(Buffer.from(await runtimeRange.arrayBuffer()),
+      runtimeBytes.subarray(4, 12));
+
+    const openEndedRange = await h.request(runtimePath, {
+      headers: { range: 'bytes=4-' },
+    });
+    assert.equal(openEndedRange.status, 206);
+    securityHeaders(openEndedRange);
+    assert.equal(openEndedRange.headers.get('content-range'),
+      `bytes 4-${runtimeBytes.length - 1}/${runtimeBytes.length}`);
+    assert.equal(openEndedRange.headers.get('content-length'),
+      String(runtimeBytes.length - 4));
+    assert.deepEqual(Buffer.from(await openEndedRange.arrayBuffer()),
+      runtimeBytes.subarray(4));
+
+    const suffixRange = await h.request(runtimePath, {
+      headers: { range: 'bytes=-7' },
+    });
+    assert.equal(suffixRange.status, 206);
+    securityHeaders(suffixRange);
+    assert.equal(suffixRange.headers.get('content-range'),
+      `bytes ${runtimeBytes.length - 7}-${runtimeBytes.length - 1}/` +
+      `${runtimeBytes.length}`);
+    assert.equal(suffixRange.headers.get('content-length'), '7');
+    assert.deepEqual(Buffer.from(await suffixRange.arrayBuffer()),
+      runtimeBytes.subarray(-7));
+
+    const wrongTag = await h.request(
+      `/download/helper/runtime/windows-x64/helper-v1.2.4/${commit}`,
+    );
+    assert.equal(wrongTag.status, 404);
+    const wrongCommit = await h.request(
+      `/download/helper/runtime/windows-x64/${tag}/${'b'.repeat(40)}`,
+    );
+    assert.equal(wrongCommit.status, 404);
+    const tagOnly = await h.request(
+      `/download/helper/runtime/windows-x64/${tag}`,
+    );
+    assert.equal(tagOnly.status, 404);
+
+    await h.releases.delete(runtimePackage.key);
+    const missingPackage = await h.request('/download/helper/availability', {
+      cookie: user.session,
+    });
+    assert.equal(missingPackage.status, 200);
+    assert.deepEqual(await json(missingPackage), {
+      '/download/helper/windows': false,
+      '/download/helper/mac-arm64': false,
+      '/download/helper/mac-x64': false,
+    });
+    const missingRuntime = await h.request(runtimePath);
+    assert.equal(missingRuntime.status, 404);
+
+    await h.releases.put(
+      runtimePackage.key, Buffer.concat([runtimeBytes, Buffer.from('x')]), {
+        customMetadata: { sha256: runtimeHash },
+      },
+    );
+    const wrongPackageSize = await h.request(
+      '/download/helper/availability', { cookie: user.session },
+    );
+    assert.equal(wrongPackageSize.status, 200);
+    assert.deepEqual(await json(wrongPackageSize), {
+      '/download/helper/windows': false,
+      '/download/helper/mac-arm64': false,
+      '/download/helper/mac-x64': false,
+    });
+
+    await h.releases.put(runtimePackage.key, runtimeBytes, {
+      customMetadata: { sha256: '0'.repeat(64) },
+    });
+    const tamperedPackage = await h.request('/download/helper/availability', {
+      cookie: user.session,
+    });
+    assert.equal(tamperedPackage.status, 200);
+    assert.deepEqual(await json(tamperedPackage), {
+      '/download/helper/windows': false,
+      '/download/helper/mac-arm64': false,
+      '/download/helper/mac-x64': false,
+    });
+    const tamperedRuntime = await h.request(runtimePath);
+    assert.equal(tamperedRuntime.status, 404);
+
+    await h.releases.put(runtimePackage.key, runtimeBytes, {
+      customMetadata: { sha256: runtimeHash },
+    });
+
     const macArm = platforms['mac-arm64'];
     await h.releases.put(macArm.key, releases['mac-arm64'], {
       customMetadata: { sha256: '0'.repeat(64) },
@@ -883,4 +1046,9 @@ test('installer routes require auth and preserve headers and byte ranges',
     });
     assert.equal(blocked.status, 503);
     securityHeaders(blocked);
+
+    await h.releases.delete('dist/helper/current.json');
+    const afterPointerRemoval = await h.request(runtimePath);
+    assert.equal(afterPointerRemoval.status, 404);
+    securityHeaders(afterPointerRemoval);
   });

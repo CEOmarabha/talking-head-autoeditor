@@ -35,8 +35,21 @@ def run(cmd, **kw):
         kw.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
     return subprocess.run([str(c) for c in cmd], **kw)
 
+def _console_safe(value: object) -> str:
+    """Preserve logs without crashing on a legacy Windows console."""
+    text = str(value)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, errors="replace").decode(
+            encoding, errors="replace"
+        )
+    except LookupError:
+        return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def log(msg):
-    print(f"[pse-edit {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    safe = _console_safe(msg)
+    print(f"[pse-edit {time.strftime('%H:%M:%S')}] {safe}", flush=True)
     if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
         # machine-readable mirror for the desktop shell; one JSON per line
         print(json.dumps({"event": "log", "msg": str(msg)}), flush=True)

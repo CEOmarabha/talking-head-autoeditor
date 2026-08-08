@@ -6,7 +6,10 @@ against the Worker's WebCrypto output.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 import urllib.request
+from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
@@ -40,6 +43,53 @@ def canonical_json_bytes(payload: dict) -> bytes:
     """Stable request bytes used by the Worker's completion receipt."""
     return json.dumps(payload, sort_keys=True,
                       separators=(",", ":")).encode()
+
+
+_WINDOWS_RESERVED_STEMS = {
+    "con", "prn", "aux", "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+
+
+def safe_local_upload_name(filename: object, index: int) -> str:
+    """Return a short collision-safe filename valid on Windows and macOS."""
+    raw = str(filename or "upload")
+    normalized = unicodedata.normalize("NFKC", raw)
+    cleaned = "".join(
+        "_" if (
+            char in '<>:"/\\|?*'
+            or ord(char) < 32
+            or unicodedata.category(char).startswith("C")
+        ) else char
+        for char in normalized
+    ).strip(" .")
+    cleaned = re.sub(r"_+", "_", cleaned) or "upload"
+    suffix = Path(cleaned).suffix
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+        suffix = ""
+    stem = cleaned[:-len(suffix)] if suffix else cleaned
+    stem = stem.strip(" .") or "upload"
+    if stem.casefold() in _WINDOWS_RESERVED_STEMS:
+        stem = f"_{stem}"
+    source_digest = sha256(
+        raw.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:10]
+    prefix = f"in{index:04d}_{source_digest}_"
+    # Keep the local component comfortably below legacy MAX_PATH after the
+    # temporary working directory is added. The stable index and digest make
+    # truncation collision-safe.
+    room = 120 - len(prefix) - len(suffix)
+    truncated = []
+    used_units = 0
+    for char in stem:
+        units = len(char.encode("utf-16-le", errors="surrogatepass")) // 2
+        if used_units + units > max(room, 1):
+            break
+        truncated.append(char)
+        used_units += units
+    stem = "".join(truncated).rstrip(" .") or "upload"
+    return f"{prefix}{stem}{suffix}"
 
 
 def http_get(url: str, dst: Path, token: str = "",

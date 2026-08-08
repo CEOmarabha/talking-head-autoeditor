@@ -71,6 +71,12 @@ test pass is not approval to send an installer to friends.
   credentials are attached only to the live-release environment. Repository
   Actions secrets remain empty. The required Windows and Apple signing
   credentials have not been created or attached.
+- Live promotion now fails before any release mutation unless the public
+  `/download/helper/runtime/contract` response matches the exact v2 contract
+  and Cloudflare reports exactly two enabled, indefinite release bucket locks.
+  The dedicated `CLOUDFLARE_R2_LOCKS_READ_TOKEN`, scoped only to
+  `Workers R2 Storage Read`, was not present in `helper-live-release` when
+  checked on August 8, 2026, so promotion remains blocked until it is added.
 - The separate private Cloudflare candidate and live-release buckets now exist
   with isolated API tokens. Production Worker version
   `4ebd37b7-5f84-40d9-afbf-72d686b7e19a` is live from protected-main commit

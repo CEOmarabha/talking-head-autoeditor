@@ -103,7 +103,7 @@ function commandOutput(command, args) {
   return result.status === 0 ? `${result.stdout || ''}\n${result.stderr || ''}` : '';
 }
 
-function preflight({ checkKeystore = true } = {}) {
+function preflight({ checkKeystore = true, checkDisk = true } = {}) {
   const p = runtimePaths();
   const checks = {
     daemon: fs.existsSync(p.daemon),
@@ -126,14 +126,16 @@ function preflight({ checkKeystore = true } = {}) {
     // ad-hoc acceptance build can block on its first Keychain lookup. Real
     // setup still checks safeStorage here and again immediately before save.
     keystore: checkKeystore ? safeStorage.isEncryptionAvailable() : true,
-    disk: false,
+    disk: !checkDisk,
     codecs: false,
     filters: false,
   };
-  try {
-    const stat = fs.statfsSync(app.getPath('userData'));
-    checks.disk = Number(stat.bavail) * Number(stat.bsize) >= MIN_FREE_BYTES;
-  } catch (_) { checks.disk = false; }
+  if (checkDisk) {
+    try {
+      const stat = fs.statfsSync(app.getPath('userData'));
+      checks.disk = Number(stat.bavail) * Number(stat.bsize) >= MIN_FREE_BYTES;
+    } catch (_) { checks.disk = false; }
+  }
   if (checks.ffmpeg) {
     const encoders = commandOutput(p.ffmpeg, ['-hide_banner', '-encoders']);
     checks.codecs = encoders.includes('libx264') && /\bAAC\b|\baac\b/.test(encoders);
@@ -185,6 +187,8 @@ function daemonEnv(setup) {
     HF_HUB_OFFLINE: '1',
     TRANSFORMERS_OFFLINE: '1',
     AUTOEDITOR_PACKAGED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
     WORK_DIR: path.join(app.getPath('userData'), 'work'),
   });
   return env;
@@ -290,7 +294,9 @@ function smokeTest() {
     env: { ...daemonEnv(setup), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
     windowsHide: true, encoding: 'utf8', timeout: 360000,
   });
-  const checks = preflight({ checkKeystore: false });
+  // Artifact smoke validates the installed runtime on small hosted runners.
+  // Interactive setup and every real daemon start retain the 20 GiB gate.
+  const checks = preflight({ checkKeystore: false, checkDisk: false });
   const result = {
     packaged: PACKAGED,
     preflight: checks.ok,

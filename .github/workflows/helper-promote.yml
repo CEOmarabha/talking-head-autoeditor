@@ -176,14 +176,172 @@ jobs:
         env:
           R2_RELEASE_ACCESS_KEY: ${{ secrets.R2_RELEASE_ACCESS_KEY_ID }}
           R2_RELEASE_SECRET_KEY: ${{ secrets.R2_RELEASE_SECRET_ACCESS_KEY }}
+          R2_LOCKS_READ_TOKEN: ${{ secrets.CLOUDFLARE_R2_LOCKS_READ_TOKEN }}
           R2_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           test -n "$R2_RELEASE_ACCESS_KEY" && \
             test -n "$R2_RELEASE_SECRET_KEY" && \
+            test -n "$R2_LOCKS_READ_TOKEN" && \
             test -n "$R2_ACCOUNT" || {
-            echo "Live promotion requires its isolated R2 keys and account id" >&2
+            echo "Live promotion requires its isolated R2 keys, lock-read token, and account id" >&2
             exit 1
           }
+
+      - name: Verify the live Worker v2 runtime contract before any mutation
+        env:
+          LIVE_WORKER_CONTRACT_URL: https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/contract
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          url = os.environ["LIVE_WORKER_CONTRACT_URL"]
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "Accept": "application/json",
+                  "User-Agent": "autoeditor-helper-release-gate/1",
+              },
+              method="GET",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  status = response.status
+                  content_type = response.headers.get_content_type()
+                  cache_control = response.headers.get("Cache-Control", "")
+                  body = response.read(65_537)
+          except urllib.error.HTTPError as exc:
+              raise SystemExit(
+                  f"live Worker runtime contract returned HTTP {exc.code}"
+              ) from None
+          except urllib.error.URLError:
+              raise SystemExit("live Worker runtime contract request failed") from None
+
+          if status != 200:
+              raise SystemExit(
+                  f"live Worker runtime contract returned HTTP {status}"
+              )
+          if content_type != "application/json":
+              raise SystemExit("live Worker runtime contract is not JSON")
+          if cache_control.lower() != "no-store":
+              raise SystemExit("live Worker runtime contract is not no-store")
+          if len(body) > 65_536:
+              raise SystemExit("live Worker runtime contract is unexpectedly large")
+          try:
+              contract = json.loads(body.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError):
+              raise SystemExit("live Worker runtime contract is invalid JSON") from None
+
+          expected = {
+              "schema": "autoeditor-helper-runtime-route/v2",
+              "release_schema": "autoeditor-helper-release/v2",
+              "route": "/download/helper/runtime/windows-x64/{tag}/{commit}",
+              "max_package_bytes": 4_294_967_294,
+          }
+          if contract != expected:
+              raise SystemExit(
+                  "live Worker is not serving the exact Helper v2 runtime contract"
+              )
+          PY
+
+      - name: Verify immutable live R2 bucket locks before any mutation
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_R2_LOCKS_READ_TOKEN: ${{ secrets.CLOUDFLARE_R2_LOCKS_READ_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          token = os.environ["CLOUDFLARE_R2_LOCKS_READ_TOKEN"]
+          if not re.fullmatch(r"[A-Fa-f0-9]{32}", account_id):
+              raise SystemExit("Cloudflare account ID has an invalid format")
+          if not token:
+              raise SystemExit("Cloudflare R2 lock-read token is missing")
+
+          url = (
+              "https://api.cloudflare.com/client/v4/accounts/"
+              f"{account_id}/r2/buckets/autoeditor-releases/lock"
+          )
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "Accept": "application/json",
+                  "Authorization": f"Bearer {token}",
+                  "User-Agent": "autoeditor-helper-release-gate/1",
+              },
+              method="GET",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  status = response.status
+                  content_type = response.headers.get_content_type()
+                  body = response.read(2_097_153)
+          except urllib.error.HTTPError as exc:
+              raise SystemExit(
+                  f"Cloudflare R2 bucket-lock API returned HTTP {exc.code}"
+              ) from None
+          except urllib.error.URLError:
+              raise SystemExit("Cloudflare R2 bucket-lock API request failed") from None
+
+          if status != 200:
+              raise SystemExit(
+                  f"Cloudflare R2 bucket-lock API returned HTTP {status}"
+              )
+          if content_type != "application/json":
+              raise SystemExit("Cloudflare R2 bucket-lock API did not return JSON")
+          if len(body) > 2_097_152:
+              raise SystemExit("Cloudflare R2 bucket-lock response is unexpectedly large")
+          try:
+              payload = json.loads(body.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError):
+              raise SystemExit(
+                  "Cloudflare R2 bucket-lock API returned invalid JSON"
+              ) from None
+
+          if payload.get("success") is not True:
+              raise SystemExit("Cloudflare R2 bucket-lock API reported failure")
+          result = payload.get("result")
+          rules = result.get("rules") if isinstance(result, dict) else None
+          if not isinstance(rules, list) or len(rules) != 2:
+              raise SystemExit(
+                  "autoeditor-releases must have exactly two bucket-lock rules"
+              )
+
+          expected_prefixes = {
+              "dist/helper/objects/",
+              "dist/helper/checksums/",
+          }
+          actual_prefixes = set()
+          for rule in rules:
+              if not isinstance(rule, dict):
+                  raise SystemExit("Cloudflare returned an invalid bucket-lock rule")
+              if not isinstance(rule.get("id"), str) or not rule["id"]:
+                  raise SystemExit("Cloudflare returned a bucket-lock rule without an ID")
+              if rule.get("enabled") is not True:
+                  raise SystemExit("every release bucket-lock rule must be enabled")
+              condition = rule.get("condition")
+              if not isinstance(condition, dict) or \
+                      condition.get("type") != "Indefinite":
+                  raise SystemExit(
+                      "every release bucket-lock rule must be Indefinite"
+                  )
+              prefix = rule.get("prefix")
+              if not isinstance(prefix, str):
+                  raise SystemExit("every release bucket-lock rule needs a prefix")
+              actual_prefixes.add(prefix)
+
+          if actual_prefixes != expected_prefixes:
+              raise SystemExit(
+                  "release bucket-lock prefixes do not match the immutable contract"
+              )
+          PY
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -222,15 +380,26 @@ jobs:
           python packaging/helper_release_metadata.py guard \
             --candidate release-metadata/current.json \
             --current release-metadata/current-existing.json
-          while IFS= read -r RECEIPT; do
-            KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
-            SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
-            BYTES=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytes"])' "$RECEIPT")
+          python - > release-metadata/copy-plan.tsv <<'PY'
+          import json
+          from pathlib import Path
+
+          for receipt_path in sorted(Path("release-assets").rglob("candidate-*.json")):
+              receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+              objects = [receipt]
+              package = receipt.get("runtime_package")
+              if package is not None:
+                  objects.append(package)
+              for item in objects:
+                  print(item["key"], item["bytes"], item["sha256"], sep="\t")
+          PY
+          test "$(wc -l < release-metadata/copy-plan.tsv | tr -d ' ')" = 4
+          while IFS=$'\t' read -r KEY BYTES SHA; do
             node desktop/scripts/r2-release-storage.js copy \
               --source-bucket autoeditor-release-candidates \
               --destination-bucket autoeditor-releases --key "$KEY" \
               --bytes "$BYTES" --sha256 "$SHA"
-          done < <(find release-assets -type f -name 'candidate-*.json' | sort)
+          done < release-metadata/copy-plan.tsv
           CHECKSUM_KEY=$(python -c 'import json; print(json.load(open("release-metadata/current.json"))["checksums"]["key"])')
           CHECKSUM_SHA=$(python -c 'import json; print(json.load(open("release-metadata/current.json"))["checksums"]["sha256"])')
           node desktop/scripts/r2-release-storage.js put \

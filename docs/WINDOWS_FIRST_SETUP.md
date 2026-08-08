@@ -2,7 +2,9 @@
 
 Friends receive one signed `AutoEditor-Helper-Windows.exe`. They do not install
 Python, Node, FFmpeg, Whisper models, HyperFrames, Remotion, a browser runtime,
-fonts, repositories, package managers, or command-line tools.
+fonts, repositories, package managers, or command-line tools. The EXE downloads
+one exact, hash-bound runtime package automatically because the required payload
+is too large to embed safely in NSIS. That download is required, not optional.
 
 Windows is tested first because it is the primary friend platform. The Mac
 Helper must ship the same six generic edit profiles, five DeepSeek revision
@@ -23,14 +25,17 @@ owner-only setup is in `OWNER_SIGNING_SETUP.md`.
 
 CI is necessary but does not replace this test on the installer Omar will
 actually send. Download `signed-candidate-helper-windows-x64` from the same
-successful tagged Actions run as both Mac candidates. Extract it, open its
-candidate receipt, then run `Get-FileHash` in PowerShell and confirm the
-installer SHA-256 exactly matches the receipt before testing. Record the tag,
-full commit SHA, run ID, and run attempt.
+successful tagged Actions run as both Mac candidates. It contains the signed
+EXE, one `.nsis.7z` runtime package, and the receipt directory. Extract it, open
+its candidate receipt, then run `Get-FileHash` in PowerShell and confirm both
+files match the installer and `runtime_package` SHA-256 values before testing.
+Record the tag, full commit SHA, run ID, and run attempt.
 
 1. Use a normal 64-bit Windows 11 account with no Python, Node, FFmpeg, Git,
    Visual Studio, or development tools installed.
-2. Download the `.exe` from the same website link a friend receives.
+2. First place the exact EXE and `.nsis.7z` from the candidate beside each
+   other and install. This proves the pre-promotion signed candidate without
+   exposing it as the live friend download.
 3. Confirm Microsoft Defender and SmartScreen show the expected verified
    publisher. Any unknown-publisher warning fails the signed release.
 4. Install from Downloads and confirm desktop and Start menu shortcuts.
@@ -53,13 +58,21 @@ full commit SHA, run ID, and run attempt.
 11. Delete one project and confirm its authenticated media URLs no longer
     return files.
 12. Uninstall AutoEditor Helper from Windows Settings and confirm the program
-    files are removed. User projects stay until deleted from the website.
+    files and `%LOCALAPPDATA%\autoeditor-desktop-updater\package.7z` are removed.
+    User projects stay until deleted from the website.
 
 Status is not Windows-ready until this physical-machine pass is recorded
 against the exact signed installer. Passing source tests or a macOS build does
 not satisfy it. Completing this checklist authorizes only the Windows candidate.
 Do not run the separate live-promotion workflow until both Mac candidates from
 the same run pass too.
+
+Immediately after promotion, reset the test PC, sign in to the private website,
+download only the Windows EXE, and install it while online. Confirm it downloads
+the exact runtime package and finishes without a terminal or manual dependency
+step. If the package is at least 2 GiB, interrupt the connection once, reconnect,
+rerun the EXE, and confirm the retry completes. If this live bootstrap fails,
+roll the live pointer back before sending the link to any friend.
 
 ## Required Mac parity test
 

@@ -16,7 +16,8 @@ from webapp.render_worker.project_types import (
     UnsupportedProjectTypeError, engine_args, revision_engine_args,
     validate_proposal)
 from webapp.render_worker_compat import (
-    aes_gcm_decrypt, aes_gcm_encrypt, canonical_json_bytes, http_put_range)
+    aes_gcm_decrypt, aes_gcm_encrypt, canonical_json_bytes, http_put_range,
+    safe_local_upload_name)
 
 
 def test_supported_project_types_map_to_exact_engine_cli():
@@ -241,6 +242,40 @@ def test_no_key_fields_in_job_payload_shape():
         assert "{key" not in m.group(0) and ": key" not in m.group(0)
 
 
+def test_render_worker_decodes_engine_output_as_utf8_on_windows():
+    src = (Path(__file__).resolve().parents[1] /
+           "render_worker" / "render_worker.py").read_text(encoding="utf-8")
+    start = src.index("def run_engine(")
+    end = src.index("\n\nPHASES_MAKE", start)
+    run_engine_source = src[start:end]
+    assert '"PYTHONUTF8": "1"' in run_engine_source
+    assert '"PYTHONIOENCODING": "utf-8"' in run_engine_source
+    assert 'encoding="utf-8", errors="replace"' in run_engine_source
+
+
+def test_uploaded_names_are_safe_for_windows_and_collision_resistant():
+    mac_origin = safe_local_upload_name(
+        'Client: Final/Take\\CON?.mov', 0)
+    assert mac_origin.endswith('.mov')
+    assert mac_origin.startswith('in0000_')
+    assert not any(char in mac_origin for char in '<>:"/\\|?*')
+    assert not mac_origin.rstrip(' .') != mac_origin
+    long_unicode = (' launch recap \x00 ' + '한글🎬' * 100 + '.MP4')
+    safe_long = safe_local_upload_name(long_unicode, 1)
+    assert safe_long.endswith('.MP4')
+    assert len(safe_long) <= 120
+    assert safe_long != safe_local_upload_name(long_unicode, 2)
+    assert safe_local_upload_name('CON.mp4', 3).split('_', 2)[2].startswith(
+        '_CON')
+    assert safe_local_upload_name('same.mp4', 4) != safe_local_upload_name(
+        'same.mp4', 5)
+    lone_surrogate = safe_local_upload_name('\ud800.mov', 6)
+    assert lone_surrogate.endswith('.mov')
+    assert '\ud800' not in lone_surrogate
+    emoji_heavy = safe_local_upload_name('🎬' * 200 + '.mp4', 7)
+    assert len(emoji_heavy.encode('utf-16-le')) // 2 <= 120
+
+
 def test_personal_worker_routes_recheck_job_and_media_ownership():
     src = (Path(__file__).resolve().parents[1] /
            "worker" / "src" / "index.js").read_text()
@@ -359,14 +394,18 @@ def test_helper_downloads_resolve_one_atomic_release_pointer():
     worker = (Path(__file__).resolve().parents[1] /
               "worker" / "src" / "index.js").read_text()
     assert "dist/helper/current.json" in worker
-    assert "autoeditor-helper-release/v1" in worker
+    assert "autoeditor-helper-release/v2" in worker
     assert "dist/helper/objects/${selected?.sha256}/" in worker
     assert "selected.key !== expected" in worker
     assert "env.RELEASES.get" in worker
     assert "object.customMetadata?.sha256 === item.sha256" in worker
-    assert "async function verifiedHelperDownloads(env)" in worker
-    assert worker.count("await verifiedHelperDownloads(env)") == 2
-    assert "return verified.every(Boolean) ? downloads : null" in worker
+    assert "async function verifiedHelperRelease(env)" in worker
+    assert worker.count("await verifiedHelperRelease(env)") == 3
+    assert "return verified.every(Boolean) ? release : null" in worker
+    assert "HELPER_RUNTIME_ROUTE_PATTERN" in worker
+    assert "release.platforms['windows-x64'].runtime_package" in worker
+    assert "route[1] !== release.tag" in worker
+    assert "route[2] !== release.commit" in worker
     assert "legacyKey" not in worker
 
 

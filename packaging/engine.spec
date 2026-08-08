@@ -38,6 +38,7 @@ a = Analysis(
     excludes=["tkinter", "matplotlib", "pytest", "auto_editor"],
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
+options = [("X utf8", None, "OPTION")]
+exe = EXE(pyz, a.scripts, options, exclude_binaries=True,
           name="autoeditor-engine", console=True)
 coll = COLLECT(exe, a.binaries, a.datas, name="autoeditor-engine")

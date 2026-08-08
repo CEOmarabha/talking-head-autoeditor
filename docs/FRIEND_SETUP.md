@@ -45,11 +45,17 @@ installer steps differ.
 5. Open your Downloads folder and double-click that file.
 6. If Windows asks **Do you want to allow this app to make changes?**, verify
    that the publisher name matches the signed release, then press **Yes**.
-7. Let the installer finish. It creates an AutoEditor Helper shortcut in the
-   Start menu and on the desktop.
-8. Open **AutoEditor Helper**. Do not open PowerShell or Command Prompt. No
+7. Keep the computer online while the installer downloads the required editing
+   engine, two speech models, FFmpeg, HyperFrames, Remotion, and its rendering
+   browser. This is one automatic multi-gigabyte download and can take a while.
+   You do not need to open another site, create another account, or install any
+   of those tools yourself.
+8. Let the installer finish. It verifies the whole download before opening or
+   installing it, then creates an AutoEditor Helper shortcut in the Start menu
+   and on the desktop. If the connection drops, run the same installer again.
+9. Open **AutoEditor Helper**. Do not open PowerShell or Command Prompt. No
    terminal is part of the friend workflow.
-9. Return to the website, press **Copy** beside **Your Setup code**, return to
+10. Return to the website, press **Copy** beside **Your Setup code**, return to
    the Helper, paste it into Step 1, and continue through the account steps
    below.
 
@@ -319,8 +325,10 @@ To remove AutoEditor completely:
 3. On Windows, open **Settings**, **Apps**, **Installed apps**, find
    **AutoEditor Helper**, open its menu, and press **Uninstall**.
 4. On Mac, quit AutoEditor Helper, open Applications, and move it to the Trash.
-5. The uninstaller intentionally leaves local work and cache files in case you
-   reinstall. For a full local cleanup, open the Run box on Windows and remove
+5. The Windows uninstaller removes the downloaded multi-gigabyte editing
+   runtime. It leaves your encrypted setup and any local work data so a normal
+   reinstall can keep your choices. For a full local cleanup, open the Run box
+   on Windows and remove
    `%APPDATA%\AutoEditor Helper`, or on Mac use Finder, **Go**, **Go to Folder**,
    and move `~/Library/Application Support/AutoEditor Helper` to the Trash.
    Do this only after every edit is finished and anything you need is downloaded.

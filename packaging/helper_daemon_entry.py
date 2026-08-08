@@ -83,6 +83,9 @@ def smoke_test() -> int:
     }
     checks = {name: bool(value) and Path(value).exists()
               for name, value in required.items()}
+    checks["utf8_mode"] = (
+        not getattr(sys, "frozen", False) or sys.flags.utf8_mode == 1
+    )
     try:
         checks["typed_deepseek_revision_contract"] = revision_contract_check()
     except Exception:

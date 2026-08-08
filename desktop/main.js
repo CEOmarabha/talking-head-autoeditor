@@ -86,6 +86,8 @@ function engineEnv() {
   if (key) env.DEEPSEEK_API_KEY = key;
   env.AUTOEDITOR_PACKAGED = '1';
   env.AUTOEDITOR_PROGRESS_JSON = '1';
+  env.PYTHONUTF8 = '1';
+  env.PYTHONIOENCODING = 'utf-8';
   env.AUTOEDITOR_PROFILES_DIR = profilesDir();
   const ff = ffmpegPath(), fp = ffprobePath();
   if (path.isAbsolute(ff)) env.AUTOEDITOR_FFMPEG = ff;

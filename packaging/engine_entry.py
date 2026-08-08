@@ -59,6 +59,11 @@ def _self_test() -> int:
     )
     checks: dict[str, bool] = {}
     errors: dict[str, str] = {}
+    checks["utf8_mode"] = (
+        not getattr(sys, "frozen", False) or sys.flags.utf8_mode == 1
+    )
+    if not checks["utf8_mode"]:
+        errors["utf8_mode"] = "frozen Python did not start with -X utf8"
     for name in required:
         try:
             importlib.import_module(name)

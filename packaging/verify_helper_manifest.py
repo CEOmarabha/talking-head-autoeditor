@@ -15,6 +15,7 @@ COMPONENTS = (
 REQUIRED_LOCAL_CAPABILITIES = {
     "frozen_python_engine", "ffmpeg", "ffprobe", "h264", "aac",
     "faster_whisper_small", "faster_whisper_medium",
+    "python_utf8_mode",
     "in_process_low_speech_cutter", "typed_deepseek_revision_contract",
     "node", "hyperframes", "remotion",
     "chrome_headless_shell", "fonts", "certificate_bundle",
@@ -57,6 +58,13 @@ def main() -> None:
         raise SystemExit("runtime manifest target does not match this artifact")
     if manifest.get("version") != args.version:
         raise SystemExit("runtime manifest version does not match this artifact")
+    expected_algorithm = (
+        "pe-authenticode-content-v1"
+        if args.target_os == "windows"
+        else "raw-sha256-v1"
+    )
+    if manifest.get("receipt_algorithm") != expected_algorithm:
+        raise SystemExit("runtime manifest receipt algorithm does not match this artifact")
     capabilities = manifest.get("required_local_capabilities")
     if not isinstance(capabilities, list):
         raise SystemExit("runtime manifest has no local capability contract")
@@ -77,13 +85,24 @@ def main() -> None:
     for name in COMPONENTS:
         root = args.resources / name
         expected = expected_components.get(name)
+        if root.exists() and not root.is_dir():
+            failures.append(f"{name}: component path is not a directory")
+            continue
         if not root.is_dir():
-            failures.append(f"{name}: component directory is missing")
+            # electron-builder intentionally omits empty directories. A Windows
+            # payload has no dylib directory, so accept an omitted directory
+            # only when the signed manifest binds it to the canonical empty
+            # receipt. Any missing nonempty component still fails closed.
+            if expected != generator.empty_directory_receipt():
+                failures.append(f"{name}: component directory is missing")
             continue
         if not isinstance(expected, dict):
             failures.append(f"{name}: manifest receipt is missing")
             continue
-        actual = generator.directory_receipt(root)
+        actual = generator.directory_receipt(
+            root,
+            normalize_windows_executables=args.target_os == "windows",
+        )
         if actual != expected:
             failures.append(
                 f"{name}: expected {expected}, installed {actual}"

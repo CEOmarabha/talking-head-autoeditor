@@ -10,10 +10,12 @@ import json
 import os
 import runpy
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +26,169 @@ from autoeditor import (
 
 
 class SafetyContracts(unittest.TestCase):
+    def test_nsis_web_downloader_staging_is_hash_locked(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "prepare_nsis_web.py")
+        )
+        stage = namespace["stage"]
+        plugin = b"large-file-capable-INetC"
+        license_text = b"zlib license"
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr(namespace["INETC_DLL_MEMBER"], plugin)
+        archive_bytes = archive_buffer.getvalue()
+        stage.__globals__["INETC_ARCHIVE_SHA256"] = hashlib.sha256(
+            archive_bytes
+        ).hexdigest()
+        stage.__globals__["INETC_DLL_SHA256"] = hashlib.sha256(
+            plugin
+        ).hexdigest()
+        stage.__globals__["INETC_LICENSE_SHA256"] = hashlib.sha256(
+            license_text
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as td:
+            root_dir = Path(td)
+            build = root_dir / "build"
+            licenses = root_dir / "licenses"
+            stage(archive_bytes, license_text, build, licenses)
+            self.assertEqual(
+                (build / "x86-unicode" / "AutoEditorINetC.dll").read_bytes(),
+                plugin,
+            )
+            self.assertEqual(
+                (licenses / "AutoEditor-INetC-Zlib-LICENSE.md").read_bytes(),
+                license_text,
+            )
+            self.assertIn(
+                "plugin_sha256=",
+                (licenses / "NSIS_WEB_DOWNLOADER.txt").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            with self.assertRaisesRegex(SystemExit, "archive digest drifted"):
+                stage(archive_bytes + b"tampered", license_text, build, licenses)
+
+    def test_nsis_web_integrity_patch_writes_stable_lf_bytes(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "patch_nsis_web_integrity.py")
+        )
+        patch_globals = namespace["main"].__globals__
+        with tempfile.TemporaryDirectory() as td:
+            temporary = Path(td)
+            node_modules = temporary / "node_modules"
+            app_builder = node_modules / "app-builder-lib"
+            include = app_builder / "templates" / "nsis" / "include"
+            include.mkdir(parents=True)
+            (app_builder / "package.json").write_text(
+                json.dumps({"version": namespace["ELECTRON_BUILDER_VERSION"]}),
+                encoding="utf-8",
+            )
+            source_include = (
+                root / "desktop" / "node_modules" / "app-builder-lib" /
+                "templates" / "nsis" / "include"
+            )
+            for name in ("installer.nsh", "webPackage.nsh"):
+                shutil.copy2(source_include / name, include / name)
+            plugin = temporary / "AutoEditorINetC.dll"
+            plugin.write_bytes(b"audited-plugin")
+            patch_globals["INETC_SHA256"] = hashlib.sha256(
+                plugin.read_bytes()
+            ).hexdigest()
+            patch_globals["ORIGINAL_HASHES"] = {
+                name: hashlib.sha256((include / name).read_bytes()).hexdigest()
+                for name in ("installer.nsh", "webPackage.nsh")
+            }
+            installer_text = (include / "installer.nsh").read_text(
+                encoding="utf-8"
+            )
+            web_text = (include / "webPackage.nsh").read_text(encoding="utf-8")
+            expected = {
+                "installer.nsh": installer_text.replace(
+                    namespace["INSTALLER_ORIGINAL"],
+                    namespace["INSTALLER_PATCHED"],
+                ).encode("utf-8"),
+                "webPackage.nsh": web_text.replace(
+                    "inetc::get", "AutoEditorINetC::get"
+                ).encode("utf-8"),
+            }
+            patch_globals["PATCHED_HASHES"] = {
+                name: hashlib.sha256(data).hexdigest()
+                for name, data in expected.items()
+            }
+            with mock.patch.object(sys, "argv", [
+                "patch_nsis_web_integrity.py",
+                "--node-modules", str(node_modules),
+                "--plugin", str(plugin),
+            ]):
+                namespace["main"]()
+            for name, data in expected.items():
+                self.assertEqual((include / name).read_bytes(), data)
+                self.assertNotIn(b"\r\n", data)
+
+    @staticmethod
+    def _synthetic_pe64(payload: bytes = b"runtime-payload") -> bytearray:
+        dos = bytearray(0x80)
+        dos[:2] = b"MZ"
+        struct.pack_into("<I", dos, 0x3C, 0x80)
+        coff = struct.pack(
+            "<HHIIIHH", 0x8664, 0, 0, 0, 0, 240, 0x0022
+        )
+        optional = bytearray(240)
+        struct.pack_into("<H", optional, 0, 0x20B)
+        struct.pack_into("<I", optional, 108, 16)
+        return bytearray(dos + b"PE\0\0" + coff + optional + payload)
+
+    def test_windows_manifest_receipt_ignores_only_authenticode_envelope(self):
+        root = Path(__file__).resolve().parent.parent
+        namespace = runpy.run_path(
+            str(root / "packaging" / "generate_helper_manifest.py")
+        )
+        receipt = namespace["directory_receipt"]
+        error = namespace["ManifestReceiptError"]
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            executable = folder / "engine.exe"
+            unsigned = self._synthetic_pe64()
+            executable.write_bytes(unsigned)
+            raw_unsigned = receipt(folder)
+            normalized_unsigned = receipt(
+                folder, normalize_windows_executables=True
+            )
+
+            signed = bytearray(unsigned)
+            signed.extend(b"\0" * ((8 - len(signed) % 8) % 8))
+            certificate_offset = len(signed)
+            certificate = struct.pack(
+                "<IHH8s", 16, 0x0200, 0x0002, b"signature"
+            )
+            optional_offset = 0x80 + 24
+            struct.pack_into("<I", signed, optional_offset + 64, 0x12345678)
+            struct.pack_into(
+                "<II", signed, optional_offset + 144,
+                certificate_offset, len(certificate),
+            )
+            executable.write_bytes(signed + certificate)
+            raw_signed = receipt(folder)
+            normalized_signed = receipt(
+                folder, normalize_windows_executables=True
+            )
+            self.assertNotEqual(raw_unsigned, raw_signed)
+            self.assertEqual(normalized_unsigned, normalized_signed)
+
+            changed = bytearray(signed + certificate)
+            changed[-len(certificate) - 1] ^= 0x01
+            executable.write_bytes(changed)
+            self.assertNotEqual(
+                normalized_unsigned,
+                receipt(folder, normalize_windows_executables=True),
+            )
+
+            executable.write_bytes(b"MZ-not-a-real-executable")
+            with self.assertRaisesRegex(error, "PE executable|PE header offset"):
+                receipt(folder, normalize_windows_executables=True)
+
     def test_macos_ffmpeg_formula_path_mapping(self):
         root = Path(__file__).resolve().parent.parent
         namespace = runpy.run_path(
@@ -136,6 +301,11 @@ class SafetyContracts(unittest.TestCase):
                 "typed_deepseek_revision_contract",
                 payload["required_local_capabilities"],
             )
+            self.assertIn(
+                "python_utf8_mode",
+                payload["required_local_capabilities"],
+            )
+            self.assertEqual(payload["receipt_algorithm"], "raw-sha256-v1")
             self.assertEqual(
                 payload["account_capabilities"]["remotion"],
                 "required: free-license eligibility or paid key",
@@ -178,6 +348,45 @@ class SafetyContracts(unittest.TestCase):
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("engine", failed.stderr)
 
+    def test_windows_manifest_allows_only_an_absent_empty_component(self):
+        root = Path(__file__).resolve().parent.parent
+        generator = root / "packaging" / "generate_helper_manifest.py"
+        verifier = root / "packaging" / "verify_helper_manifest.py"
+        components = (
+            "helper", "engine", "bin", "lib", "models", "profiles",
+            "fonts", "certs", "node", "creative-runtime", "browser",
+            "creative", "licenses",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            temporary = Path(td)
+            resources = temporary / "resources"
+            resources.mkdir()
+            for component in components:
+                folder = resources / component
+                folder.mkdir()
+                if component != "lib":
+                    (folder / "payload.bin").write_bytes(component.encode())
+            manifest = resources / "runtime-manifest.json"
+            subprocess.run([
+                sys.executable, str(generator), "--stage", str(resources),
+                "--output", str(manifest), "--target-os", "windows",
+                "--target-arch", "x64", "--version", "0.1.0",
+            ], check=True)
+            expected = temporary / "expected-runtime-manifest.json"
+            shutil.copy2(manifest, expected)
+            (resources / "lib").rmdir()
+            command = [
+                sys.executable, str(verifier), "--resources", str(resources),
+                "--expected-manifest", str(expected),
+                "--target-os", "windows", "--target-arch", "x64",
+                "--version", "0.1.0",
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            (resources / "lib").write_bytes(b"not-a-directory")
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("component path is not a directory", rejected.stderr)
+
     def test_helper_release_metadata_requires_all_three_exact_candidates(self):
         root = Path(__file__).resolve().parent.parent
         script = root / "packaging" / "helper_release_metadata.py"
@@ -198,7 +407,7 @@ class SafetyContracts(unittest.TestCase):
                     "version": "1.2.3",
                 }))
                 receipt = folder / f"candidate-{target_os}-{arch}.json"
-                subprocess.run([
+                candidate_command = [
                     sys.executable, str(script), "candidate",
                     "--file", str(installer),
                     "--runtime-manifest", str(runtime),
@@ -209,7 +418,15 @@ class SafetyContracts(unittest.TestCase):
                     "--notarization-status",
                     "not-applicable" if target_os == "windows" else "verified",
                     "--output", str(receipt),
-                ], check=True)
+                ]
+                runtime_package = None
+                if target_os == "windows":
+                    runtime_package = folder / "helper-runtime.nsis.7z"
+                    runtime_package.write_bytes(b"windows-runtime-package")
+                    candidate_command.extend((
+                        "--runtime-package", str(runtime_package),
+                    ))
+                subprocess.run(candidate_command, check=True)
                 data = json.loads(receipt.read_text())
                 head = folder / "head.json"
                 head.write_text(json.dumps({
@@ -221,6 +438,21 @@ class SafetyContracts(unittest.TestCase):
                     "--receipt", str(receipt), "--head", str(head),
                     "--tag", "helper-v1.2.3",
                 ], check=True)
+                if runtime_package is not None:
+                    package_head = folder / "runtime-package-head.json"
+                    package_head.write_text(json.dumps({
+                        "ContentLength": data["runtime_package"]["bytes"],
+                        "Metadata": {
+                            "sha256": data["runtime_package"]["sha256"],
+                        },
+                    }))
+                    subprocess.run([
+                        sys.executable, str(script), "verify-head",
+                        "--receipt", str(receipt),
+                        "--head", str(package_head),
+                        "--tag", "helper-v1.2.3",
+                        "--object", "runtime-package",
+                    ], check=True)
             output = work / "release"
             subprocess.run([
                 sys.executable, str(script), "assemble",
@@ -231,7 +463,7 @@ class SafetyContracts(unittest.TestCase):
             ], check=True)
             pointer = json.loads((output / "current.json").read_text())
             self.assertEqual(pointer["schema"],
-                             "autoeditor-helper-release/v1")
+                             "autoeditor-helper-release/v2")
             self.assertEqual(set(pointer["platforms"]), {
                 "windows-x64", "mac-arm64", "mac-x64",
             })
@@ -247,8 +479,25 @@ class SafetyContracts(unittest.TestCase):
                 "verified",
             )
             self.assertEqual(
-                len((output / "SHA256SUMS.txt").read_text().splitlines()), 3
+                len((output / "SHA256SUMS.txt").read_text().splitlines()), 7
             )
+            windows_package = pointer["platforms"]["windows-x64"][
+                "runtime_package"
+            ]
+            self.assertEqual(
+                windows_package["filename"],
+                "AutoEditor-Helper-Windows.nsis.7z",
+            )
+            self.assertEqual(
+                windows_package["content_type"],
+                "application/x-7z-compressed",
+            )
+            self.assertNotIn(
+                "runtime_package", pointer["platforms"]["mac-arm64"]
+            )
+            checksums = (output / "SHA256SUMS.txt").read_text()
+            self.assertIn("AutoEditor-Helper-Windows.nsis.7z", checksums)
+            self.assertIn("runtime-manifest-windows-x64.json", checksums)
             github_assets = json.loads(
                 (output / "github-assets.json").read_text()
             )
@@ -267,6 +516,76 @@ class SafetyContracts(unittest.TestCase):
                     f"dist/helper/objects/{release['sha256']}/",
                     release["key"],
                 )
+            windows_folder = work / "windows-x64"
+            missing_package = subprocess.run([
+                sys.executable, str(script), "candidate",
+                "--file", str(windows_folder / "helper.exe"),
+                "--runtime-manifest",
+                str(windows_folder / "runtime-manifest-windows-x64.json"),
+                "--target-os", "windows", "--arch", "x64",
+                "--tag", "helper-v1.2.3", "--commit", "a" * 40,
+                "--run-id", "123", "--run-attempt", "2",
+                "--signing-status", "verified",
+                "--notarization-status", "not-applicable",
+                "--output", str(work / "missing-package.json"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(missing_package.returncode, 0)
+            self.assertIn("requires one .nsis.7z", missing_package.stderr)
+
+            empty_runtime = work / "empty.nsis.7z"
+            empty_runtime.write_bytes(b"")
+            empty_package = subprocess.run([
+                sys.executable, str(script), "candidate",
+                "--file", str(windows_folder / "helper.exe"),
+                "--runtime-manifest",
+                str(windows_folder / "runtime-manifest-windows-x64.json"),
+                "--runtime-package", str(empty_runtime),
+                "--target-os", "windows", "--arch", "x64",
+                "--tag", "helper-v1.2.3", "--commit", "a" * 40,
+                "--run-id", "123", "--run-attempt", "2",
+                "--signing-status", "verified",
+                "--notarization-status", "not-applicable",
+                "--output", str(work / "empty-package.json"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(empty_package.returncode, 0)
+            self.assertIn("missing or empty", empty_package.stderr)
+
+            oversized_runtime = work / "oversized.nsis.7z"
+            with oversized_runtime.open("wb") as handle:
+                handle.truncate(4_294_967_295)
+            oversized_package = subprocess.run([
+                sys.executable, str(script), "candidate",
+                "--file", str(windows_folder / "helper.exe"),
+                "--runtime-manifest",
+                str(windows_folder / "runtime-manifest-windows-x64.json"),
+                "--runtime-package", str(oversized_runtime),
+                "--target-os", "windows", "--arch", "x64",
+                "--tag", "helper-v1.2.3", "--commit", "a" * 40,
+                "--run-id", "123", "--run-attempt", "2",
+                "--signing-status", "verified",
+                "--notarization-status", "not-applicable",
+                "--output", str(work / "oversized-package.json"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(oversized_package.returncode, 0)
+            self.assertIn("smaller than 4294967295", oversized_package.stderr)
+
+            mac_folder = work / "mac-arm64"
+            mac_package = subprocess.run([
+                sys.executable, str(script), "candidate",
+                "--file", str(mac_folder / "helper.dmg"),
+                "--runtime-manifest",
+                str(mac_folder / "runtime-manifest-mac-arm64.json"),
+                "--runtime-package",
+                str(windows_folder / "helper-runtime.nsis.7z"),
+                "--target-os", "mac", "--arch", "arm64",
+                "--tag", "helper-v1.2.3", "--commit", "a" * 40,
+                "--run-id", "123", "--run-attempt", "2",
+                "--signing-status", "verified",
+                "--notarization-status", "verified",
+                "--output", str(work / "mac-package.json"),
+            ], capture_output=True, text=True)
+            self.assertNotEqual(mac_package.returncode, 0)
+            self.assertIn("must not include", mac_package.stderr)
             extra_manifest = work / "extra" / "runtime-manifest-unused.json"
             extra_manifest.parent.mkdir()
             extra_manifest.write_text("{}")
@@ -338,6 +657,7 @@ class SafetyContracts(unittest.TestCase):
             result = namespace["_self_test"]()
         receipt = json.loads(stdout.getvalue())
         self.assertEqual(result, 0, receipt)
+        self.assertTrue(receipt["checks"]["utf8_mode"])
         self.assertTrue(receipt["checks"]["in_process_low_speech_cutter"])
         self.assertTrue(receipt["checks"]["creative_contract_sha256"])
 
@@ -503,8 +823,21 @@ class SafetyContracts(unittest.TestCase):
             pipeline._resolve_low_speech_ffmpeg()
 
     def test_release_receipts_credit_builder(self):
-        source = Path(pipeline.__file__).read_text()
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
         self.assertIn('"built_by": "Omar Marabha (@CEOmarabha)"', source)
+
+    def test_log_is_safe_on_a_legacy_windows_console(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        with mock.patch.object(sys, "stdout", stream), mock.patch.dict(
+            os.environ, {"AUTOEDITOR_PROGRESS_JSON": ""}
+        ):
+            pipeline.log("FAIL ✗ ❌ → café")
+            stream.flush()
+        stream.detach()
+        output = raw.getvalue().decode("cp1252")
+        self.assertIn("FAIL", output)
+        self.assertIn("café", output)
 
     def test_remotion_render_forwards_selected_license_key(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1476,7 +1809,7 @@ class SafetyContracts(unittest.TestCase):
         )
 
     def test_script_requirement_runs_before_media_preflight(self):
-        source = Path(pipeline.__file__).read_text()
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
         requirement = source.index(
             "brand.yaml requires the script-integrity gate"
         )
@@ -1544,7 +1877,7 @@ class SafetyContracts(unittest.TestCase):
 
     def test_canonical_runtime_does_not_require_an_uninstalled_legacy_venv(self):
         self.assertEqual(pipeline.VENV_PY, Path(pipeline.sys.executable).resolve())
-        source = Path(pipeline.__file__).read_text()
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
         self.assertNotIn(
             'VENV_PY = EDIT_VENV / "bin" / "python"', source
         )
@@ -2210,7 +2543,7 @@ class SafetyContracts(unittest.TestCase):
         self.assertLessEqual(caption_y + caption_height, top + height)
 
     def test_source_gate_reconstructs_spatial_normalization(self):
-        module_text = Path(pipeline.__file__).read_text()
+        module_text = Path(pipeline.__file__).read_text(encoding="utf-8")
         function = next(
             node for node in ast.parse(module_text).body
             if isinstance(node, ast.FunctionDef)
@@ -2283,13 +2616,13 @@ class SafetyContracts(unittest.TestCase):
         self.assertLess(delta, 0.14)
 
     def test_failed_qa_cannot_reach_video_send(self):
-        source = Path(pipeline.__file__).read_text()
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
         qa_guard = source.index('if not qa["pass"]:')
         send = source.index("providers.send_video(")
         self.assertLess(qa_guard, send)
 
     def test_main_builds_final_transcript_before_artifact_gates(self):
-        source = Path(pipeline.__file__).read_text()
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
         assignment = source.index("final_words = transcribe(main_out_v, work)")
         retake_gate = source.index("residue = verify_no_retakes(final_words")
         source_gate = source.index("ssync = verify_sync_source(master")
@@ -2362,7 +2695,7 @@ class SafetyContracts(unittest.TestCase):
         self.assertNotIn("Hello-world", text)
 
     def test_cleanup_loop_cuts_and_retranscribes_inside_each_pass(self):
-        tree = ast.parse(Path(pipeline.__file__).read_text())
+        tree = ast.parse(Path(pipeline.__file__).read_text(encoding="utf-8"))
         main = next(
             node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == "main"
