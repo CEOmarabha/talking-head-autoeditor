@@ -1,0 +1,566 @@
+{
+  "dependency_exceptions": [
+    {
+      "classification": "no-linkage-runtime-metadata",
+      "name": "ca-certificates",
+      "reason": "openssl@3 declares this dependency with Homebrew's :no_linkage qualifier; it is not in the shipped Mach-O load closure"
+    },
+    {
+      "classification": "build-tool",
+      "name": "cmake",
+      "reason": "used to build svt-av1 and x265; no CMake binary or library is shipped"
+    },
+    {
+      "classification": "unsupported-host-conditional-build-tool",
+      "name": "gcc",
+      "reason": "the x264 formula selects GCC only for obsolete Clang build versions at or below 902, outside the audited runners"
+    },
+    {
+      "classification": "build-tool",
+      "name": "meson",
+      "reason": "used to build dav1d and libvmaf; no Meson runtime is shipped"
+    },
+    {
+      "classification": "build-tool",
+      "name": "nasm",
+      "reason": "selected only on Intel for assembly during builds; no NASM runtime is shipped"
+    },
+    {
+      "classification": "build-tool",
+      "name": "ninja",
+      "reason": "used to build dav1d and libvmaf; no Ninja runtime is shipped"
+    },
+    {
+      "classification": "build-tool",
+      "name": "pkgconf",
+      "reason": "used while building ffmpeg and lame; no pkgconf runtime is shipped"
+    },
+    {
+      "classification": "non-shipped-ffplay-runtime",
+      "name": "sdl2-compat",
+      "reason": "declared by ffmpeg for ffplay, while the shipped ffmpeg and ffprobe Mach-O closure contains no SDL load"
+    },
+    {
+      "classification": "transitive-non-shipped-ffplay-runtime",
+      "name": "sdl3",
+      "reason": "transitive runtime metadata from sdl2-compat; the shipped ffmpeg and ffprobe Mach-O closure contains no SDL load"
+    },
+    {
+      "classification": "build-tool-from-macos",
+      "name": "vim",
+      "reason": "libvmaf uses the macOS-provided xxd build tool; no Vim runtime is shipped"
+    },
+    {
+      "classification": "build-tool",
+      "name": "yasm",
+      "reason": "the exact libvpx bottle-producing formula used Yasm on Intel; no Yasm runtime is shipped"
+    }
+  ],
+  "formulae": [
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "5f573db161c0685ba7e8d27bd3b6a494e6952e47c7c99355a0d090b253b566af",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "c6bf6ecc82c9ede74528fbf82ddf4b9c83bf6eb7c74dcf5e5a56a25b4cb918d5",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-dav1d-e82156599049e9669d722858ee759f0c3b73ebaf.rb",
+        "bottle_commit": "e82156599049e9669d722858ee759f0c3b73ebaf",
+        "bytes": 1815,
+        "git_blob_sha1": "d77e36a901aab5556ac9dc56d366e40c523ffb0f",
+        "path": "Formula/d/dav1d.rb",
+        "sha256": "e037a95ea3d371c174c8403f732dd66a004dd1cf2498a7116a6ba85e52cf143f",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/e82156599049e9669d722858ee759f0c3b73ebaf/Formula/d/dav1d.rb"
+      },
+      "license": "BSD-2-Clause",
+      "name": "dav1d",
+      "package_version": "1.5.4",
+      "patches": [],
+      "source": {
+        "archive": "dav1d-1.5.4.tar.bz2",
+        "bytes": 1228274,
+        "license_file": "COPYING",
+        "sha256": "2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011",
+        "source_url": "https://code.videolan.org/videolan/dav1d/-/archive/1.5.4/dav1d-1.5.4.tar.bz2",
+        "version": "1.5.4"
+      },
+      "source_version_commit": "632a0b93c14d30a94ff823c88540e49a907528c3"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "3b1dab25100b79de074463b6b10be1266ed0d5f6eb6409fa53707f49e24bb2a7",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "fcc13fae2031e5adaa193bc1accb03e8127b9503d41ac29c07e3758e7a88ba88",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-ffmpeg-c7348004c5876a7cddfa236babd4bf3489f21d87.rb",
+        "bottle_commit": "c7348004c5876a7cddfa236babd4bf3489f21d87",
+        "bytes": 3791,
+        "git_blob_sha1": "6a4301a5cbf468e0d36a47bdd00607bf2c1d2ac0",
+        "path": "Formula/f/ffmpeg.rb",
+        "sha256": "52c0f3844a216a6c8e6b7c9e1883f7fa09bbbe4894c13f4615cdb26922b4ed24",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/c7348004c5876a7cddfa236babd4bf3489f21d87/Formula/f/ffmpeg.rb"
+      },
+      "license": "GPL-3.0-or-later",
+      "name": "ffmpeg",
+      "package_version": "8.1.2_1",
+      "patches": [],
+      "source": {
+        "archive": "ffmpeg-8.1.2.tar.xz",
+        "bytes": 11710924,
+        "license_file": "COPYING.GPLv3",
+        "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+        "source_url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+        "version": "8.1.2"
+      },
+      "source_version_commit": "c8d371d10663c637fe24eafcdf6bcd5cd0bec4ea"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "552d24d56ff0d3255e9a3519a368d0ce45de86b5b2967b338209c1a22cd12969",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "62e5e6acdb340cfdae39e4a4ad49e8b2efcd46bfe91897b670a2c0d5a0693c19",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-lame-1e54175aedbfd22d92812aeaf0bf386ff72b9124.rb",
+        "bottle_commit": "1e54175aedbfd22d92812aeaf0bf386ff72b9124",
+        "bytes": 1700,
+        "git_blob_sha1": "29940d9568172ceee360a9d989be4bc62d8d6d02",
+        "path": "Formula/l/lame.rb",
+        "sha256": "97c32d5c3915f34733ecf32ebac7934e06bde2917a7233cb8313179a2f3e1041",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/1e54175aedbfd22d92812aeaf0bf386ff72b9124/Formula/l/lame.rb"
+      },
+      "license": "LGPL-2.0-or-later",
+      "name": "lame",
+      "package_version": "4.0",
+      "patches": [],
+      "source": {
+        "archive": "lame-4.0.tar.gz",
+        "bytes": 1496810,
+        "license_file": "COPYING",
+        "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
+        "source_url": "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz",
+        "version": "4.0"
+      },
+      "source_version_commit": "a895574f6f9c4de749c582182744553d73863ecf"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "dbd548d2ba16092e9c88b81cd91d7cbd1ecec84b9bb31e9c196fe3f6658ee6b3",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "75b35c1c681e653f7046a485a4e29d214912dfa7d68d3d7668ec1c1943738214",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-libvmaf-3871e5120a49e9d80a72571a36823096580a8d91.rb",
+        "bottle_commit": "3871e5120a49e9d80a72571a36823096580a8d91",
+        "bytes": 1693,
+        "git_blob_sha1": "6daf6ed84f82fff32f6cd8e10151e7ef1b74c19f",
+        "path": "Formula/lib/libvmaf.rb",
+        "sha256": "b915fac393127f39f1270e3e66093e9e91ff91d1f210ecac0292dcb4922917a1",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/3871e5120a49e9d80a72571a36823096580a8d91/Formula/lib/libvmaf.rb"
+      },
+      "license": "BSD-2-Clause-Patent",
+      "name": "libvmaf",
+      "package_version": "3.2.0",
+      "patches": [],
+      "source": {
+        "archive": "vmaf-3.2.0.tar.gz",
+        "bytes": 18583070,
+        "license_file": "LICENSE",
+        "sha256": "a28f93f3b4fa65601be324587072e32a6a704a304ba7b1aec9b70b3f709bc1dc",
+        "source_url": "https://github.com/Netflix/vmaf/archive/refs/tags/v3.2.0.tar.gz",
+        "version": "3.2.0"
+      },
+      "source_version_commit": "78b4c482407ca167c55be611f62dae76f0dcca5c"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "4f72f10109e23239ba65d4e7c1eb9086a4b2cd2875f784c8f9d79d713106675d",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "198eadc026da61065d4f3c626c89bdc770c9109311e0b59db4f5ab0487345dea",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-libvpx-30e8b07eb9becf25653cf858b95b81a8fa1820fc.rb",
+        "bottle_commit": "30e8b07eb9becf25653cf858b95b81a8fa1820fc",
+        "bytes": 2236,
+        "git_blob_sha1": "7aded202cc790895da3ccddeeb780fa7852832d2",
+        "path": "Formula/lib/libvpx.rb",
+        "sha256": "06999b9d1349a510a7610e9613c420876c42d82515f0e4bc203ec53e6f4d48e7",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/30e8b07eb9becf25653cf858b95b81a8fa1820fc/Formula/lib/libvpx.rb"
+      },
+      "license": "BSD-3-Clause",
+      "name": "libvpx",
+      "package_version": "1.16.0",
+      "patches": [],
+      "source": {
+        "archive": "libvpx-1.16.0.tar.gz",
+        "bytes": 5635379,
+        "license_file": "LICENSE",
+        "sha256": "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c",
+        "source_url": "https://github.com/webmproject/libvpx/archive/refs/tags/v1.16.0.tar.gz",
+        "version": "1.16.0"
+      },
+      "source_version_commit": "bda13e1bfa1c0085b3a22f2d77f3201a4b760353"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "1d2b91939a37d8cc408561e533f5ade45945b8daa2be4efce2fd6fa7ab2548a8",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "a6369b5d5e8b30eac98418531feb1c49f818af20ffa4902ec671d28909c0196f",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-mpg123-b854b7b20bd2a4fced247b67cf803be58aacf71c.rb",
+        "bottle_commit": "b854b7b20bd2a4fced247b67cf803be58aacf71c",
+        "bytes": 1500,
+        "git_blob_sha1": "70a37292c4c1243c01a34e79faa112686ce803d4",
+        "path": "Formula/m/mpg123.rb",
+        "sha256": "3cbd374ab232a34d442dfb382dd4b14d25a2a97b21225b66212af5fa7164a904",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/b854b7b20bd2a4fced247b67cf803be58aacf71c/Formula/m/mpg123.rb"
+      },
+      "license": "LGPL-2.1-only",
+      "name": "mpg123",
+      "package_version": "1.33.6",
+      "patches": [],
+      "source": {
+        "archive": "mpg123-1.33.6.tar.bz2",
+        "bytes": 1123797,
+        "license_file": "COPYING",
+        "sha256": "929a7c18ba662b8927aed4de229ad9ae8ab2b4806dd0f30b90113eb1b4e2195a",
+        "source_url": "https://www.mpg123.de/download/mpg123-1.33.6.tar.bz2",
+        "version": "1.33.6"
+      },
+      "source_version_commit": "63a0c10d3a5f115bc28bb858cce57ef4b1eebf20"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 1,
+          "bottle_sha256": "f8b0b5b2eda9321265b7483ce7ea167012c32afed73a127e8e18ebe9f1d9dffe",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 1,
+          "bottle_sha256": "5477285c4ebec45713873ae4002affece39e427c5f1b655c6a3df49c6b90f924",
+          "bottle_tag": "sequoia"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-openssl-3-afd93f1b5d40319fef3976408e83f0b232de81ac.rb",
+        "bottle_commit": "afd93f1b5d40319fef3976408e83f0b232de81ac",
+        "bytes": 8617,
+        "git_blob_sha1": "c6c7e42634cde8cf81e0d7325ab9007629414478",
+        "path": "Formula/o/openssl@3.rb",
+        "sha256": "9f57a53a827e0e8f3eba7b943e2908ac9644aa7290febbb550d664070ba8c9eb",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/afd93f1b5d40319fef3976408e83f0b232de81ac/Formula/o/openssl@3.rb"
+      },
+      "license": "Apache-2.0",
+      "name": "openssl@3",
+      "package_version": "3.6.3",
+      "patches": [
+        {
+          "archive": "openssl-9061e9381306a053908177aca8509c262015cdf3.patch",
+          "bytes": 1577,
+          "commit": "9061e9381306a053908177aca8509c262015cdf3",
+          "sha256": "9f68feae9abfaabe65f79d2877f3dde7aa0428c669ed6af45dc193544268438e",
+          "source_url": "https://github.com/openssl/openssl/commit/9061e9381306a053908177aca8509c262015cdf3.patch?full_index=1"
+        },
+        {
+          "archive": "openssl-2e2438b494e7f661be5212e4732f7fab86bf6303.patch",
+          "bytes": 1818,
+          "commit": "2e2438b494e7f661be5212e4732f7fab86bf6303",
+          "sha256": "543a5998951fe540444642123398ffaa6306938be573f95c0bc915f1e6af7a36",
+          "source_url": "https://github.com/openssl/openssl/commit/2e2438b494e7f661be5212e4732f7fab86bf6303.patch?full_index=1"
+        },
+        {
+          "archive": "openssl-ea598f5dd23f1d64d8952e20fcf95d9f3a21d654.patch",
+          "bytes": 9694,
+          "commit": "ea598f5dd23f1d64d8952e20fcf95d9f3a21d654",
+          "sha256": "05bb323a3495d68961fa8cf7a989edfb0fa6e6dcc7ccdcc4e55a4e3f946d2762",
+          "source_url": "https://github.com/openssl/openssl/commit/ea598f5dd23f1d64d8952e20fcf95d9f3a21d654.patch?full_index=1"
+        },
+        {
+          "archive": "openssl-cffb97915813aeeef58ee9a0d33c05d3d45e1fe6.patch",
+          "bytes": 1925,
+          "commit": "cffb97915813aeeef58ee9a0d33c05d3d45e1fe6",
+          "sha256": "fc34b4bf106c44a89ded746e35d587d73e8485393a93b52110ba95b06717dd69",
+          "source_url": "https://github.com/openssl/openssl/commit/cffb97915813aeeef58ee9a0d33c05d3d45e1fe6.patch?full_index=1"
+        }
+      ],
+      "source": {
+        "archive": "openssl-3.6.3.tar.gz",
+        "bytes": 54953005,
+        "license_file": "LICENSE.txt",
+        "sha256": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
+        "source_url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.3/openssl-3.6.3.tar.gz",
+        "version": "3.6.3"
+      },
+      "source_version_commit": "84e4e32eecfd4abb49960ea23ddf90a64d94bc62"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "85d6f1e885117016478e468f92033f648d9bab05210708fe195cacefe5be8266",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "0849d017c155c55ea1fb01b6156ff5dc77f2a2d7fec84592a099c32f6db9eef1",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-opus-10b8da89afb8247d9d00a8b8ff6866cf652f73b2.rb",
+        "bottle_commit": "10b8da89afb8247d9d00a8b8ff6866cf652f73b2",
+        "bytes": 2331,
+        "git_blob_sha1": "6529782c9f7682549f43f802de50e60481cf128a",
+        "path": "Formula/o/opus.rb",
+        "sha256": "294b9457e1ec765ca0bc5391e6d013a277e30acc7978f1f15738c680fc5b4df2",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/10b8da89afb8247d9d00a8b8ff6866cf652f73b2/Formula/o/opus.rb"
+      },
+      "license": "BSD-3-Clause",
+      "name": "opus",
+      "package_version": "1.6.1",
+      "patches": [],
+      "source": {
+        "archive": "opus-1.6.1.tar.gz",
+        "bytes": 10472813,
+        "license_file": "COPYING",
+        "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+        "source_url": "https://ftp.osuosl.org/pub/xiph/releases/opus/opus-1.6.1.tar.gz",
+        "version": "1.6.1"
+      },
+      "source_version_commit": "0077b512207c080cdfa1a0e740e0e335a572a0a3"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "2e6f7cbf3ff42f59ca251f3c84d4ad5a3ecfd518340237a6f70a54a428de1676",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "413ca9c3ca785dcebb9baae17b4b86a70f1c86e5881fa8af87f55ac7e5d8a5eb",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-svt-av1-0290925fe0d504d315be38634f5b53b44fc65335.rb",
+        "bottle_commit": "0290925fe0d504d315be38634f5b53b44fc65335",
+        "bytes": 2119,
+        "git_blob_sha1": "d45e1fbd5e3f16ecb616a2d71bf4172685d67755",
+        "path": "Formula/s/svt-av1.rb",
+        "sha256": "bc23a069efdab09b7d90161f95fa2ce17a312cb82478dcaad25bde419c1ac244",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/0290925fe0d504d315be38634f5b53b44fc65335/Formula/s/svt-av1.rb"
+      },
+      "license": "BSD-3-Clause",
+      "name": "svt-av1",
+      "package_version": "4.2.0",
+      "patches": [],
+      "source": {
+        "archive": "SVT-AV1-v4.2.0.tar.bz2",
+        "bytes": 10334915,
+        "license_file": "LICENSE.md",
+        "sha256": "512f2ea5649e3e76c2dddcc25c2556fb67a9582baaab207c9c96161c94659dad",
+        "source_url": "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.2.0/SVT-AV1-v4.2.0.tar.bz2",
+        "version": "4.2.0"
+      },
+      "source_version_commit": "5e408e44b8fc570852abfa8622a8d1b498a6be32"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "a613d44ead5d3999270970f41283eadfad8001061faf063945def6b8fb5145f4",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "3a260293e96e74afe7c763841d42085092f66711b6cec8aa693a1458e26eae3a",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-x264-9ecddc07a2c404f80ded336430c69b3679136505.rb",
+        "bottle_commit": "9ecddc07a2c404f80ded336430c69b3679136505",
+        "bytes": 3734,
+        "git_blob_sha1": "85277a95a6bf82429814c8899a6b694c10c71677",
+        "path": "Formula/x/x264.rb",
+        "sha256": "9b0f3d70b98f07318301a2b540fa394fcb7ef07f1b53cfabd2fbf077e4c4e8e0",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/9ecddc07a2c404f80ded336430c69b3679136505/Formula/x/x264.rb"
+      },
+      "license": "GPL-2.0-or-later",
+      "name": "x264",
+      "package_version": "r3222",
+      "patches": [],
+      "source": {
+        "archive": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2",
+        "bytes": 848719,
+        "license_file": "COPYING",
+        "sha256": "6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224",
+        "source_url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2",
+        "version": "r3222+b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+      },
+      "source_version_commit": "458c54b935eb507cc582a3b7c0c766df349e1d6e"
+    },
+    {
+      "bottles": {
+        "arm64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "29300af7c34c7bc5fd84549b2e0173909026c264060d56bf6d35d79da3808506",
+          "bottle_tag": "arm64_sequoia"
+        },
+        "x64": {
+          "bottle_rebuild": 0,
+          "bottle_sha256": "661c9c3a348ce2c6677204fa20bc7751bd5c6e32cffac91b41a01194257ba35d",
+          "bottle_tag": "sonoma"
+        }
+      },
+      "formula": {
+        "archive": "homebrew-formula-x265-ac9f6d3b1fac026f3f10d4a8ffa320a011aeee84.rb",
+        "bottle_commit": "ac9f6d3b1fac026f3f10d4a8ffa320a011aeee84",
+        "bytes": 3606,
+        "git_blob_sha1": "9bae8b33bab888a423781738a2e422f1a5f9bdb9",
+        "path": "Formula/x/x265.rb",
+        "sha256": "de938e745a30155aa13f4d4285e397db5343220afa717cf30161cd3c90c8f604",
+        "source_url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/ac9f6d3b1fac026f3f10d4a8ffa320a011aeee84/Formula/x/x265.rb"
+      },
+      "license": "GPL-2.0-or-later",
+      "name": "x265",
+      "package_version": "4.2",
+      "patches": [],
+      "source": {
+        "archive": "x265_4.2.tar.gz",
+        "bytes": 1833442,
+        "license_file": "COPYING",
+        "sha256": "40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210",
+        "source_url": "https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz",
+        "version": "4.2"
+      },
+      "source_version_commit": "f3974881a4729a29799b17b5a4d614da7d6ddb9e"
+    }
+  ],
+  "inventories": {
+    "arm64": {
+      "arch": "arm64",
+      "bytes": 1030,
+      "path": "packaging/macos-ffmpeg-formulae-arm64.txt",
+      "sha256": "7c0472395f88b33d515a4cdbadafc5be2c00773d895213c2e9eb29b732bfa71d"
+    },
+    "x64": {
+      "arch": "x64",
+      "bytes": 954,
+      "path": "packaging/macos-ffmpeg-formulae-x64.txt",
+      "sha256": "68421d8e408a64dbc0f7e4db60f4eb9cf78f91c6ec4f2bacdcce91223ceac0fc"
+    }
+  },
+  "provenance_status": "complete",
+  "schema": "autoeditor-macos-homebrew-ffmpeg-sources/v1",
+  "system_libraries": [
+    {
+      "id": "apple-frameworks",
+      "load_paths": [
+        "/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation",
+        "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+        "/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox",
+        "/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+        "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+        "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox"
+      ],
+      "provided_by": "macOS",
+      "reason": "Apple media, UI, graphics, and foundation frameworks are supplied as part of the operating system",
+      "source_required": false
+    },
+    {
+      "id": "bzip2",
+      "load_paths": [
+        "/usr/lib/libbz2.1.0.dylib"
+      ],
+      "provided_by": "macOS",
+      "reason": "ffmpeg declares uses_from_macos bzip2 and the audited runtime resolves it from macOS",
+      "source_required": false
+    },
+    {
+      "id": "libxml2",
+      "load_paths": [
+        "/usr/lib/libxml2.2.dylib"
+      ],
+      "provided_by": "macOS",
+      "reason": "ffmpeg declares uses_from_macos libxml2; no Homebrew libxml2 is in the audited shipped closure",
+      "source_required": false
+    },
+    {
+      "id": "macos-runtime",
+      "load_paths": [
+        "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/libc++.1.dylib",
+        "/usr/lib/libiconv.2.dylib",
+        "/usr/lib/libobjc.A.dylib",
+        "/usr/lib/libz.1.dylib"
+      ],
+      "provided_by": "macOS",
+      "reason": "the compiler, C++ ABI, Objective-C ABI, iconv, and zlib runtime libraries are supplied as part of macOS",
+      "source_required": false
+    },
+    {
+      "id": "ncurses",
+      "load_paths": [
+        "/usr/lib/libncurses.5.4.dylib"
+      ],
+      "provided_by": "macOS",
+      "reason": "lame declares uses_from_macos ncurses; no Homebrew ncurses is in the audited shipped closure",
+      "source_required": false
+    }
+  ]
+}
