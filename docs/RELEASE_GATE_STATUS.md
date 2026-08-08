@@ -72,8 +72,11 @@ test pass is not approval to send an installer to friends.
   Actions secrets remain empty. The required Windows and Apple signing
   credentials have not been created or attached.
 - The separate private Cloudflare candidate and live-release buckets now exist
-  with isolated API tokens. Production still runs the older Worker and has not
-  received the current D1 migrations or required `RELEASES` binding.
+  with isolated API tokens. Production Worker version
+  `4ebd37b7-5f84-40d9-afbf-72d686b7e19a` is live from protected-main commit
+  `83a4d615f936e8b154bf5596eb6b50f1ce64494b`; both D1 migrations, the private
+  `RELEASES` binding, four tracked site assets, and the required security
+  headers were verified on August 8, 2026.
 - No Windows Authenticode-signed installer has been built and installed on a
   clean Windows 11 computer.
 - No Apple Developer ID signed, notarized, and stapled Apple Silicon or Intel
@@ -82,8 +85,9 @@ test pass is not approval to send an installer to friends.
   so the separate live-promotion workflow has not been authorized or run.
 - The Intel Mac package has not been installed and exercised on real Intel Mac
   hardware.
-- The private production Worker, D1 schema, R2 paths, invites, and two-user
-  isolation flow have not been deployed and accepted from this revision.
+- Signed-in production invite/session handling, real DeepSeek validation,
+  two-user isolation, the authenticated Setup-code flow, and one full
+  Helper claim/upload/QA round trip have not been accepted from this revision.
 - The six generic profiles, five exact DeepSeek operations, server-bound
   revision proposal, and six-item browser picker have not been accepted
   together from signed Windows and Mac artifacts.
