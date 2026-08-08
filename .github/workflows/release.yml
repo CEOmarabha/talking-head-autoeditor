@@ -315,6 +315,14 @@ jobs:
             exit 1
           }
 
+      - name: Gate the Windows Remotion compositor staging payload
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python packaging/prune_remotion_windows_runtime.py \
+            --stage-root desktop/staging \
+            --package-lock packaging/helper-runtime/package-lock.json
+
       - name: Generate byte-verifiable product runtime manifest
         shell: bash
         env:

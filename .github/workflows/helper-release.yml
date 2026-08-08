@@ -403,6 +403,15 @@ jobs:
           test -n "$BROWSER" && test -f "$BROWSER"
           cp -R "$(dirname "$BROWSER")" "$STAGE/browser/$DEST"
 
+      - name: Prune the exact stale Windows Remotion FFmpeg runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python packaging/prune_remotion_windows_runtime.py \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --require-package
+
       - name: Render real HyperFrames and Remotion probes
         shell: bash
         env:
