@@ -1,2 +1,3 @@
 /packaging/windows-ffmpeg-capabilities.json text eol=lf
 /packaging/windows-ffmpeg-sources.lock.json text eol=lf
+/packaging/electron-chromium-provenance.lock.json text eol=lf

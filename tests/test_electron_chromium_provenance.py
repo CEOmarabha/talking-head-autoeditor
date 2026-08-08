@@ -312,6 +312,7 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
             set(lock["chrome_headless_shell"]["archives"]),
             {"mac-arm64", "mac-x64", "windows-x64"},
         )
+
         self.assertEqual(
             {
                 target: record["sha256"]
@@ -351,6 +352,15 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
         self.assertEqual(
             lock["electron"]["npm_package"]["sha256"],
             "581b6b729df7582407aca4817e71078e815bb96de764185276a8fd15b5905399",
+        )
+
+    def test_windows_checkout_preserves_canonical_lock_line_endings(self):
+        attributes = (ROOT / ".gitattributes").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        self.assertIn(
+            "/packaging/electron-chromium-provenance.lock.json text eol=lf",
+            attributes,
         )
 
     def test_helper_stages_exact_notices_browser_and_receipt(self):
