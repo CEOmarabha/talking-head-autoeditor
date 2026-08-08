@@ -898,8 +898,28 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                         "mac-arm64",
                     )
 
-    def test_macos_fails_with_precise_missing_contracts_after_usable_inputs(self):
+    def test_macos_loads_exact_ffmpeg_and_remotion_claims(self):
         fixture = self._authenticated({"fixture": True})
+        ffmpeg_path = "Contents/Resources/bin/ffmpeg"
+        remotion_path = (
+            "Contents/Resources/creative-runtime/node_modules/@remotion/"
+            "compositor-darwin-arm64/ffmpeg"
+        )
+        ffmpeg_claim = SimpleNamespace(
+            path=ffmpeg_path,
+            architecture="arm64",
+            formula_inventory_sha256="1" * 64,
+            sha256="2" * 64,
+            bytes=101,
+        )
+        remotion_claim = SimpleNamespace(
+            path=remotion_path,
+            architecture="arm64",
+            lineage_id="npm:@remotion/compositor-darwin-arm64@4.0.507",
+            source_manifest_sha256="3" * 64,
+            sha256="4" * 64,
+            bytes=102,
+        )
         inputs = generator.GeneratorInputs(
             onnx_receipt=Path("onnx"),
             onnx_receipt_sha256="a" * 64,
@@ -911,6 +931,10 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             runtime_build_manifest_sha256="d" * 64,
             electron_native_receipt=Path("electron-native"),
             electron_native_receipt_sha256="f" * 64,
+            mac_ffmpeg_receipt=Path("mac-ffmpeg"),
+            mac_ffmpeg_receipt_sha256="1" * 64,
+            mac_remotion_receipt=Path("mac-remotion"),
+            mac_remotion_receipt_sha256="2" * 64,
             mac_normalization_receipt=Path("normalization"),
             mac_normalization_receipt_sha256="e" * 64,
         )
@@ -938,14 +962,39 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             generator.electron_native,
             "claims_from_receipt",
             return_value={},
+        ), mock.patch.object(
+            generator.mac_ffmpeg,
+            "load_authenticated_receipt",
+            return_value=({"lineage_id": "mac-ffmpeg"}, b"ffmpeg"),
+        ), mock.patch.object(
+            generator.mac_ffmpeg,
+            "verify_app",
+            return_value={ffmpeg_path: ffmpeg_claim},
+        ), mock.patch.object(
+            generator.mac_remotion,
+            "load_authenticated_receipt",
+            return_value=({"lineage_id": "mac-remotion"}, b"remotion"),
+        ), mock.patch.object(
+            generator.mac_remotion,
+            "verify_app",
+            return_value={remotion_path: remotion_claim},
         ):
-            with self.assertRaisesRegex(
-                generator.MissingProducerContractError,
-                "Mac FFmpeg bundle receipt.*Mac Remotion.*Electron native producer receipt is already",
-            ):
-                generator._load_producers(
-                    Path("unused"), "mac-arm64", inputs
-                )
+            owners, build, claims = generator._load_producers(
+                Path("unused"), "mac-arm64", inputs
+            )
+        self.assertIsNone(build)
+        self.assertEqual(claims[ffmpeg_path].sha256, "2" * 64)
+        self.assertEqual(claims[remotion_path].sha256, "4" * 64)
+        self.assertEqual(
+            owners["main-ffmpeg"].source_manifest_sha256, "1" * 64
+        )
+        self.assertEqual(
+            owners["remotion"].source_manifest_sha256, "3" * 64
+        )
+        self.assertFalse(any(
+            claim.owner.component in {"browser", "frozen-engine", "frozen-helper"}
+            for claim in claims.values()
+        ))
 
     def test_unique_owner_rejects_unclaimed_and_multiply_claimed_paths(self):
         relative = "AutoEditor Helper.exe"
@@ -1269,6 +1318,8 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         self.assertIn("--onnx-receipt-sha256", help_text)
         self.assertIn("--electron-chromium-receipt-sha256", help_text)
         self.assertIn("--electron-native-receipt-sha256", help_text)
+        self.assertIn("--mac-ffmpeg-receipt-sha256", help_text)
+        self.assertIn("--mac-remotion-receipt-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-manifest-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-lock-sha256", help_text)
         self.assertIn("--windows-ffmpeg-capabilities-sha256", help_text)

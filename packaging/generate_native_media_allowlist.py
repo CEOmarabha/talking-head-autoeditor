@@ -85,6 +85,10 @@ class GeneratorInputs:
     runtime_build_manifest_sha256: str
     electron_native_receipt: Path | None = None
     electron_native_receipt_sha256: str | None = None
+    mac_ffmpeg_receipt: Path | None = None
+    mac_ffmpeg_receipt_sha256: str | None = None
+    mac_remotion_receipt: Path | None = None
+    mac_remotion_receipt_sha256: str | None = None
     remotion_receipt: Path | None = None
     remotion_receipt_sha256: str | None = None
     windows_ffmpeg_build_receipt: Path | None = None
@@ -123,6 +127,8 @@ normalizer = _load_sibling("normalize_pyinstaller_symlinks")
 helper_manifest = _load_sibling("generate_helper_manifest")
 source_bundle = _load_sibling("source_bundle")
 electron_native = _load_sibling("electron_native_receipt")
+mac_ffmpeg = _load_sibling("macos_ffmpeg_receipt")
+mac_remotion = _load_sibling("macos_remotion_receipt")
 try:
     windows_ffmpeg_verifier = _load_sibling("verify_windows_ffmpeg")
     windows_ffmpeg_verifier_error: Exception | None = None
@@ -1298,6 +1304,8 @@ def _component_owners(
     ffmpeg_source: AuthenticatedJson | None,
     normalization: AuthenticatedJson | None,
     electron_native_sha256: str,
+    mac_ffmpeg_source_sha256: str | None = None,
+    mac_remotion_source_sha256: str | None = None,
 ) -> dict[str, ProducerOwner]:
     contracts = native.PLATFORM_COMPONENT_RULES[platform]
     owners = {
@@ -1361,11 +1369,28 @@ def _component_owners(
             ),
         })
     else:
-        if normalization is None:
+        if (
+            normalization is None
+            or mac_ffmpeg_source_sha256 is None
+            or mac_remotion_source_sha256 is None
+        ):
             raise AllowlistGenerationError(
-                "macOS generation requires a PyInstaller normalization receipt"
+                "macOS generation requires PyInstaller, FFmpeg, and Remotion "
+                "producer receipts"
             )
         owners.update({
+            "main-ffmpeg": ProducerOwner(
+                "main-ffmpeg",
+                contracts["main-ffmpeg"]["lineage_id"],
+                mac_ffmpeg_source_sha256,
+                "exact final Mac FFmpeg bundle receipt",
+            ),
+            "remotion": ProducerOwner(
+                "remotion",
+                contracts["remotion"]["lineage_id"],
+                mac_remotion_source_sha256,
+                "exact final Mac Remotion producer receipt",
+            ),
             "frozen-engine": ProducerOwner(
                 "frozen-engine",
                 contracts["frozen-engine"]["lineage_id"],
@@ -1524,15 +1549,117 @@ def _load_producers(
             "Mac PyInstaller normalization receipt",
         )
         _validate_normalization(normalization, app_root, platform)
-        raise MissingProducerContractError(
-            "macOS native allowlist generation is closed until two exact "
-            "producer contracts exist: (1) a Mac FFmpeg bundle receipt that "
-            "enumerates every final Contents/Resources/bin and lib Mach-O "
-            "with byte count and SHA256, (2) a canonical Mac Remotion "
-            "post-install receipt that binds the complete target compositor "
-            "inventory; the final Electron native producer receipt is already "
-            "required and authenticated"
+        arch = _platform_target(platform)["arch"]
+        ffmpeg_path, ffmpeg_sha = _require_pair(
+            inputs.mac_ffmpeg_receipt,
+            inputs.mac_ffmpeg_receipt_sha256,
+            "Mac FFmpeg bundle receipt",
         )
+        remotion_path, remotion_sha = _require_pair(
+            inputs.mac_remotion_receipt,
+            inputs.mac_remotion_receipt_sha256,
+            "Mac Remotion producer receipt",
+        )
+        try:
+            ffmpeg_payload, ffmpeg_raw = mac_ffmpeg.load_authenticated_receipt(
+                ffmpeg_path, ffmpeg_sha, arch
+            )
+            exact_ffmpeg_claims = mac_ffmpeg.verify_app(
+                app_root, ffmpeg_payload, ffmpeg_raw, arch
+            )
+        except mac_ffmpeg.MacFFmpegReceiptError as exc:
+            raise AllowlistGenerationError(
+                f"invalid Mac FFmpeg bundle receipt: {exc}"
+            ) from exc
+        try:
+            remotion_payload, remotion_raw = (
+                mac_remotion.load_authenticated_receipt(
+                    remotion_path, remotion_sha, arch
+                )
+            )
+            exact_remotion_claims = mac_remotion.verify_app(
+                app_root, remotion_payload, remotion_raw, arch
+            )
+        except mac_remotion.MacRemotionReceiptError as exc:
+            raise AllowlistGenerationError(
+                f"invalid Mac Remotion producer receipt: {exc}"
+            ) from exc
+        ffmpeg_sources = {
+            claim.formula_inventory_sha256
+            for claim in exact_ffmpeg_claims.values()
+        }
+        remotion_sources = {
+            claim.source_manifest_sha256
+            for claim in exact_remotion_claims.values()
+        }
+        if len(ffmpeg_sources) != 1 or len(remotion_sources) != 1:
+            raise AllowlistGenerationError(
+                "Mac native producer claims have inconsistent source bindings"
+            )
+        owners = _component_owners(
+            platform,
+            onnx=onnx,
+            electron=electron,
+            runtime=runtime,
+            remotion=None,
+            ffmpeg_source=None,
+            normalization=normalization,
+            electron_native_sha256=electron_native_digest,
+            mac_ffmpeg_source_sha256=next(iter(ffmpeg_sources)),
+            mac_remotion_source_sha256=next(iter(remotion_sources)),
+        )
+        claims: dict[str, ProducerClaim] = {}
+        for relative, exact in exact_electron_claims.items():
+            owner = owners[exact.component]
+            claims[relative] = ProducerClaim(
+                owner, exact.sha256, exact.byte_count
+            )
+        onnx_root = native._onnx_package_root(platform)
+        onnx_owner = owners["onnxruntime-node"]
+        for relative, digest in native._expected_onnx_target_inventory(
+            platform
+        ).items():
+            app_relative = f"{onnx_root}/bin/napi-v3/{relative}"
+            if app_relative in claims:
+                raise AllowlistGenerationError(
+                    f"duplicate authenticated Mac native claim: {app_relative}"
+                )
+            claims[app_relative] = ProducerClaim(onnx_owner, digest, None)
+        for exact_claims, component in (
+            (exact_ffmpeg_claims, "main-ffmpeg"),
+            (exact_remotion_claims, "remotion"),
+        ):
+            owner = owners[component]
+            for relative, exact in exact_claims.items():
+                source_digest = (
+                    exact.formula_inventory_sha256
+                    if component == "main-ffmpeg"
+                    else exact.source_manifest_sha256
+                )
+                lineage = (
+                    owner.lineage_id
+                    if component == "main-ffmpeg"
+                    else exact.lineage_id
+                )
+                if (
+                    relative != exact.path
+                    or exact.architecture != arch
+                    or native._component_for_path(relative, platform)
+                    != component
+                    or source_digest != owner.source_manifest_sha256
+                    or lineage != owner.lineage_id
+                ):
+                    raise AllowlistGenerationError(
+                        f"Mac {component} claim has wrong path: {relative}"
+                    )
+                if relative in claims:
+                    raise AllowlistGenerationError(
+                        f"duplicate authenticated Mac native claim: {relative}"
+                    )
+                claims[relative] = ProducerClaim(
+                    owner, exact.sha256, exact.bytes
+                )
+        return owners, None, claims
 
     remotion_path, remotion_sha = _require_pair(
         inputs.remotion_receipt,
@@ -1902,6 +2029,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--electron-chromium-receipt-sha256", required=True)
     parser.add_argument("--electron-native-receipt", type=Path, required=True)
     parser.add_argument("--electron-native-receipt-sha256", required=True)
+    parser.add_argument("--mac-ffmpeg-receipt", type=Path)
+    parser.add_argument("--mac-ffmpeg-receipt-sha256")
+    parser.add_argument("--mac-remotion-receipt", type=Path)
+    parser.add_argument("--mac-remotion-receipt-sha256")
     parser.add_argument("--creative-runtime-lock", type=Path, required=True)
     parser.add_argument("--creative-runtime-lock-sha256", required=True)
     parser.add_argument("--runtime-build-manifest", type=Path, required=True)
@@ -1941,6 +2072,10 @@ def main() -> None:
         electron_native_receipt_sha256=(
             args.electron_native_receipt_sha256
         ),
+        mac_ffmpeg_receipt=args.mac_ffmpeg_receipt,
+        mac_ffmpeg_receipt_sha256=args.mac_ffmpeg_receipt_sha256,
+        mac_remotion_receipt=args.mac_remotion_receipt,
+        mac_remotion_receipt_sha256=args.mac_remotion_receipt_sha256,
         creative_runtime_lock=args.creative_runtime_lock,
         creative_runtime_lock_sha256=args.creative_runtime_lock_sha256,
         runtime_build_manifest=args.runtime_build_manifest,

@@ -277,6 +277,44 @@ jobs:
             exit 1
           fi
 
+      - name: Build and verify exact macOS FFmpeg corresponding source
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          SOURCE_CACHE="$RUNNER_TEMP/macos-ffmpeg-source-cache"
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          mkdir -p "$EVIDENCE"
+          python packaging/verify_macos_ffmpeg_source.py contracts \
+            --lock packaging/macos-ffmpeg-sources.lock.json
+          python packaging/verify_macos_ffmpeg_source.py fetch-cache \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --source-cache "$SOURCE_CACHE"
+          python packaging/verify_macos_ffmpeg_source.py verify-cache \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --source-cache "$SOURCE_CACHE"
+          python packaging/verify_macos_ffmpeg_source.py verify-environment \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" --source-cache "$SOURCE_CACHE" \
+            --bottle-cache "$(brew --cache)" --cellar "$(brew --cellar)" \
+            --output "$EVIDENCE/macos-ffmpeg-environment-${{ matrix.arch }}.json"
+          python packaging/verify_macos_ffmpeg_source.py write-bundle-lock \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --output "$EVIDENCE/macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json"
+          python packaging/source_bundle.py build \
+            --lock "$EVIDENCE/macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json" \
+            --source-cache "$SOURCE_CACHE" --repository . \
+            --repository-commit "$GITHUB_SHA" \
+            --output-tar "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --output-manifest "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json"
+          python packaging/verify_macos_ffmpeg_source.py verify-bundle \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --archive "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --manifest "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            --repository-commit "$GITHUB_SHA"
+          cp packaging/macos-ffmpeg-sources.lock.json "$EVIDENCE/"
+
       - name: Download the accepted source-built Windows FFmpeg
         if: runner.os == 'Windows'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -499,6 +537,18 @@ jobs:
             --target-os "${{ matrix.target_os }}" \
             --target-arch "${{ matrix.arch }}"
 
+      - name: Fetch the exact pinned Mac Remotion source tarball
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          TARBALL="remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          NPM_TARBALL="compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          URL="https://registry.npmjs.org/@remotion/compositor-darwin-${{ matrix.arch }}/-/$NPM_TARBALL"
+          curl --proto '=https' --tlsv1.2 -fsSL "$URL" \
+            -o "$EVIDENCE/$TARBALL"
+          test -s "$EVIDENCE/$TARBALL"
+
       - name: Prune the exact stale Windows Remotion FFmpeg runtime
         if: runner.os == 'Windows'
         shell: bash
@@ -694,6 +744,41 @@ jobs:
             --target-arch "${{ matrix.arch }}" \
             --version "${{ steps.release.outputs.version }}"
           echo "Packed creative runtime is complete."
+
+      - name: Create and verify exact packed Mac FFmpeg and Remotion receipts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          REMOTION_TARBALL="$EVIDENCE/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" --tarball "$REMOTION_TARBALL" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
 
       - name: Create exact packed Electron native producer receipt
         shell: bash
@@ -920,6 +1005,17 @@ jobs:
             --version "${{ steps.release.outputs.version }}" \
             --receipt "$ELECTRON_RECEIPT" \
             --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          NATIVE_EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$NATIVE_EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$NATIVE_EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
           MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
             "$MOUNTED_APP/Contents/Info.plist")
           test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
@@ -950,6 +1046,16 @@ jobs:
             --version "${{ steps.release.outputs.version }}"
           hdiutil detach "$MOUNT" -force
           trap - EXIT
+
+      - name: Upload accepted Mac native producer evidence
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/mac-native-accepted-${{ matrix.arch }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Upload unsigned acceptance artifact
         if: steps.release.outputs.tagged != 'true'
@@ -1425,6 +1531,11 @@ jobs:
           name: prepared-helper-mac-${{ matrix.arch }}
           path: ${{ runner.temp }}/prepared-helper
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/accepted-mac-native
+
       - name: Restore the runtime that passed unsigned acceptance
         shell: bash
         run: |
@@ -1432,6 +1543,32 @@ jobs:
             -C desktop
           test -f desktop/helper-staging/runtime-manifest.json
           rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz"
+
+      - name: Verify accepted Mac source and receipt input set
+        shell: bash
+        run: |
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          EXPECTED=$(printf '%s\n' \
+            "macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            "macos-ffmpeg-environment-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-sources.lock.json" \
+            "macos-remotion-${{ matrix.arch }}.json" \
+            "remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" | \
+            LC_ALL=C sort)
+          ACTUAL=$(find "$ACCEPTED" -mindepth 1 -maxdepth 1 -type f \
+            -exec basename {} \; | LC_ALL=C sort)
+          [[ "$ACTUAL" == "$EXPECTED" ]]
+          cmp packaging/macos-ffmpeg-sources.lock.json \
+            "$ACCEPTED/macos-ffmpeg-sources.lock.json"
+          python packaging/verify_macos_ffmpeg_source.py verify-bundle \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --archive "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --manifest "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            --repository-commit "$GITHUB_SHA"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -1454,6 +1591,34 @@ jobs:
             --electron-root node_modules/electron \
             --output-dir "$RUNNER_TEMP/electron-dist" \
             --target-os mac --target-arch "${{ matrix.arch }}"
+
+      - name: Restore exact Mac FFmpeg receipt source environment
+        shell: bash
+        run: |
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          BREW_VERSION=$(brew --version)
+          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.12'
+          brew install ffmpeg
+          EXPECTED=desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          OBSERVED="$RUNNER_TEMP/signed-mac-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" --output "$OBSERVED"
+          cmp "$EXPECTED" "$OBSERVED"
 
       - name: Build the signed and notarized macOS installer
         shell: bash
@@ -1478,6 +1643,42 @@ jobs:
             --mac --${{ matrix.arch }} --publish never \
             --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST"
+
+      - name: Create and verify exact signed Mac FFmpeg and Remotion receipts
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          SIGNED="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          mkdir -p "$SIGNED"
+          FFMPEG_RECEIPT="$SIGNED/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED/macos-remotion-signed-${{ matrix.arch }}.json"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" \
+            --tarball "$ACCEPTED/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
 
       - name: Create exact signed packed Electron native producer receipt
         shell: bash
@@ -1540,6 +1741,17 @@ jobs:
             --version "${GITHUB_REF_NAME#helper-v}" \
             --receipt "$ELECTRON_RECEIPT" \
             --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          SIGNED_NATIVE="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$SIGNED_NATIVE/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED_NATIVE/macos-remotion-signed-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
           codesign -dv --verbose=4 "$APP" 2>&1 | \
             grep -q 'Authority=Developer ID Application'
           spctl --assess --type execute --verbose=2 "$APP"
@@ -1598,6 +1810,11 @@ jobs:
             "$RECEIPT_DIR/runtime-manifest-mac-${{ matrix.arch }}.json"
           cp "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json" \
             "$RECEIPT_DIR/electron-native-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"/*.json \
+            "$RECEIPT_DIR/"
+          mkdir -p "$RECEIPT_DIR/accepted-native"
+          cp -R "$RUNNER_TEMP/accepted-mac-native/." \
+            "$RECEIPT_DIR/accepted-native/"
           KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
           SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
           TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
