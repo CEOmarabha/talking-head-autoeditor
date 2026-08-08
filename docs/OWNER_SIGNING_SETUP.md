@@ -51,11 +51,15 @@ Check the current price and identity-eligibility list before opening the account
     - `WIN_AZURE_CERTIFICATE_PROFILE_NAME`: exact profile name from step 6.
     - `WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME`: exact account name from step 4.
 
-13. Run the Helper workflow manually first. A manual build is an acceptance
-    build and is not published to friends.
-14. After the clean-PC tests pass, create a `helper-v*` tag. The tagged workflow
-    selects Azure signing, verifies Authenticode on both the installer and the
-    installed app, and stops before publishing if either signature is invalid.
+13. Run the Helper workflow manually first. A manual build is an unsigned
+    engineering-acceptance build and is never published to friends.
+14. When the unsigned engineering checks pass, create a `helper-v*` tag. The
+    tagged workflow selects Azure signing, verifies Authenticode on the
+    installer and installed app, uploads an exact signed candidate for physical
+    acceptance, then stops without changing live downloads.
+15. Download the signed Windows candidate from that Actions run and complete
+    `WINDOWS_FIRST_SETUP.md`. Promote only after the Windows and both Mac
+    candidates from the same run pass the complete physical checklist.
 
 Microsoft setup references:
 
@@ -110,8 +114,8 @@ Friends do not need Apple developer accounts.
    save it as `APPLE_TEAM_ID`.
 8. Run a manual acceptance build first. For a tagged build, the workflow signs
    the app with hardened runtime, submits the app and both DMGs to Apple’s
-   notary service, staples the tickets, and validates Gatekeeper before it can
-   publish.
+   notary service, staples the tickets, validates Gatekeeper, and uploads signed
+   candidates for physical acceptance. The tagged build cannot publish them.
 
 Apple setup references:
 
@@ -121,14 +125,89 @@ Apple setup references:
 
 ## Private website publishing
 
-The tagged workflow also requires `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID`. The token needs only the account and R2 object-write
-permissions required for the `autoeditor-media` bucket. Never reuse a global
-Cloudflare API key. A tagged build stops before the release is announced if
-private download publishing cannot complete.
+The installers are larger than Wrangler's upload limit, so tagged builds use a
+pinned S3-compatible multipart client. Release files must not share credentials
+or a bucket with friends' private footage. This is owner setup. Friends do not
+need a Cloudflare account.
+
+1. Open the Cloudflare dashboard and select **R2 Object Storage**.
+2. Create `autoeditor-release-candidates`. Open its lifecycle settings and add
+   a rule that deletes objects after seven days. Failed or superseded build
+   candidates then clean themselves up.
+3. Create `autoeditor-releases` with no expiry rule. The Worker reads friend
+   installers only from this bucket. Private footage stays in the separate
+   `autoeditor-media` bucket.
+4. Lock the content-addressed live objects before the first release. From
+   `webapp/worker`, run:
+
+   ```bash
+   npx wrangler r2 bucket lock set autoeditor-releases \
+     --file r2-release-locks.json
+   npx wrangler r2 bucket lock list autoeditor-releases
+   ```
+
+   Confirm the list contains indefinite rules for `dist/helper/objects/` and
+   `dist/helper/checksums/`. Do not add a rule for
+   `dist/helper/current.json`; that one pointer must remain replaceable for a
+   release or rollback. Cloudflare bucket locks apply to existing and future
+   objects and prevent both deletion and overwrite. The strictest matching
+   rule wins.
+5. Open **Manage R2 API Tokens**, choose **Create API token**, and create a
+   candidate token with object read and write access only to
+   `autoeditor-release-candidates`.
+6. Copy that token's **Access Key ID** and **Secret Access Key** while they are
+   shown. Cloudflare does not show the secret again.
+7. Create a second promotion token with access only to
+   `autoeditor-release-candidates` and `autoeditor-releases`. The separate manual
+   promotion workflow uses it to verify candidates, copy them into the live
+   bucket, and update the live pointer. Build and signing jobs never receive
+   this token.
+8. Copy the second token's Access Key ID and Secret Access Key, then copy the
+   Cloudflare account ID from the dashboard.
+9. In the GitHub repository, open **Settings**, **Secrets and variables**,
+   **Actions**, then add these repository secrets for signed candidate upload:
+
+   - `R2_CANDIDATE_ACCESS_KEY_ID`: candidate token Access Key ID.
+   - `R2_CANDIDATE_SECRET_ACCESS_KEY`: candidate token Secret Access Key.
+   - `CLOUDFLARE_ACCOUNT_ID`: account ID from step 8.
+
+10. Protect the repository's default branch with a branch protection rule or
+    ruleset. Do not allow direct, unreviewed changes to the release workflow on
+    that branch.
+11. Open **Settings**, **Environments**, create `helper-live-release`, and add
+    Omar as a required reviewer. Under **Deployment branches and tags**, choose
+    **Selected branches and tags**, then add only the exact protected default
+    branch name. Do not allow every branch, tags, or wildcard patterns. Put only
+    these promotion secrets in that environment:
+
+    - `R2_RELEASE_ACCESS_KEY_ID`: promotion token Access Key ID.
+    - `R2_RELEASE_SECRET_ACCESS_KEY`: promotion token Secret Access Key.
+    - `CLOUDFLARE_ACCOUNT_ID`: account ID from step 8.
+
+    Do not put Apple, Windows, Azure, candidate-bucket, or user-media secrets in
+    this environment. The promotion workflow has no reason to receive them.
+
+Each signed platform job uploads its installer under a content-addressed key in
+the candidate bucket, records its byte count and SHA-256 digest, and adds a
+seven-day signed-candidate artifact to that Actions run. The tagged build ends
+there. It has no live-release credentials and cannot change `current.json`.
+
+After every signed candidate from that exact run passes physical acceptance,
+open **Actions**, choose **Promote accepted AutoEditor Helper release**, enter
+the accepted tag, build run ID, and 40-character commit SHA, check the physical
+acceptance box, then press **Run workflow**. The protected promotion job rejects
+version downgrades and same-version provenance changes. It verifies all three
+receipt-bound candidates, copies them to the live bucket, and creates or
+refreshes a metadata-only GitHub release. One conditional `current.json` write
+exposes all three platforms together at the end. A failed build or promotion
+can leave expiring, unreferenced candidates, but it cannot partially change live
+downloads or access user footage. The large installers are never attached to
+GitHub Releases because a single GitHub release asset must remain under 2 GiB.
 
 ## Secret safety check
 
 Repository files contain secret names only. Before tagging, run `gh secret
-list` and confirm each required name exists. Never paste a secret into an issue,
-commit, workflow input, chat message, screenshot, log, or friend guide.
+list` for the signing and candidate-upload names. Before promotion, run `gh
+secret list --env helper-live-release` for the three promotion names. Never
+paste a secret into an issue, commit, workflow input, chat message, screenshot,
+log, or friend guide.

@@ -67,12 +67,12 @@ mac:
   notarize: false
   minimumSystemVersion: "12.0"
 
-# Keep the DMG plain: no background image and no custom volume icon. The
-# Finder scripting those features require can attach Finder metadata after the
-# app is sealed, which breaks codesign --strict verification (2026-08 Mac
-# acceptance failure). CI re-verifies the app from a fresh DMG mount.
+# Keep the DMG plain: no background image and no custom volume icon. In
+# dmg-builder, a null background selects its bundled default image. An explicit
+# color is the supported no-image path and avoids shipping .background.tiff.
+# CI re-verifies the app from a fresh DMG mount.
 dmg:
-  background: null
+  backgroundColor: "#0b0d10"
   icon: null
   writeUpdateInfo: false
   contents:

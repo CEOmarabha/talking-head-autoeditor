@@ -15,13 +15,22 @@ the exact Windows `.exe` and Mac `.dmg` files friends will download.
 - `CSC_LINK`: Apple Developer ID Application certificate for electron-builder.
 - `CSC_KEY_PASSWORD`: certificate password.
 - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`: notarization.
-- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`: upload the approved
-  installers to the private website’s R2 bucket.
+- `R2_CANDIDATE_ACCESS_KEY_ID`, `R2_CANDIDATE_SECRET_ACCESS_KEY`, and
+  `CLOUDFLARE_ACCOUNT_ID`: let tagged signing jobs write only to the expiring
+  candidate bucket.
+- `R2_RELEASE_ACCESS_KEY_ID`, `R2_RELEASE_SECRET_ACCESS_KEY`, and
+  `CLOUDFLARE_ACCOUNT_ID`: put these only in the protected
+  `helper-live-release` GitHub environment. That environment is used by the
+  separate manual promotion workflow and never receives signing credentials.
+- Indefinite R2 bucket locks on `dist/helper/objects/` and
+  `dist/helper/checksums/` in `autoeditor-releases`. Keep only
+  `dist/helper/current.json` mutable.
 
-GitHub currently has none of these repository secrets configured. A tagged
-release must remain blocked until they exist. Manual workflow runs may create
-unsigned acceptance artifacts, but those files are never friend releases.
-Follow `OWNER_SIGNING_SETUP.md` once. Friends never perform signing setup.
+As last verified on August 7, 2026, GitHub had none of these secrets configured.
+A signed-candidate build remains blocked until they exist. Manual workflow runs
+may create unsigned acceptance artifacts, but those files are never friend
+releases. Follow `OWNER_SIGNING_SETUP.md` once. Friends never perform signing
+setup.
 
 ## Automated gates
 
@@ -41,8 +50,11 @@ Each platform must:
    filter.
 4. Bundle the pinned small and medium faster-whisper models and force offline
    model loading.
-5. Bundle all approved creator profiles, Work Sans, Montserrat, and the CA
-   certificate bundle.
+5. Bundle exactly the six friend profiles (`generic_short`, `generic_long`,
+   `generic_commercial`, `generic_podcast`, `generic_course`, and
+   `generic_custom`), Work Sans, Montserrat, and the CA certificate bundle.
+   Keep PSE in its separate product channel. Do not ship named personal
+   profiles in the generic Helper.
 6. Bundle Node 22.23.2, HyperFrames 0.7.99, Remotion 4.0.507, GSAP 3.15.0,
    React 19.0.0, the fixed visualization templates, and Chrome Headless Shell
    152.0.7928.2.
@@ -54,8 +66,32 @@ Each platform must:
 11. Verify Authenticode for tagged Windows releases.
 12. Verify codesign, Gatekeeper assessment, notarization, and stapled tickets
     for tagged Mac releases.
-13. Upload artifacts only after all three jobs pass.
-14. Publish to both the GitHub release and private R2 download paths.
+13. Verify the installed or freshly mounted resources against every component
+    receipt in `runtime-manifest.json`.
+14. Multipart-upload each signed installer to a content-addressed R2 candidate
+    key, then upload the same signed installer and its receipt as a seven-day
+    GitHub Actions artifact for physical acceptance.
+15. Stop. A successful tagged build must not publish a GitHub release, copy an
+    object to the live bucket, or write `dist/helper/current.json`.
+
+After physical acceptance, the separate `Promote accepted AutoEditor Helper
+release` workflow must:
+
+16. Require Omar to enter the accepted tag, 40-character commit, and signed
+    build run ID, then check the explicit physical-acceptance box.
+17. Prove that run was a successful tag-push execution of
+    `helper-release.yml`, resolve the tag to the same commit, recover the exact
+    run attempt, and download exactly the three receipt artifacts from that run.
+18. Require all receipts to bind the same tag, commit, run ID, and run attempt.
+    Stream-hash each candidate object before and after its content-addressed
+    copy into the live bucket.
+19. Publish and reread the metadata-only GitHub release, then expose all three
+    platforms together by conditionally writing `dist/helper/current.json`
+    last. A rerun may succeed only when the existing release has the same
+    provenance and installer receipts.
+20. Confirm the live object and checksum prefixes are protected by Cloudflare
+    R2 bucket locks, so a later token mistake cannot overwrite referenced
+    installer bytes.
 
 The release locks are `packaging/requirements-windows-x64.txt`,
 `packaging/requirements-mac-arm64.txt`, and
@@ -70,7 +106,8 @@ Before production deployment:
 
 1. Run `npm ci`, `npm audit --audit-level=high`, and `npx wrangler deploy
    --dry-run` from `webapp/worker`.
-2. Apply `schema.sql` to a clean local D1 database and run the Worker locally.
+2. Apply the ordered D1 migrations to a clean local database and run the
+   Worker locally.
 3. Create two test users. Prove a personal Helper token cannot claim, update,
    complete, read, or write the other user’s job or media.
 4. Prove a queued job is claimed once, only an allowlisted progress status is
@@ -86,8 +123,14 @@ Before production deployment:
 8. Confirm installer availability and downloads return HTTP 401 while signed
    out, support byte ranges while signed in, and the legacy unsigned ZIP route
    does not exist.
-9. Back up production D1, apply the idempotent `schema.sql` remotely, verify the
-   `rate_limits` table, then deploy only with owner approval.
+9. Back up production D1, check for duplicate user names and revision numbers,
+   apply `npx wrangler d1 migrations apply autoeditor-web --remote`, verify the
+   lease columns, render upload table, and unique indexes, then deploy only with
+   owner approval.
+10. Confirm the browser offers exactly Short, long talking head, Commercial,
+    Podcast, Course, and Custom. Confirm the Worker and daemon share the exact
+    five-operation allowlist and the claimed revision job contains the
+    server-stored approved proposal.
 
 The local two-user, ownership, output-path, upload-resume, and rate-limit tests
 passed on August 7, 2026. Production deployment and live two-user acceptance
@@ -111,37 +154,63 @@ distribution and licensing scope.
 - ElevenLabs can be connected and live-tested, or explicitly skipped. If
   skipped, generated ElevenLabs sound effects must be shown as unavailable.
 - HyperFrames is always local and always required.
-- Remotion requires one explicit choice: free-license eligibility, paid key, or
-  skip. A skipped capability must be shown as skipped, never as ready.
+- Remotion is required. Each friend must explicitly confirm free-license
+  eligibility or enter a paid public license key. HyperFrames is also required
+  and local. Neither capability can be marked skipped.
 - Provider secrets are encrypted by the OS keystore and must never appear in
   logs, receipts, runtime manifests, API responses, or crash messages.
 
 ## Physical acceptance before sending links
 
+Use only the `signed-candidate-helper-*` artifacts from one successful tagged
+build run. Record its tag, full commit SHA, run ID, run attempt, and the three
+receipt SHA-256 values in the acceptance record. Do not test an unsigned build
+and then promote different signed bytes.
+
 1. Follow every step in `WINDOWS_FIRST_SETUP.md` on a clean Windows 11 PC.
-2. Install the Apple Silicon DMG on a clean supported Mac and repeat the setup,
-   render, revision, download, deletion, quit, reopen, and uninstall flow.
-3. Install the Intel DMG on real Intel hardware or record the gate as untested.
-4. Run real Short, long talking-head, and commercial edits. Add podcast, course,
-   long-to-clips, and custom samples before claiming those modes are fully
-   accepted.
+2. Install the Apple Silicon DMG from the same run on a clean supported Mac and
+   repeat the setup,
+   six-type render, five-operation revision, download, deletion, quit, reopen,
+   and uninstall flow. A Windows pass does not imply Mac parity.
+3. Install the Intel DMG from that run on real Intel hardware or record the gate
+   as untested. An untested Intel candidate cannot be promoted.
+4. Run real Short, long talking-head, Commercial, Podcast, Course, and Custom
+   edits before claiming those modes are accepted. Confirm long-to-clips is not
+   offered.
 5. Connect real Pexels, Pixabay, and ElevenLabs accounts once, then separately
    exercise every Skip choice.
 6. Watch every output from beginning to end. Inspect captions, speech cuts,
    source sync, stock relevance, graphics, Remotion diagrams, loudness, and the
    final QA receipt.
-7. Ask DeepSeek for at least one safe visual change and one speech-affecting
-   change that must wait for approval.
+7. Exercise all five exact DeepSeek changes: edit style, aspect ratio, caption
+   mode, full or baseline visuals, and generic profile. Ask it to remove speech,
+   retarget duration, and split the source into clips. Each unsupported request
+   must be rejected before a render job exists.
 8. Delete a project and confirm its R2 objects and database records are gone.
 
-## Release command
+## Signed candidate and release sequence
 
-After credentials and physical acceptance are ready:
+After the branch is pushed and the signing plus candidate-bucket secrets are
+configured, create a tag to build signed candidates. This tag does not publish
+them to friends:
 
 ```bash
 git tag helper-v0.1.0
 git push origin helper-v0.1.0
 ```
 
-Do not create the tag until the branch is pushed and the GitHub repository
-secrets are configured. Do not send friends a manual unsigned artifact.
+1. Open the successful **Build AutoEditor Helper installers** run for that tag.
+2. Record its run ID, run attempt, and full commit SHA.
+3. Download all three `signed-candidate-helper-*` artifacts. Extract each ZIP
+   and verify its installer against the included candidate receipt.
+4. Complete every physical acceptance step above against those exact files.
+5. Open **Actions**, choose **Promote accepted AutoEditor Helper release**, and
+   press **Run workflow**.
+6. Enter the exact tag, signed build run ID, and full commit SHA. Check the
+   physical-acceptance box only when the acceptance record is complete.
+7. After the promotion succeeds, sign in to the private website and verify all
+   three download buttons resolve through the new `current.json` receipt.
+
+Never send friends an unsigned artifact or a signed candidate directly. Do not
+run promotion for a build that has not passed physical acceptance on all three
+platforms.

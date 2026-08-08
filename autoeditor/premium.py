@@ -266,6 +266,61 @@ _STYLE_SPACING = {
 }
 
 
+def _heuristic_sync_probe_schedule(words: list[dict], edl: dict,
+                                   duration: float) -> list[float]:
+    """Return Gate 5's optimistic one-success-per-group probe schedule."""
+    from .pipeline import _probe_candidate_groups
+
+    word_mids = [
+        (float(word["s"]) + float(word["e"])) / 2
+        for word in words
+    ]
+    if not word_mids:
+        return []
+    avoid = [
+        (float(event["s"]) - 1.0, float(event["e"]) + 1.0)
+        for layer in ("broll", "graphics", "punch_ins")
+        for event in edl.get(layer, [])
+    ]
+    groups = _probe_candidate_groups(
+        word_mids, avoid, duration, min(word_mids), max(word_mids)
+    )
+    tried = set()
+    scheduled = []
+    for group in groups:
+        for timestamp in group:
+            key = round(timestamp, 3)
+            if key in tried:
+                continue
+            tried.add(key)
+            scheduled.append(timestamp)
+            break
+    return scheduled
+
+
+def _reserve_heuristic_sync_windows(edl: dict, words: list[dict],
+                                    duration: float) -> dict:
+    """Drop lower-priority heuristic events until QA can try four probes."""
+    while len(_heuristic_sync_probe_schedule(words, edl, duration)) < 4:
+        if len(edl["punch_ins"]) > 1:
+            layer = "punch_ins"
+        elif edl["graphics"]:
+            layer = "graphics"
+        elif edl["broll"]:
+            layer = "broll"
+        elif edl["punch_ins"]:
+            layer = "punch_ins"
+        else:
+            break
+        removed = edl[layer].pop()
+        log(
+            "heuristic QA reserve: dropped "
+            f"{layer} event {float(removed['s']):.1f}-"
+            f"{float(removed['e']):.1f}s to preserve source-sync probes"
+        )
+    return edl
+
+
 def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
                   style: str = "long") -> dict:
     """Deterministic fallback: alternate punch-ins on emphasis sentences,
@@ -281,13 +336,18 @@ def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
         emphatic = ("?" in s["text"] or any(ch.isdigit() for ch in txt)
                     or i == 0 or len(txt.split()) <= 6)
         if i == 0:
-            # HOOK: the opening line always gets a punch-in, even if short, # dead-static first seconds are the #1 retention killer.
+            # HOOK: keep the opening punch short even when Whisper returns one
+            # unpunctuated sentence for the whole edit. A full-edit punch
+            # leaves no clean frames for the hard source-sync gate.
             edl["punch_ins"].append({"s": round(s["s"], 2),
-                                     "e": round(max(s["e"], s["s"] + 2.5), 2),
+                                     "e": round(min(duration,
+                                                    s["s"] + 2.5), 2),
                                      "scale": 1.1})
             last_punch = s["s"]
         elif emphatic and s["s"] - last_punch >= sp_punch and s["e"] - s["s"] >= 1.2:
-            edl["punch_ins"].append({"s": round(s["s"], 2), "e": round(s["e"], 2),
+            edl["punch_ins"].append({"s": round(s["s"], 2),
+                                     "e": round(min(duration,
+                                                    s["s"] + 2.5), 2),
                                      "scale": 1.08})
             last_punch = s["s"]
         for fam in fams:
@@ -304,7 +364,7 @@ def heuristic_edl(words: list[dict], clips: list[dict], duration: float,
                                     "e": round(min(s["s"] + 3.0, duration), 2),
                                     "text": m.group(1).upper()})
             last_gfx = s["s"]
-    return edl
+    return _reserve_heuristic_sync_windows(edl, words, duration)
 
 
 def _creator_direction_text(profile_id: str | None,
@@ -1440,7 +1500,7 @@ def _remotion_viz(viz: dict, dur: float, vid_w: int, vid_h: int) -> str | None:
         license_arg = [f"--license-key={license_key}"] if license_key else []
         _run([*cmd, "render", "src/index.ts", comp, temp_path,
               f"--props={pfile}", "--log=error", *browser_arg, *public_arg,
-              *license_arg],
+              *license_arg, "--bundle-cache=false"],
              cwd=REMOTION_PROJ, timeout=300)
         if _valid_video_asset(
                 temp_path, dur, exact_size=(vid_w, vid_h)):

@@ -1,17 +1,13 @@
-# Shared build config for both products. The PRODUCT env var (ryan | pse)
-# selects identity; CI stamps product.json into resources so the runtime
-# knows which product it is.
+# Legacy PSE desktop config. Friends use electron-builder.helper.yml and the
+# generic AutoEditor Helper identity. CI stamps product.json into resources so
+# the PSE runtime can verify its identity and packaged payload.
 #
-# Signing is OPTIONAL and env-gated:
-#   mac: CSC_LINK/CSC_KEY_PASSWORD + APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/
-#        APPLE_TEAM_ID  -> signed + notarized dmg
-#   win: WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD -> signed installer
-# Without those, CI produces ad-hoc or unsigned acceptance installers.
+# Unsigned acceptance is built first. Signing credentials are injected only by
+# tag-only, platform-specific jobs after that acceptance job passes.
 
-# Ryan is the safe local default. CI overrides these two fields for PSE with
-# electron-builder's --config.* flags after it resolves the tag/product.
-appId: com.marabha.ryanreels
-productName: Ryan Reels Editor
+# A local build must never default to a creator-specific friend identity.
+appId: com.marabha.pseautoeditor
+productName: PSE AutoEditor
 directories:
   output: dist
   buildResources: build
@@ -43,12 +39,6 @@ extraResources:
   - from: staging/licenses
     to: licenses
 
-publish:
-  provider: github
-  owner: CEOmarabha
-  repo: talking-head-autoeditor
-  channel: ryan
-
 mac:
   category: public.app-category.video
   target:
@@ -58,6 +48,9 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false   # handled in afterSign hook only when creds exist
+
+dmg:
+  writeUpdateInfo: false
 
 afterSign: scripts/notarize.js
 
@@ -69,3 +62,4 @@ nsis:
   oneClick: true
   perMachine: false
   deleteAppDataOnUninstall: false
+  differentialPackage: false

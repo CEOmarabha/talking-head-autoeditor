@@ -15,20 +15,45 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: packaging/requirements-linux-x64.txt
 
       - name: Install FFmpeg and Python packages
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip --version
+          python -m pip install --require-hashes --only-binary=:all: \
+            -r packaging/requirements-linux-x64.txt
+          python -m pip check
 
-      - name: Run the safety suite
-        run: make test
+      - name: Run the safety and web suites
+        run: python -m pytest -q tests webapp/tests
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            webapp/worker/package-lock.json
+
+      - name: Run Worker integration contracts
+        run: |
+          npm ci --prefix webapp/worker
+          npm test --prefix webapp/worker
+
+      - name: Run desktop platform contracts
+        working-directory: desktop
+        run: |
+          npm ci
+          npm test

@@ -41,59 +41,28 @@ jobs:
             electron_target: mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
+    env:
+      # FileProvider-backed workspaces can attach FinderInfo after signing.
+      # Build outside the checkout and use this path for every artifact gate.
+      HELPER_DIST: ${{ runner.temp }}/helper-dist
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Resolve version and release policy
         id: release
         shell: bash
         env:
           MANUAL_VERSION: ${{ github.event.inputs.version }}
-          WIN_CERT: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CERT_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
-          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
-          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
-          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-          MAC_CERT: ${{ secrets.CSC_LINK }}
-          MAC_CERT_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID_VALUE: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_TYPE" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#helper-v}"
             echo "tagged=true" >> "$GITHUB_OUTPUT"
-            if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-              if test -n "$AZURE_TENANT_ID" && test -n "$AZURE_CLIENT_ID" && \
-                  test -n "$AZURE_CLIENT_SECRET" && \
-                  test -n "$WIN_AZURE_PUBLISHER_NAME" && \
-                  test -n "$WIN_AZURE_ENDPOINT" && \
-                  test -n "$WIN_AZURE_CERTIFICATE_PROFILE_NAME" && \
-                  test -n "$WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME"; then
-                echo "win_signing=azure" >> "$GITHUB_OUTPUT"
-              elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD"; then
-                echo "win_signing=pfx" >> "$GITHUB_OUTPUT"
-              else
-                echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
-                exit 1
-              fi
-            else
-              test -n "$MAC_CERT" && test -n "$MAC_CERT_PASSWORD" && \
-                test -n "$APPLE_ID_VALUE" && test -n "$APPLE_PASSWORD" && \
-                test -n "$APPLE_TEAM" || {
-                echo "A tagged Mac release requires Developer ID and notarization secrets" >&2
-                exit 1
-              }
-            fi
           else
             VERSION="$MANUAL_VERSION"
             echo "tagged=false" >> "$GITHUB_OUTPUT"
-            echo "win_signing=unsigned" >> "$GITHUB_OUTPUT"
           fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
             echo "Invalid version: $VERSION" >&2
@@ -126,6 +95,7 @@ jobs:
             DAEMON="${DAEMON}.exe"
           fi
           "$ENGINE" --help >/dev/null
+          "$ENGINE" --self-test
           test -x "$DAEMON" || test -f "$DAEMON"
 
       - name: Stage engine, models, profiles, fonts, certificates and notices
@@ -139,7 +109,30 @@ jobs:
           mkdir -p "$STAGE"/{helper,engine,bin,lib,models,profiles,fonts,certs,licenses,node,browser,creative}
           cp -R packaging/dist/autoeditor-engine/. "$STAGE/engine/"
           cp -R packaging/dist/autoeditor-helper-daemon/. "$STAGE/helper/"
-          cp -R profiles/. "$STAGE/profiles/"
+          HELPER_PROFILES=(
+            generic_short
+            generic_long
+            generic_commercial
+            generic_podcast
+            generic_course
+            generic_custom
+          )
+          for PROFILE in "${HELPER_PROFILES[@]}"; do
+            test -f "profiles/$PROFILE/profile.yaml" || {
+              echo "Missing required Helper profile: $PROFILE" >&2
+              exit 1
+            }
+            cp -R "profiles/$PROFILE" "$STAGE/profiles/$PROFILE"
+          done
+          EXPECTED_PROFILES=$(printf '%s\n' "${HELPER_PROFILES[@]}" | LC_ALL=C sort)
+          ACTUAL_PROFILES=$(find "$STAGE/profiles" -mindepth 1 -maxdepth 1 \
+            -type d -exec basename {} \; | LC_ALL=C sort)
+          [[ "$ACTUAL_PROFILES" == "$EXPECTED_PROFILES" ]] || {
+            echo "Helper profile allowlist did not stage exactly" >&2
+            printf 'Expected:\n%s\nActual:\n%s\n' \
+              "$EXPECTED_PROFILES" "$ACTUAL_PROFILES" >&2
+            exit 1
+          }
           cp packaging/THIRD_PARTY_NOTICES.md "$STAGE/licenses/THIRD_PARTY_NOTICES.md"
           LOCK="packaging/requirements-${TARGET_OS}-${TARGET_ARCH}.txt"
           cp "$LOCK" "$STAGE/licenses/PYTHON_REQUIREMENTS_LOCK.txt"
@@ -333,11 +326,25 @@ jobs:
             "$RUNNER_TEMP/remotion-probe.mp4" \
             --props="$STAGE/creative/remotion-viz/probe-props.json" \
             --browser-executable="$BROWSER" --license-key="$REMOTION_LICENSE_KEY" \
-            --public-dir="$STAGE/fonts" --log=error
+            --public-dir="$STAGE/fonts" --bundle-cache=false --log=error
           "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
             "$RUNNER_TEMP/hyperframes-probe.mp4"
           "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
             "$RUNNER_TEMP/remotion-probe.mp4"
+          if find "$STAGE" -type d -path '*/node_modules/.cache' \
+              -print -quit | grep -q .; then
+            echo "A writable Remotion cache leaked into the packaged creative project" >&2
+            exit 1
+          fi
+
+      - name: Strip packaging metadata before writing receipts
+        shell: bash
+        run: |
+          find desktop/helper-staging \
+            \( -name '.DS_Store' -o -name '._*' \) -delete
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            xattr -cr desktop/helper-staging
+          fi
 
       - name: Write exact runtime manifest
         shell: bash
@@ -349,36 +356,11 @@ jobs:
             --target-arch "${{ matrix.arch }}" \
             --version "${{ steps.release.outputs.version }}"
 
-      - name: Strip Finder metadata from staging before sealing
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          # .DS_Store, AppleDouble files, and extended attributes inside the
-          # staged payload become detritus inside the signed app. Remove them
-          # BEFORE electron-builder copies resources and seals the bundle.
-          find desktop/helper-staging \( -name '.DS_Store' -o -name '._*' \) -delete
-          xattr -cr desktop/helper-staging
-
       - name: Build installer
         shell: bash
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
-          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
-          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
-          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           npm ci
           npm audit --audit-level=high
@@ -389,13 +371,10 @@ jobs:
           node --check helper/renderer/app.js
           node --check scripts/notarize-artifacts.js
           npm test
-          CONFIG=electron-builder.helper.yml
-          if [[ "${{ steps.release.outputs.win_signing }}" == "azure" ]]; then
-            CONFIG=electron-builder.helper.azure.js
-          fi
-          npx electron-builder --config "$CONFIG" \
+          npx electron-builder --config electron-builder.helper.yml \
             --${{ matrix.electron_target }} \
-            --${{ matrix.arch }} --publish never
+            --${{ matrix.arch }} --publish never \
+            --config.directories.output="$HELPER_DIST"
 
       - name: Verify the packed app ships the complete creative runtime
         shell: bash
@@ -405,12 +384,12 @@ jobs:
           # were missing from the actual DMG while every earlier stage passed.
           # This gate inspects the PACKED app, not the staging directory.
           if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            RES=$(find desktop/helper-dist -maxdepth 2 -type d -name resources | head -1)
+            RES=$(find "$HELPER_DIST" -maxdepth 2 -type d -name resources | head -1)
             NODE_BIN="$RES/node/node.exe"
             ENGINE_BIN="$RES/engine/autoeditor-engine.exe"
             DAEMON_BIN="$RES/helper/autoeditor-helper-daemon.exe"
           else
-            APP=$(find desktop/helper-dist -maxdepth 3 -type d -name '*.app' | head -1)
+            APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' | head -1)
             RES="$APP/Contents/Resources"
             NODE_BIN="$RES/node/node"
             ENGINE_BIN="$RES/engine/autoeditor-engine"
@@ -434,33 +413,67 @@ jobs:
             echo "Packed app is missing the rendering browser" >&2
             exit 1
           }
+          python packaging/verify_helper_manifest.py --resources "$RES" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
           echo "Packed creative runtime is complete."
 
       - name: Smoke-test installed Windows app and signature
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          TAGGED: ${{ steps.release.outputs.tagged }}
         run: |
-          $installer = Get-ChildItem "desktop/helper-dist/*.exe" | Select-Object -First 1
+          $installer = Get-ChildItem "$env:HELPER_DIST/*.exe" | Select-Object -First 1
           if (-not $installer) { throw "Windows installer was not created" }
-          if ($env:TAGGED -eq "true") {
-            $sig = Get-AuthenticodeSignature $installer.FullName
-            if ($sig.Status -ne "Valid") { throw "Installer signature is $($sig.Status)" }
-          }
           $run = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
           if ($run.ExitCode -ne 0) { throw "Installer exited $($run.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
           $app = Join-Path $root "AutoEditor Helper.exe"
           if (-not (Test-Path $app)) { throw "Installed Helper app is missing" }
+          python packaging/verify_helper_manifest.py `
+            --resources (Join-Path $root "resources") `
+            --expected-manifest desktop/helper-staging/runtime-manifest.json `
+            --target-os "${{ matrix.target_os }}" `
+            --target-arch "${{ matrix.arch }}" `
+            --version "${{ steps.release.outputs.version }}"
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          if (-not (Test-Path $engine)) { throw "Installed frozen engine is missing" }
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed frozen engine self-test failed" }
+          $screenshot = Join-Path $env:RUNNER_TEMP "helper-unsigned-windows-x64.png"
+          Remove-Item $screenshot -Force -ErrorAction SilentlyContinue
+          $env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot
+          $env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS = "1"
+          try {
+            $capture = Start-Process $app -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS -ErrorAction SilentlyContinue
+          }
+          if ($capture.ExitCode -ne 0) { throw "Installed Helper screenshot launch failed" }
+          if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
+            throw "Installed Helper screenshot is missing or empty"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $stream = [System.IO.File]::OpenRead($screenshot)
+          try {
+            $image = [System.Drawing.Image]::FromStream($stream, $false, $true)
+            try {
+              if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Png.Guid `
+                  -or $image.Width -le 0 -or $image.Height -le 0) {
+                throw "Installed Helper screenshot is not a decodable PNG"
+              }
+            } finally {
+              $image.Dispose()
+            }
+          } finally {
+            $stream.Dispose()
+          }
           $env:AUTOEDITOR_SMOKE_TEST = "1"
           $smoke = Start-Process $app -Wait -PassThru
           Remove-Item Env:AUTOEDITOR_SMOKE_TEST
           if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
-          if ($env:TAGGED -eq "true") {
-            $sig = Get-AuthenticodeSignature $app
-            if ($sig.Status -ne "Valid") { throw "App signature is $($sig.Status)" }
-          }
           $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
           $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
           if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
@@ -470,11 +483,9 @@ jobs:
       - name: Smoke-test macOS app, DMG, signing and notarization
         if: runner.os == 'macOS'
         shell: bash
-        env:
-          TAGGED: ${{ steps.release.outputs.tagged }}
         run: |
-          APP=$(find desktop/helper-dist -maxdepth 3 -type d -name '*.app' | head -1)
-          DMG=$(find desktop/helper-dist -maxdepth 1 -type f -name '*.dmg' | head -1)
+          APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' | head -1)
+          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' | head -1)
           test -n "$APP" && test -n "$DMG"
           # Never hardcode the binary name: resolve it from the bundle itself
           # (2026-08 acceptance found the workflow calling the wrong name).
@@ -495,7 +506,7 @@ jobs:
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
           MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' | head -1)
           test -n "$MOUNTED_APP"
-          if xattr -l "$MOUNTED_APP" 2>/dev/null | \
+          if xattr -lr "$MOUNTED_APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
             echo "Finder metadata is attached to the app inside the DMG" >&2
             exit 1
@@ -504,78 +515,445 @@ jobs:
           MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
             "$MOUNTED_APP/Contents/Info.plist")
           test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -x "$MOUNTED_APP/Contents/Resources/engine/autoeditor-engine"
+          "$MOUNTED_APP/Contents/Resources/engine/autoeditor-engine" --self-test
+          SCREENSHOT="$RUNNER_TEMP/helper-unsigned-mac-${{ matrix.arch }}.png"
+          AUTOEDITOR_SCREENSHOT_PATH="$SCREENSHOT" \
+            AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS=1 \
+            "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -s "$SCREENSHOT"
+          DECODED_SCREENSHOT="$RUNNER_TEMP/helper-unsigned-mac-${{ matrix.arch }}-decoded.png"
+          /usr/bin/sips -s format png "$SCREENSHOT" \
+            --out "$DECODED_SCREENSHOT" >/dev/null
+          test -s "$DECODED_SCREENSHOT"
+          WIDTH=$(/usr/bin/sips -g pixelWidth "$DECODED_SCREENSHOT" | \
+            awk '/pixelWidth/ {print $2}')
+          HEIGHT=$(/usr/bin/sips -g pixelHeight "$DECODED_SCREENSHOT" | \
+            awk '/pixelHeight/ {print $2}')
+          test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0
+          AUTOEDITOR_SMOKE_TEST=1 "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
           test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs"
           test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/@remotion/cli/remotion-cli.js"
-          if [[ "$TAGGED" == "true" ]]; then
-            spctl --assess --type execute --verbose=2 "$MOUNTED_APP"
-            xcrun stapler validate "$APP"
-            xcrun stapler validate "$DMG"
-          fi
+          python packaging/verify_helper_manifest.py \
+            --resources "$MOUNTED_APP/Contents/Resources" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
           hdiutil detach "$MOUNT" -force
           trap - EXIT
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - name: Seal prepared runtime for tag-only signing jobs
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          tar -czf "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz" \
+            -C desktop helper-staging
+
+      - name: Upload prepared runtime to isolated signing job
+        if: steps.release.outputs.tagged == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prepared-${{ steps.release.outputs.artifact }}
+          path: ${{ runner.temp }}/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload unsigned acceptance artifact
+        if: steps.release.outputs.tagged != 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ steps.release.outputs.artifact }}
           path: |
-            desktop/helper-dist/*.exe
-            desktop/helper-dist/*.dmg
-            desktop/helper-dist/*.blockmap
+            ${{ runner.temp }}/helper-dist/*.exe
+            ${{ runner.temp }}/helper-dist/*.dmg
+            ${{ runner.temp }}/helper-dist/*.blockmap
             desktop/helper-staging/runtime-manifest.json
           if-no-files-found: error
 
-  publish:
-    if: startsWith(github.ref, 'refs/tags/helper-v')
+  sign-windows:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2022
+    timeout-minutes: 45
     permissions:
-      contents: write
+      contents: read
+    environment: helper-windows-signing
+    env:
+      HELPER_DIST: ${{ runner.temp }}/helper-signed-dist
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: helper-*
-          path: release-assets
-          merge-multiple: false
-      - name: Require private download publishing credentials
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          name: prepared-helper-windows-x64
+          path: ${{ runner.temp }}/prepared-helper
+
+      - name: Restore the runtime that passed unsigned acceptance
+        shell: bash
         run: |
-          test -n "$CF_TOKEN" && test -n "$CF_ACCOUNT" || {
-            echo "Tagged releases require Cloudflare credentials so private friends can download installers" >&2
-            exit 1
-          }
+          tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-windows-x64.tar.gz" \
+            -C desktop
+          test -f desktop/helper-staging/runtime-manifest.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.23.2
-      - name: Publish installers to private website storage
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        run: npm ci
+
+      - name: Select the protected Windows signer
+        id: signer
+        shell: bash
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WIN_CERT: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID_VALUE: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID_VALUE: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET_VALUE: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_PUBLISHER: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          AZURE_PROFILE: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          AZURE_ACCOUNT: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
         run: |
-          npm install --global wrangler@4.120.0
-          WIN=$(find release-assets/helper-windows-x64 -name '*.exe' | head -1)
-          MAC_ARM=$(find release-assets/helper-mac-arm64 -name '*.dmg' | head -1)
-          MAC_X64=$(find release-assets/helper-mac-x64 -name '*.dmg' | head -1)
-          test -f "$WIN" && test -f "$MAC_ARM" && test -f "$MAC_X64"
-          sha256sum "$WIN" "$MAC_ARM" "$MAC_X64" > release-assets/SHA256SUMS.txt
-          wrangler r2 object put autoeditor-media/dist/helper/windows/AutoEditor-Helper.exe \
-            --remote --file "$WIN" --content-type application/vnd.microsoft.portable-executable
-          wrangler r2 object put autoeditor-media/dist/helper/mac-arm64/AutoEditor-Helper.dmg \
-            --remote --file "$MAC_ARM" --content-type application/x-apple-diskimage
-          wrangler r2 object put autoeditor-media/dist/helper/mac-x64/AutoEditor-Helper.dmg \
-            --remote --file "$MAC_X64" --content-type application/x-apple-diskimage
-          wrangler r2 object put autoeditor-media/dist/helper/SHA256SUMS.txt \
-            --remote --file release-assets/SHA256SUMS.txt --content-type text/plain
-      - name: Publish GitHub release after every platform and private upload passes
+          if test -n "$AZURE_TENANT_ID_VALUE" && \
+              test -n "$AZURE_CLIENT_ID_VALUE" && \
+              test -n "$AZURE_CLIENT_SECRET_VALUE" && \
+              test -n "$AZURE_PUBLISHER" && test -n "$AZURE_ENDPOINT" && \
+              test -n "$AZURE_PROFILE" && test -n "$AZURE_ACCOUNT"; then
+            echo "kind=azure" >> "$GITHUB_OUTPUT"
+          elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD"; then
+            echo "kind=pfx" >> "$GITHUB_OUTPUT"
+          else
+            echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD" >&2
+            exit 1
+          fi
+
+      - name: Build the signed Windows installer with Azure
+        if: steps.signer.outputs.kind == 'azure'
+        shell: bash
+        working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
         run: |
-          mapfile -d '' FILES < <(find release-assets -type f \
-            \( -name '*.exe' -o -name '*.dmg' -o -name '*.blockmap' \
-              -o -name 'SHA256SUMS.txt' \) -print0)
-          test "${#FILES[@]}" -gt 0
-          gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "AutoEditor Helper ${GITHUB_REF_NAME#helper-v}" \
-            --generate-notes --verify-tag
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx electron-builder --config electron-builder.helper.azure.js \
+            --win --x64 --publish never \
+            --config.directories.output="$HELPER_DIST"
+
+      - name: Build the signed Windows installer with PFX
+        if: steps.signer.outputs.kind == 'pfx'
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx electron-builder --config electron-builder.helper.yml \
+            --win --x64 --publish never \
+            --config.directories.output="$HELPER_DIST"
+
+      - name: Verify installed Windows signatures and exact runtime
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "$env:HELPER_DIST/*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one signed Windows installer, found $($installers.Count)"
+          }
+          $installer = $installers[0]
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne "Valid") { throw "Installer signature is $($signature.Status)" }
+          $install = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA "Programs/AutoEditor Helper"
+          $app = Join-Path $root "AutoEditor Helper.exe"
+          $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
+          foreach ($file in @($app, $uninstaller)) {
+            if (-not (Test-Path $file)) { throw "Signed installed file is missing: $file" }
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") { throw "$file signature is $($signature.Status)" }
+          }
+          python packaging/verify_helper_manifest.py `
+            --resources (Join-Path $root "resources") `
+            --expected-manifest desktop/helper-staging/runtime-manifest.json `
+            --target-os windows --target-arch x64 `
+            --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          if (-not (Test-Path $engine)) { throw "Signed installed frozen engine is missing" }
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Signed installed frozen engine self-test failed" }
+          $screenshot = Join-Path $env:RUNNER_TEMP "helper-signed-windows-x64.png"
+          Remove-Item $screenshot -Force -ErrorAction SilentlyContinue
+          $env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot
+          $env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS = "1"
+          try {
+            $capture = Start-Process $app -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS -ErrorAction SilentlyContinue
+          }
+          if ($capture.ExitCode -ne 0) { throw "Signed installed Helper screenshot launch failed" }
+          if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
+            throw "Signed installed Helper screenshot is missing or empty"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $stream = [System.IO.File]::OpenRead($screenshot)
+          try {
+            $image = [System.Drawing.Image]::FromStream($stream, $false, $true)
+            try {
+              if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Png.Guid `
+                  -or $image.Width -le 0 -or $image.Height -le 0) {
+                throw "Signed installed Helper screenshot is not a decodable PNG"
+              }
+            } finally {
+              $image.Dispose()
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $smoke = Start-Process $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
+          $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app)) {
+            throw "Windows uninstall smoke test failed"
+          }
+
+      - name: Upload the verified Windows candidate
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && \
+            test -n "$R2_ACCOUNT_ID"
+          INSTALLER=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.exe' -print -quit)
+          test -f "$INSTALLER"
+          RECEIPT_DIR=release-receipt/helper-windows-x64
+          mkdir -p "$RECEIPT_DIR"
+          RECEIPT="$RECEIPT_DIR/candidate-windows-x64.json"
+          python packaging/helper_release_metadata.py candidate \
+            --file "$INSTALLER" \
+            --runtime-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os windows --arch x64 \
+            --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --signing-status verified --notarization-status not-applicable \
+            --output "$RECEIPT"
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RECEIPT_DIR/runtime-manifest-windows-x64.json"
+          KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
+          SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
+          TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$KEY" \
+            --file "$INSTALLER" --content-type "$TYPE" --sha256 "$SHA"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-receipt-helper-windows-x64
+          path: release-receipt/helper-windows-x64
+          if-no-files-found: error
+
+      - name: Upload the signed Windows candidate for physical acceptance
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-candidate-helper-windows-x64
+          path: |
+            ${{ runner.temp }}/helper-signed-dist/*.exe
+            release-receipt/helper-windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  sign-macos:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    environment: helper-macos-signing
+    env:
+      HELPER_DIST: ${{ runner.temp }}/helper-signed-dist
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-helper-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/prepared-helper
+
+      - name: Restore the runtime that passed unsigned acceptance
+        shell: bash
+        run: |
+          tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz" \
+            -C desktop
+          test -f desktop/helper-staging/runtime-manifest.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build the signed and notarized macOS installer
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" && \
+            test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && \
+            test -n "$APPLE_TEAM_ID" || {
+            echo "A tagged Mac release requires Developer ID and notarization secrets" >&2
+            exit 1
+          }
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx electron-builder --config electron-builder.helper.yml \
+            --mac --${{ matrix.arch }} --publish never \
+            --config.directories.output="$HELPER_DIST"
+
+      - name: Verify the final mounted Mac artifact
+        shell: bash
+        run: |
+          DMG_COUNT=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')
+          test "$DMG_COUNT" = 1
+          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          hdiutil verify "$DMG"
+          MOUNT=$(mktemp -d "$RUNNER_TEMP/helper-dmg.XXXXXX")
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$APP"
+          test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)"
+          if xattr -lr "$APP" 2>/dev/null | \
+              grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
+            echo "Finder metadata is attached inside the signed app" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | \
+            grep -q 'Authority=Developer ID Application'
+          spctl --assess --type execute --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          test -x "$APP/Contents/Resources/engine/autoeditor-engine"
+          "$APP/Contents/Resources/engine/autoeditor-engine" --self-test
+          SCREENSHOT="$RUNNER_TEMP/helper-signed-mac-${{ matrix.arch }}.png"
+          AUTOEDITOR_SCREENSHOT_PATH="$SCREENSHOT" \
+            AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS=1 \
+            "$APP/Contents/MacOS/$BIN"
+          test -s "$SCREENSHOT"
+          DECODED_SCREENSHOT="$RUNNER_TEMP/helper-signed-mac-${{ matrix.arch }}-decoded.png"
+          /usr/bin/sips -s format png "$SCREENSHOT" \
+            --out "$DECODED_SCREENSHOT" >/dev/null
+          test -s "$DECODED_SCREENSHOT"
+          WIDTH=$(/usr/bin/sips -g pixelWidth "$DECODED_SCREENSHOT" | \
+            awk '/pixelWidth/ {print $2}')
+          HEIGHT=$(/usr/bin/sips -g pixelHeight "$DECODED_SCREENSHOT" | \
+            awk '/pixelHeight/ {print $2}')
+          test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
+          python packaging/verify_helper_manifest.py \
+            --resources "$APP/Contents/Resources" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os mac --target-arch "${{ matrix.arch }}" \
+            --version "${GITHUB_REF_NAME#helper-v}"
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
+
+      - name: Upload the verified Mac candidate
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && \
+            test -n "$R2_ACCOUNT_ID"
+          INSTALLER=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -f "$INSTALLER"
+          RECEIPT_DIR="release-receipt/helper-mac-${{ matrix.arch }}"
+          mkdir -p "$RECEIPT_DIR"
+          RECEIPT="$RECEIPT_DIR/candidate-mac-${{ matrix.arch }}.json"
+          python packaging/helper_release_metadata.py candidate \
+            --file "$INSTALLER" \
+            --runtime-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os mac --arch "${{ matrix.arch }}" \
+            --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --signing-status verified --notarization-status verified \
+            --output "$RECEIPT"
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RECEIPT_DIR/runtime-manifest-mac-${{ matrix.arch }}.json"
+          KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
+          SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
+          TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$KEY" \
+            --file "$INSTALLER" --content-type "$TYPE" --sha256 "$SHA"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-receipt-helper-mac-${{ matrix.arch }}
+          path: release-receipt/helper-mac-${{ matrix.arch }}
+          if-no-files-found: error
+
+      - name: Upload the signed Mac candidate for physical acceptance
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-candidate-helper-mac-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/helper-signed-dist/*.dmg
+            release-receipt/helper-mac-${{ matrix.arch }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

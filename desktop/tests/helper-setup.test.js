@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { decodeSetupCode } = require('../helper/lib/setup-code');
 const {
   normalizeProviderSetup, validateProviderKeys,
@@ -22,13 +24,17 @@ const pathInjected = Buffer.from(
 assert.throws(() => decodeSetupCode(pathInjected), /invalid site address/);
 
 const skipped = normalizeProviderSetup({
-  setupCode: encoded,
-  pexelsMode: 'skip', pixabayMode: 'skip', elevenMode: 'skip', remotionMode: 'skip',
+  setupCode: encoded, pexelsMode: 'skip', pixabayMode: 'skip',
+  elevenMode: 'skip', remotionMode: 'free',
 });
 assert.strictEqual(skipped.pexelsKey, '');
 assert.strictEqual(skipped.pixabayKey, '');
 assert.strictEqual(skipped.elevenKey, '');
-assert.strictEqual(skipped.remotionKey, '');
+assert.strictEqual(skipped.remotionKey, 'free-license');
+assert.throws(() => normalizeProviderSetup({
+  setupCode: encoded, pexelsMode: 'skip', pixabayMode: 'skip',
+  elevenMode: 'skip', remotionMode: 'skip',
+}), /Remotion is required/);
 
 assert.throws(() => normalizeProviderSetup({
   setupCode: encoded,
@@ -46,6 +52,26 @@ const paidRemotion = normalizeProviderSetup({
   remotionMode: 'paid', remotionKey: `rm_pub_${'A'.repeat(48)}`,
 });
 assert.strictEqual(paidRemotion.remotionKey, `rm_pub_${'A'.repeat(48)}`);
+
+const helperMain = fs.readFileSync(
+  path.join(__dirname, '..', 'helper', 'main.js'), 'utf8');
+const helperHtml = fs.readFileSync(
+  path.join(__dirname, '..', 'helper', 'renderer', 'index.html'), 'utf8');
+assert.ok(helperMain.includes(
+  "['pexels-mode', 'pixabay-mode', 'eleven-mode']"));
+assert.ok(!helperMain.includes(
+  "['pexels-mode', 'pixabay-mode', 'eleven-mode', 'remotion-mode']"));
+assert.ok(helperHtml.includes(
+  'HyperFrames and Remotion stay on for every edit'));
+assert.ok(!helperHtml.includes('For every other account below, choose Skip'));
+assert.ok(helperMain.includes(
+  'preflight({ checkKeystore: !screenshotMode })'));
+assert.ok(helperMain.includes(
+  'const checks = preflight({ checkKeystore: false })'));
+assert.ok(helperMain.includes(
+  'safeStorage.isEncryptionAvailable() : true'));
+assert.ok(helperMain.includes(
+  'if (!safeStorage.isEncryptionAvailable())'));
 
 (async () => {
   let calls = 0;

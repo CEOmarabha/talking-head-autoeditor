@@ -50,24 +50,37 @@ the evidence. Cover at least these independent tracks:
 - Bundled FFmpeg, FFprobe, Node, Chrome Headless Shell, HyperFrames, Remotion,
   GSAP, React, fonts, speech models, profiles, CA certificates, runtime
   manifest, checksums, license files, SBOM, and reproducible dependency locks.
-- Actual video behavior for Short or Reel, long talking head, commercial or ad,
-  podcast or interview, course or lesson, long-to-clips, and custom. Inspect
-  speech cuts, source-time alignment, multiple clips, portrait and landscape,
+- Actual video behavior for Short or Reel, long talking head, Commercial or Ad,
+  Podcast or Interview, Course or Lesson, and Custom. Confirm their packaged
+  profiles are `generic_short`, `generic_long`, `generic_commercial`,
+  `generic_podcast`, `generic_course`, and `generic_custom`. Confirm
+  long-to-clips is absent because multiple independently gated outputs are not
+  implemented. Inspect speech cuts, source-time alignment, portrait and landscape,
   variable frame rate, missing audio, unusual codecs, large files, captions,
   punch-ins, B-roll, stock attribution, graphics, HyperFrames, Remotion,
   generated sound effects, loudness, aspect output, QA quarantine, and failure
   recovery. Never mark a mode accepted from configuration alone.
 - DeepSeek key validation, model selection, planning receipts, revision chat,
-  deterministic proposal validation, safe visual edits, speech-changing
-  approval, asset licensing approval, retries, timeouts, malformed model
-  responses, prompt injection from transcript or filenames, cost controls,
-  key redaction, and the rule that DeepSeek cannot bypass speech or QA gates.
+  and deterministic proposal validation. Prove the five executable operations
+  map exactly to edit style, aspect ratio, caption mode, full or baseline
+  visuals, and one of the six generic profiles. Prove speech deletion, duration
+  targeting, clip splitting, specific asset replacement, caption scaling,
+  grading, and granular punch-in or b-roll requests are rejected before render.
+  Verify the claimed job carries the server-stored approved proposal and a
+  default rerender cannot be recorded as the requested change. Cover retries,
+  timeouts, malformed model responses, prompt injection from transcript or
+  filenames, cost controls, key redaction, and the rule that DeepSeek cannot
+  bypass speech or QA gates.
 - Cloudflare Worker, D1, R2, invitation and session security, CSRF and cookie
   behavior, rate limiting, user and project authorization, style preset
   ownership, queue claiming, replay and race conditions, output paths,
   multipart upload resume, file size and part validation, byte ranges, media
   deletion, installer privacy, CSP, CORS, cache headers, logs, backup,
   migration rollback, data retention, and two-account isolation.
+- Trace the full media path: browser to private R2, R2 to the friend’s local
+  Helper, local render and temporary files, then output and QA back to R2.
+  Confirm the friend guide does not describe local rendering as local-only
+  storage or claim an automatic retention period that is not implemented.
 - Supply-chain review of exact Python hashes, npm locks, GitHub Action SHA pins,
   mutable downloads, FFmpeg provenance, model revisions, Chrome version,
   external URLs, update behavior, secret scopes, build permissions, artifact

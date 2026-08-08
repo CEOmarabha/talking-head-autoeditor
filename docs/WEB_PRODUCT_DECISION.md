@@ -6,13 +6,12 @@ nontechnical friends, Windows Chrome/Edge first.
 ## Verdict in one paragraph
 
 The selected system is a single Cloudflare Worker (invite-only site + API +
-job queue) with D1 for state and R2 for footage, and the ALREADY-VERIFIED
-Python AutoEditor engine running as a render daemon on Omar's Mac, pulling
-jobs over HTTPS. DeepSeek is driven by the engine's existing deterministic
-contract plus a small typed proposal loop for chat revisions; no agent
-framework is added. This disagrees with the proposed PydanticAI harness and
-with Supabase, defers E2B and RunPod, and agrees that Hermes stays a
-private admin sidecar. Reasoning and evidence below.
+job queue) with D1 for state and private R2 transfer storage. Each friend’s
+signed Helper pulls that friend’s jobs and runs the Python engine on that
+friend’s Windows PC or Mac. DeepSeek uses a small typed proposal loop for chat
+revisions; no agent framework is added. PydanticAI and Supabase are not part of
+this release, E2B and RunPod remain deferred, and Hermes stays a private admin
+sidecar. Production deployment and signed-artifact acceptance are still open.
 
 ## Evidence log (what kind of evidence each item is)
 
@@ -45,19 +44,18 @@ private admin sidecar. Reasoning and evidence below.
   community anecdotes are cited as evidence, and nothing above depends on
   them.
 - REPO evidence: `autoeditor/providers.py` + `autoeditor/creative_contract.py`
-  already implement a fail-closed DeepSeek JSON contract with deterministic
-  scoring (every plan must score 100), retry, and no silent fallback. This
-  IS the "small custom DeepSeek tool loop", production-hardened by the v2
-  incident writeup in `docs/RELEASE_V2.md`.
+  implement a fail-closed DeepSeek JSON contract with deterministic scoring
+  (every plan must score 100), retry, and no silent fallback. This is the small
+  custom DeepSeek loop described in the v2 incident writeup in
+  `docs/RELEASE_V2.md`. Signed friend-artifact acceptance remains separate.
 - REPO evidence: there is no AGENTS.md in the repository (the task brief
   said to read it; it does not exist on `main` or `friend-ready-app`).
 
 ## Options compared
 
-1. Small custom DeepSeek loop (exists in repo). Native v4 support proven in
-   production here; typed contract + deterministic validation already
-   written; zero new deps; we add only a typed "edit proposal" schema for
-   chat. CHOSEN.
+1. Small custom DeepSeek loop (exists in repo). The direct v4 path and typed
+   deterministic validators exist without a new framework dependency. The
+   signed friend product still needs end-to-end acceptance. CHOSEN.
 2. PydanticAI. Good library, but tool-based structured output against the
    v4 models is broken today (#5193) with the alias workaround already
    sunset, and it would wrap a contract the repo already enforces better
@@ -79,16 +77,16 @@ private admin sidecar. Reasoning and evidence below.
 
 ## Infrastructure choices
 
-- Web/API/auth/state/storage: one Cloudflare Worker + D1 + R2. The
-  Cloudflare account is already connected and authorized in this
-  workspace; free tier covers a friend group; no new vendor, no billing
-  activation. Supabase REJECTED: a second vendor and auth stack to secure
-  for a ~10-user invite list D1 handles in three tables.
-- Rendering v1: a daemon on Omar's Mac (the machine where the engine is
-  already verified, with ffmpeg, fonts, and the speech model warm). Zero
-  cost, zero new attack surface, capacity is fine for friends. RunPod (or
-  similar) is the documented scale-out path and is a PAID decision that
-  will be asked about explicitly when needed.
+- Web/API/auth/state/storage: one Cloudflare Worker + D1 + private R2. The repo
+  carries the intended bindings, but the production resources and billing
+  state must be verified in Cloudflare before launch. Supabase remains outside
+  this release.
+- Rendering v1: each friend’s signed Helper renders on that friend’s computer.
+  The browser first uploads footage to private R2, the Helper downloads it,
+  renders locally, and uploads the finished MP4 and QA receipt. An optional
+  owner-wide daemon uses the same queue but is not required for the normal
+  friend path. RunPod or another hosted render service requires a separate
+  cost, privacy, licensing, and deployment decision.
 - Resource acquisition v1: the engine's existing licensed-API b-roll path
   (Pexels/Pixabay) wrapped in receipts (source URL, license, hash,
   project). Arbitrary repo cloning / package installs for friends is
@@ -96,32 +94,46 @@ private admin sidecar. Reasoning and evidence below.
   Omar-approved admin flow (Hermes side), per the Resource Broker rules.
   Nothing in v1 implies arbitrary internet media is legally usable.
 
+## Executable friend contract
+
+The six friend profiles are `generic_short`, `generic_long`,
+`generic_commercial`, `generic_podcast`, `generic_course`, and
+`generic_custom`. They back Short, long talking head, Commercial, Podcast,
+Course, and Custom. PSE stays separate. Long-to-clips is excluded until the
+engine can select moments and produce several independently gated outputs.
+
+Revision chat can change only edit style, aspect ratio, burned or sidecar
+captions, full or baseline visuals, and the selected generic profile. Baseline
+is the engine’s complete no-premium mode. The contract does not relabel it as
+fewer punch-ins. Speech deletion, duration targeting, clip splitting, specific
+asset replacement, caption scaling, grading, and granular punch-in or b-roll
+controls are rejected before rendering.
+
 ## DeepSeek key threat model (summary; full doc in WEB_SECURITY.md)
 
-Browser -> TLS -> Worker: key is AES-GCM encrypted immediately with a key
+Browser -> TLS -> Worker: the key is AES-GCM encrypted immediately with a key
 derived from a Worker secret and stored as ciphertext in D1. It is never
-returned by any API, never logged, never placed in job rows, queue
-payloads, URLs, or R2. The render daemon fetches ciphertext over an
-authenticated channel and decrypts in process memory with the KEK (an env
-var that exists only on the render host), injects it into the engine child
-environment (`AUTOEDITOR_PACKAGED=1` mode reads env only, writes no
-dotfiles), and drops it when the job ends. No third-party render queue
-ever sees key material because the only queue is our own D1 table carrying
-no key fields at all.
+logged, placed in job rows, queue payloads, URLs, or R2. A personal Helper can
+receive only its own user’s unwrapped key over the authenticated HTTPS claim
+path. The optional global owner daemon receives ciphertext and unwraps it with
+the local KEK. The daemon injects the key into the engine child environment,
+and the in-process reference is dropped when the job ends. The D1 queue itself
+contains no key fields.
 
 ## Cost today
 
-Cloudflare free tier (Workers, D1, R2 within free limits; R2 egress is
-free), $0. Render compute: Omar's existing Mac, $0. Per-edit DeepSeek
-usage: paid by each friend's own key, cents per edit. Total new billing
-commitments: none.
+Local Helper rendering avoids a separate hosted GPU bill. It does not remove
+Cloudflare storage and request usage, DeepSeek API usage, or paid provider and
+license costs. Each friend pays DeepSeek usage through that friend’s own key.
+Cloudflare cost depends on the active account plan, stored footage, request
+volume, and current pricing. Check the real dashboard before launch. No fixed
+monthly or per-edit total has been accepted.
 
 ## Migration path
 
-- More users / heavier renders: containerize the daemon (it is a plain
-  Python process with env-var config) and point N instances at the same
-  queue from RunPod/EC2; the Worker API already treats workers as
-  pull-based and stateless.
+- More users or heavier renders: containerize the daemon and point isolated
+  hosted instances at the queue only after the separate cost, privacy,
+  licensing, and operational review passes.
 - PydanticAI: if #5193 lands and multi-model routing becomes real, wrap
   `providers.llm_json` behind the same interface; the typed proposal
   schema is already pydantic-shaped dataclasses.

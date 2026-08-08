@@ -17,13 +17,33 @@ const api = async (path, opts = {}) => {
 const TYPES = [
   ['short', 'Short / Reel', 'Vertical, fast, big captions'],
   ['long', 'Long Talking Head', 'YouTube-style lesson or talk'],
-  ['commercial', 'Commercial / Ad', 'Tight, punchy, music-driven'],
+  ['commercial', 'Commercial / Ad', 'Offer-focused product or service edit'],
   ['podcast', 'Podcast / Interview', 'Long-form conversation'],
   ['course', 'Course / Lesson', 'Structured teaching video'],
-  ['clips', 'Turn Long Video Into Clips', 'Find the best moments'],
   ['custom', 'Custom', 'Tell the editor what you want'],
 ];
-const state = { me: null, projectId: null, pollTimer: null };
+const state = { me: null, projectId: null, pollTimer: null,
+  pendingUploads: 0, makeRequestPending: false };
+const CLIENT_UPLOAD_PART_SIZE = 10 * 1024 * 1024;
+
+const hex = (buffer) => [...new Uint8Array(buffer)]
+  .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+
+async function fingerprintFile(file) {
+  const partHashes = [];
+  const total = Math.ceil(file.size / CLIENT_UPLOAD_PART_SIZE) || 1;
+  for (let index = 0; index < total; index++) {
+    $('up-progress').textContent =
+      `Checking ${file.name}: ${Math.round(((index + 1) / total) * 100)}%`;
+    const part = await file.slice(index * CLIENT_UPLOAD_PART_SIZE,
+      (index + 1) * CLIENT_UPLOAD_PART_SIZE).arrayBuffer();
+    partHashes.push(hex(await crypto.subtle.digest('SHA-256', part)));
+  }
+  const receipt = new TextEncoder().encode(
+    `${file.size}:${partHashes.join(':')}`);
+  return { fingerprint: hex(await crypto.subtle.digest('SHA-256', receipt)),
+    partHashes };
+}
 
 // ------------------------------------------------------------ views
 function show(id) {
@@ -150,6 +170,7 @@ const HUMAN_STATUS = {
   'running final qa': 'Running quality checks',
   'ready': 'Ready', 'needs review': 'Needs review',
   'failed': 'Something went wrong', 'cancelled': 'Cancelled',
+  'deleting': 'Deleting',
 };
 
 async function renderProject() {
@@ -165,6 +186,15 @@ async function renderProject() {
     li.textContent = `${u.filename} (${u.status})`;
     ul.appendChild(li);
   });
+  const everyUploadDone = pr.uploads.length > 0 &&
+    pr.uploads.every((upload) => upload.status === 'done');
+  const renderBlocked = !!pr.render_active || pr.status === 'deleting';
+  $('make').disabled = state.makeRequestPending || state.pendingUploads > 0 ||
+    !everyUploadDone || renderBlocked;
+  $('make').title = renderBlocked
+    ? 'This project already has an edit in progress'
+    : everyUploadDone && state.pendingUploads === 0
+      ? '' : 'Wait for every selected clip to finish uploading';
   if (pr.transcript && !$('p-script').value) {
     $('p-script').value = pr.transcript;
     $('p-scriptbox').open = true;
@@ -237,9 +267,14 @@ function lastOutputKey(pr, rev) {
 
 // ------------------------------------------------------------ uploads
 async function uploadFile(file) {
+  const identity = await fingerprintFile(file);
   const meta = await api(`/projects/${state.projectId}/uploads`, {
-    method: 'POST', body: { filename: file.name, size: file.size } });
+    method: 'POST', body: { filename: file.name, size: file.size,
+      source_fingerprint: identity.fingerprint } });
   const partSize = meta.part_size;
+  if (partSize !== CLIENT_UPLOAD_PART_SIZE) {
+    throw new Error('The upload part size changed. Refresh and try again.');
+  }
   const uploaded = new Set(meta.uploaded_parts || []);
   const total = Math.ceil(file.size / partSize) || 1;
   for (let i = 0; i < total; i++) {
@@ -255,42 +290,76 @@ async function uploadFile(file) {
       try {
         const r = await fetch(
           `/api/uploads/${meta.upload_id}/part?n=${i + 1}`,
-          { method: 'PUT', body: blob, credentials: 'same-origin' });
+          { method: 'PUT', body: blob, credentials: 'same-origin', headers: {
+            'x-autoeditor-part-sha256': identity.partHashes[i],
+          } });
         ok = r.ok;
       } catch (_) { /* retry */ }
       if (!ok) await new Promise((res) => setTimeout(res, 1500 * tries));
     }
     if (!ok) { $('up-progress').textContent =
-      'Upload interrupted. It will resume when you try again.'; return; }
+      'Upload interrupted. It will resume when you try again.'; return false; }
     $('up-progress').textContent =
       `Uploading ${file.name}: ${Math.round(((i + 1) / total) * 100)}%`;
   }
   await api(`/uploads/${meta.upload_id}/complete`, { method: 'POST' });
   $('up-progress').textContent = `${file.name} uploaded.`;
-  renderProject();
+  await renderProject();
+  return true;
+}
+
+async function uploadFiles(files) {
+  const queue = [...files];
+  if (!queue.length) return;
+  if (state.pendingUploads) {
+    $('up-progress').textContent =
+      'Wait for the current clip batch to finish before adding more.';
+    return;
+  }
+  state.pendingUploads = queue.length;
+  $('make').disabled = true;
+  try {
+    // One at a time keeps the low-tech workflow predictable and prevents a
+    // completed first clip from looking like the whole selected batch is done.
+    for (const file of queue) {
+      await uploadFile(file);
+      state.pendingUploads -= 1;
+    }
+  } finally {
+    state.pendingUploads = 0;
+    await renderProject();
+  }
 }
 
 const dz = $('dropzone');
 dz.onclick = () => {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = 'video/*'; inp.multiple = true;
-  inp.onchange = () => [...inp.files].forEach(uploadFile);
+  inp.onchange = () => uploadFiles(inp.files);
   inp.click();
 };
 dz.ondragover = (e) => { e.preventDefault(); dz.classList.add('hover'); };
 dz.ondragleave = () => dz.classList.remove('hover');
 dz.ondrop = (e) => {
   e.preventDefault(); dz.classList.remove('hover');
-  [...e.dataTransfer.files].forEach(uploadFile);
+  uploadFiles(e.dataTransfer.files);
 };
 
 // ------------------------------------------------------------ actions
 $('make').onclick = async () => {
+  if ($('make').disabled) return;
+  state.makeRequestPending = true;
+  $('make').disabled = true;
+  $('p-status').textContent = 'Starting your edit';
   try {
     await api(`/projects/${state.projectId}/make`, { method: 'POST',
       body: { script: $('p-script').value.trim() || null } });
     $('p-progresslog').classList.remove('hidden');
   } catch (e) { alert(e.message); }
+  finally {
+    state.makeRequestPending = false;
+    await renderProject();
+  }
 };
 $('chat-send').onclick = async () => {
   const text = $('chat-input').value.trim();

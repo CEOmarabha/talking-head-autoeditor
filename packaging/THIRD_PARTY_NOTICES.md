@@ -15,6 +15,11 @@ sizes are recorded beside this file in `runtime-manifest.json`.
   confirm the corresponding-source offer and delivery method for the exact
   FFmpeg, x264, and linked GPL components with counsel or the binary provider.
 - x264, GPL-2.0-or-later.
+- The low-speech cutter is AutoEditor project code built on the bundled
+  FFmpeg. The `auto-editor` 29.3.1 PyPI launcher and its separately downloaded
+  WyattBlue native executable are not included. This avoids a first-run
+  network download and removes that external runtime from the distributed
+  payload.
 - faster-whisper 1.2.1, MIT License.
 - CTranslate2 4.8.1, MIT License.
 - Hugging Face faster-whisper small and medium model files, MIT License.

@@ -33,14 +33,18 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
 from hashlib import sha256
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from webapp.render_worker_compat import aes_gcm_decrypt  # noqa: E402
-from webapp.render_worker_compat import http_json, http_get, http_put  # noqa
+from webapp.render_worker_compat import (  # noqa: E402
+    canonical_json_bytes, http_get, http_json, http_put, http_put_range,
+)
 
 HERE = Path(__file__).resolve()
 REPO = HERE.parents[2]
@@ -54,6 +58,16 @@ ENGINE = os.environ.get("ENGINE_CMD", f"{sys.executable} -m autoeditor")
 ENGINE_PATH = os.environ.get("AUTOEDITOR_ENGINE", "").strip()
 FFMPEG = os.environ.get("AUTOEDITOR_FFMPEG") or shutil.which("ffmpeg") \
     or "/opt/homebrew/bin/ffmpeg"
+OUTPUT_PART_SIZE = 64 * 1024 * 1024
+HEARTBEAT_SECONDS = 30
+
+
+class CompletionDeliveryError(RuntimeError):
+    """The Worker did not durably acknowledge a completion receipt."""
+
+
+class ClaimLostError(RuntimeError):
+    """This daemon attempt no longer owns the job."""
 
 
 def log(msg: str) -> None:
@@ -65,13 +79,89 @@ def api(path: str, payload: dict | None = None):
     return http_json(f"{API}/api{path}", payload, token=TOKEN)
 
 
-def progress(job_id: str, line: str = "", status: str = "",
-             detail: str = "") -> None:
+def complete_job(job_id: str, claim_token: str, payload: dict) -> dict:
+    """Retry completion; accept 409 only with the exact committed receipt."""
+    committed_payload = {**payload, "claim_token": claim_token}
+    request_hash = sha256(canonical_json_bytes(committed_payload)).hexdigest()
+    expected_receipt = canonical_json_bytes({
+        "committed": True,
+        "completion_request_hash": request_hash,
+        "job_id": job_id,
+        "ok": True,
+    })
+    for attempt in range(8):
+        try:
+            return api(f"/worker/jobs/{job_id}/complete", committed_payload)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                replay_receipt = exc.read()
+                if replay_receipt == expected_receipt:
+                    return {"ok": True, "already_completed": True}
+                raise ClaimLostError(
+                    "completion conflict did not match this request") from exc
+            if exc.code not in {429, 500, 502, 503, 504}:
+                raise
+            last = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                OSError) as exc:
+            last = exc
+        log(f"completion receipt retry {attempt + 1}/8 for job {job_id}")
+        time.sleep(min(30, 2 ** attempt))
+    raise CompletionDeliveryError(
+        f"completion receipt was not acknowledged: {type(last).__name__}")
+
+
+def progress(job_id: str, claim_token: str, line: str = "",
+             status: str = "", detail: str = "",
+             strict: bool = False) -> None:
     try:
         api(f"/worker/jobs/{job_id}/progress",
-            {"line": line, "status": status, "detail": detail})
-    except Exception as e:
+            {"claim_token": claim_token, "line": line,
+             "status": status, "detail": detail})
+    except urllib.error.HTTPError as e:
+        if e.code in {403, 409}:
+            raise ClaimLostError("job heartbeat was rejected") from e
+        if strict:
+            raise
         log(f"progress post failed: {e}")
+    except Exception as e:
+        if strict:
+            raise
+        log(f"progress post failed: {e}")
+
+
+class ClaimHeartbeat:
+    def __init__(self, job_id: str, claim_token: str) -> None:
+        self.job_id = job_id
+        self.claim_token = claim_token
+        self.stop_event = threading.Event()
+        self.lost_event = threading.Event()
+        self.thread = threading.Thread(target=self._run,
+                                       name=f"heartbeat-{job_id}",
+                                       daemon=True)
+
+    def __enter__(self):
+        progress(self.job_id, self.claim_token, strict=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args) -> None:
+        self.stop_event.set()
+        self.thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self.stop_event.wait(HEARTBEAT_SECONDS):
+            try:
+                progress(self.job_id, self.claim_token, strict=True)
+            except ClaimLostError:
+                self.lost_event.set()
+                return
+            except Exception as exc:
+                log(f"heartbeat delivery failed: {type(exc).__name__}")
+
+    def ensure_owned(self) -> None:
+        if self.lost_event.is_set():
+            raise ClaimLostError("job claim was reassigned")
 
 
 def decrypt_key(ct_b64: str, iv_b64: str) -> str:
@@ -83,15 +173,75 @@ def decrypt_key(ct_b64: str, iv_b64: str) -> str:
 
 
 # ------------------------------------------------------------ media I/O
-def download(r2_key: str, dst: Path) -> Path:
+def download(job_id: str, claim_token: str, r2_key: str, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    http_get(f"{API}/api/worker/media/{r2_key}", dst, token=TOKEN)
+    http_get(f"{API}/api/worker/media/{r2_key}", dst, token=TOKEN,
+             headers={"x-autoeditor-job-id": job_id,
+                      "x-autoeditor-claim-token": claim_token})
     return dst
 
 
-def upload(src: Path, r2_key: str) -> str:
-    http_put(f"{API}/api/worker/media/{r2_key}", src, token=TOKEN)
-    return r2_key
+def output_receipts(src: Path) -> tuple[str, list[str]]:
+    whole = sha256()
+    part_hashes: list[str] = []
+    with src.open("rb") as handle:
+        while chunk := handle.read(OUTPUT_PART_SIZE):
+            whole.update(chunk)
+            part_hashes.append(sha256(chunk).hexdigest())
+    if not part_hashes:
+        raise RuntimeError("engine produced an empty video")
+    return whole.hexdigest(), part_hashes
+
+
+def upload_output(job: dict, src: Path, heartbeat: ClaimHeartbeat) -> dict:
+    claim_token = job["claim_token"]
+    content_hash, part_hashes = output_receipts(src)
+    start = api(f"/worker/jobs/{job['id']}/output/start", {
+        "claim_token": claim_token,
+        "size": src.stat().st_size,
+        "content_sha256": content_hash,
+        "part_hashes": part_hashes,
+    })
+    part_size = int(start.get("part_size") or 0)
+    if part_size != OUTPUT_PART_SIZE:
+        raise RuntimeError("Worker output part size does not match daemon")
+    uploaded = set(start.get("uploaded_parts") or [])
+    for index, part_hash in enumerate(part_hashes):
+        heartbeat.ensure_owned()
+        part_number = index + 1
+        if part_number in uploaded:
+            continue
+        offset = index * OUTPUT_PART_SIZE
+        length = min(OUTPUT_PART_SIZE, src.stat().st_size - offset)
+        http_put_range(
+            f"{API}/api/worker/jobs/{job['id']}/output/part?n={part_number}",
+            src, offset, length, token=TOKEN,
+            headers={"x-autoeditor-claim-token": claim_token,
+                     "x-autoeditor-part-sha256": part_hash})
+    heartbeat.ensure_owned()
+    return api(f"/worker/jobs/{job['id']}/output/complete", {
+        "claim_token": claim_token,
+    })
+
+
+def upload_qa(job: dict, qa_src: Path, output: dict,
+              work: Path, heartbeat: ClaimHeartbeat) -> str:
+    heartbeat.ensure_owned()
+    report = json.loads(qa_src.read_text())
+    report["_autoeditor"] = {
+        "claim_token": job["claim_token"],
+        "output_key": output["output_key"],
+        "output_content_sha256": output["content_sha256"],
+        "output_multipart_sha256": output["multipart_sha256"],
+        "output_size": output["size"],
+    }
+    bound = work / "QA_REPORT_BOUND.json"
+    bound.write_text(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    digest = sha256(bound.read_bytes()).hexdigest()
+    http_put(f"{API}/api/worker/jobs/{job['id']}/qa", bound, token=TOKEN,
+             sha256_hex=digest,
+             headers={"x-autoeditor-claim-token": job["claim_token"]})
+    return str(output["qa_key"])
 
 
 def join_clips(paths: list[Path], work: Path) -> Path:
@@ -117,7 +267,7 @@ def join_clips(paths: list[Path], work: Path) -> Path:
 
 # ------------------------------------------------------------ engine
 def run_engine(args: list[str], env_extra: dict, job_id: str,
-               phase_status: dict) -> dict | None:
+               claim_token: str, phase_status: dict) -> dict | None:
     """Run the engine, stream phases as progress, return the result event."""
     env = {**os.environ, **env_extra,
            "AUTOEDITOR_PACKAGED": "1", "AUTOEDITOR_PROGRESS_JSON": "1"}
@@ -138,10 +288,10 @@ def run_engine(args: list[str], env_extra: dict, job_id: str,
                 result = ev
             continue
         # sanitized human log line (engine never logs env/keys)
-        progress(job_id, line=line[:300])
+        progress(job_id, claim_token, line=line[:300])
         for marker, status in phase_status.items():
             if marker in line:
-                progress(job_id, status=status)
+                progress(job_id, claim_token, status=status)
     proc.wait()
     return result
 
@@ -154,13 +304,28 @@ PHASES_MAKE = {
 }
 
 
-def handle_make(job, project, uploads, key, preset, revision_id=None,
-                extra_args=None) -> None:
+def preset_params(preset: dict | None) -> dict:
+    """Decode the user-owned preset or reject malformed/ambiguous input."""
+    raw = (preset or {}).get("params_json") or "{}"
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("style preset parameters are not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("style preset parameters must be an object")
+    return parsed
+
+
+def handle_make(job, project, uploads, key, preset,
+                heartbeat: ClaimHeartbeat, revision_id=None,
+                engine_args_override=None) -> None:
     work = Path(tempfile.mkdtemp(prefix="webjob-", dir=str(WORK)))
     try:
-        progress(job["id"], status="transcribing",
+        claim_token = job["claim_token"]
+        progress(job["id"], claim_token, status="transcribing",
                  detail="preparing footage")
-        clips = [download(u["r2_key"], work / f"in{i}_{u['filename']}")
+        clips = [download(job["id"], claim_token, u["r2_key"],
+                          work / f"in{i}_{u['filename']}")
                  for i, u in enumerate(uploads)]
         src = join_clips(clips, work)
         payload = json.loads(job.get("payload_json") or "{}")
@@ -169,50 +334,57 @@ def handle_make(job, project, uploads, key, preset, revision_id=None,
         if not script:
             trdir = work / "tr"
             r = run_engine([str(src), "--transcribe-only", "--out",
-                            str(trdir)], {}, job["id"], {})
+                            str(trdir)], {}, job["id"], claim_token, {})
             tf = trdir / "TRANSCRIPT.txt"
             script = tf.read_text() if tf.exists() else ""
         script_file = work / "script.txt"
         script_file.write_text(script or " ")
         from webapp.render_worker.project_types import engine_args  # noqa
+        mapped_args = (list(engine_args_override)
+                       if engine_args_override is not None
+                       else engine_args(project["type"],
+                                        preset_params(preset)))
         args = [str(src), "--script", str(script_file), "--out",
-                str(outdir), *engine_args(project["type"],
-                                          json.loads(
-                    (preset or {}).get("params_json") or "{}"))]
-        if extra_args:
-            args += extra_args
+                str(outdir), *mapped_args]
         env = {"DEEPSEEK_API_KEY": key} if key else {}
-        if not key:
+        if not key and "--no-premium" not in args:
             args += ["--no-llm"]
-        result = run_engine(args, env, job["id"], PHASES_MAKE)
-        if not result and key:
+        result = run_engine(args, env, job["id"], claim_token, PHASES_MAKE)
+        if not result and key and "--no-premium" not in args:
             # Spec rule: a failed planner/resource path must not destroy
             # the edit. Re-run once with the deterministic heuristic EDL.
-            progress(job["id"], line="AI planner unavailable; using the "
+            progress(job["id"], claim_token,
+                     line="AI planner unavailable; using the "
                      "deterministic editor instead", status="planning",
                      detail="fallback edit plan")
-            result = run_engine([*args, "--no-llm"], {}, job["id"],
+            result = run_engine([*args, "--no-llm"], {}, job["id"], claim_token,
                                 PHASES_MAKE)
         if not result:
             raise RuntimeError("engine produced no result event")
         out_path = next(iter(result["outputs"].values()))
-        user, proj = job["user_id"], job["project_id"]
-        rev_tag = revision_id or job["id"]
-        out_key = f"u/{user}/{proj}/out/{rev_tag}.mp4"
-        qa_key = f"u/{user}/{proj}/out/{rev_tag}_QA.json"
-        upload(Path(out_path), out_key)
+        output = upload_output(job, Path(out_path), heartbeat)
         qa_report = Path(result["qa_report"])
-        if qa_report.exists():
-            upload(qa_report, qa_key)
-        api(f"/worker/jobs/{job['id']}/complete", {
-            "ok": True, "qa_pass": bool(result.get("qa_pass")),
-            "output_key": out_key, "qa_key": qa_key,
+        if not qa_report.exists():
+            raise RuntimeError("engine produced no QA report")
+        qa_key = upload_qa(job, qa_report, output, work, heartbeat)
+        complete_job(job["id"], claim_token, {
+            "ok": True,
+            "output_key": output["output_key"], "qa_key": qa_key,
             "revision_id": revision_id,
             "transcript": (script or "")[:20000]})
+    except ClaimLostError as e:
+        log(f"job {job['id']} claim ended: {e}")
+    except CompletionDeliveryError as e:
+        log(f"job {job['id']} completion remains pending: {e}")
     except Exception as e:
         log(f"job {job['id']} failed: {type(e).__name__}")
-        api(f"/worker/jobs/{job['id']}/complete",
-            {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
+        try:
+            complete_job(job["id"], job["claim_token"],
+                         {"ok": False,
+                          "error": f"{type(e).__name__}: {e}"[:300]})
+        except CompletionDeliveryError as completion_error:
+            log(f"job {job['id']} failure receipt remains pending: "
+                f"{completion_error}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -239,31 +411,47 @@ def handle_chat(job, project, key) -> None:
     finally:
         os.environ.pop("DEEPSEEK_API_KEY", None)
     if errors or not clean.get("operations"):
-        api(f"/worker/jobs/{job['id']}/complete", {
+        complete_job(job["id"], job["claim_token"], {
             "ok": True, "proposal": {"operations": []},
             "request_text": request_text, "needs_approval": False,
             "summary": "I couldn't turn that into a safe edit. "
-                       "Try rephrasing (e.g. 'bigger captions', "
-                       "'faster opening', 'remove the part about X')."})
+                       "Try rephrasing (e.g. 'make it vertical', "
+                       "'use short pacing', or 'use sidecar captions')."})
         return
-    api(f"/worker/jobs/{job['id']}/complete", {
+    complete_job(job["id"], job["claim_token"], {
         "ok": True, "proposal": clean, "request_text": request_text,
         "needs_approval": needs_approval,
         "summary": clean.get("summary") or "Here's what I'll change."})
 
 
-OP_TO_ARGS = {
-    "fewer_punchins": ["--no-premium"],   # conservative v1 mapping
-    "cinematic_grade": [],                # grade handled by profile LUT v2
-}
-
-
-def handle_revision(job, project, uploads, key, preset) -> None:
+def handle_revision(job, project, uploads, key, preset,
+                    heartbeat: ClaimHeartbeat) -> None:
     payload = json.loads(job.get("payload_json") or "{}")
     rev_id = payload.get("revision_id")
-    # deterministic re-render with op-derived args; unknown/no-op mappings
-    # re-run the verified default rather than guessing
-    handle_make(job, project, uploads, key, preset, revision_id=rev_id)
+    if not isinstance(rev_id, str) or not rev_id:
+        raise RuntimeError("revision job has no bound revision id")
+
+    proposal = payload.get("proposal")
+    encoded = payload.get("proposal_json")
+    if encoded is not None:
+        if not isinstance(encoded, str):
+            raise RuntimeError("approved proposal JSON must be a string")
+        try:
+            decoded = json.loads(encoded)
+        except ValueError as exc:
+            raise RuntimeError("approved proposal JSON is invalid") from exc
+        if proposal is not None and proposal != decoded:
+            raise RuntimeError("approved proposal representations disagree")
+        proposal = decoded
+    if not isinstance(proposal, dict):
+        raise RuntimeError(
+            "revision job does not include its Worker-bound approved proposal")
+
+    from webapp.render_worker.project_types import revision_engine_args  # noqa
+    mapped_args = revision_engine_args(
+        project["type"], preset_params(preset), proposal)
+    handle_make(job, project, uploads, key, preset, heartbeat,
+                revision_id=rev_id, engine_args_override=mapped_args)
 
 
 def main() -> None:
@@ -283,6 +471,11 @@ def main() -> None:
             time.sleep(4)
             continue
         log(f"job {job['id']} kind={job['kind']}")
+        claim_token = str(job.get("claim_token") or "")
+        if not claim_token:
+            log(f"job {job['id']} arrived without a claim token")
+            time.sleep(2)
+            continue
         key = ""
         try:
             if r.get("key_plain"):
@@ -290,22 +483,40 @@ def main() -> None:
             elif r.get("key_ct"):
                 key = decrypt_key(r["key_ct"], r["key_iv"])
         except Exception:
-            api(f"/worker/jobs/{job['id']}/complete",
-                {"ok": False, "error": "stored key could not be unlocked; "
-                                       "re-enter it in Settings"})
+            try:
+                complete_job(job["id"], claim_token,
+                    {"ok": False, "error":
+                     "stored key could not be unlocked; re-enter it in Settings"})
+            except CompletionDeliveryError as e:
+                log(f"job {job['id']} failure receipt remains pending: {e}")
             continue
         try:
-            if job["kind"] in ("make",):
-                handle_make(job, r["project"], r["uploads"], key,
-                            r.get("preset"))
-            elif job["kind"] == "chat_proposal":
-                handle_chat(job, r["project"], key)
-            elif job["kind"] == "revision_apply":
-                handle_revision(job, r["project"], r["uploads"], key,
-                                r.get("preset"))
-            else:
-                api(f"/worker/jobs/{job['id']}/complete",
-                    {"ok": False, "error": f"unknown kind {job['kind']}"})
+            with ClaimHeartbeat(job["id"], claim_token) as heartbeat:
+                if job["kind"] in ("make",):
+                    handle_make(job, r["project"], r["uploads"], key,
+                                r.get("preset"), heartbeat)
+                elif job["kind"] == "chat_proposal":
+                    handle_chat(job, r["project"], key)
+                elif job["kind"] == "revision_apply":
+                    handle_revision(job, r["project"], r["uploads"], key,
+                                    r.get("preset"), heartbeat)
+                else:
+                    complete_job(job["id"], claim_token,
+                        {"ok": False,
+                         "error": f"unknown kind {job['kind']}"})
+        except ClaimLostError as e:
+            log(f"job {job['id']} claim ended: {e}")
+        except CompletionDeliveryError as e:
+            log(f"job {job['id']} completion remains pending: {e}")
+        except Exception as e:
+            log(f"job {job['id']} failed: {type(e).__name__}")
+            try:
+                complete_job(job["id"], claim_token,
+                             {"ok": False,
+                              "error": f"{type(e).__name__}: {e}"[:300]})
+            except CompletionDeliveryError as completion_error:
+                log(f"job {job['id']} failure receipt remains pending: "
+                    f"{completion_error}")
         finally:
             key = ""  # drop plaintext reference promptly
 

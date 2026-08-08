@@ -1,17 +1,21 @@
-# AutoEditor — Release Gate Matrix
+# AutoEditor: Release Gate Matrix
 
 Companion to `docs/CLAUDE_RELEASE_AUDIT.md`. One row per release gate.
 Status vocabulary (per `docs/CLAUDE_DEEP_RELEASE_REVIEW_PROMPT.md`):
 
-- **PASS** — direct, current evidence in this audit (a command output or an
+- **PASS**: direct, current evidence in this audit (a command output or an
   inspected artifact). A source test is never accepted as artifact acceptance.
-- **FAIL** — evidence shows the gate is not met.
-- **BLOCKED** — cannot be closed without a named certificate, secret, account,
+- **FAIL**: evidence shows the gate is not met.
+- **BLOCKED**: cannot be closed without a named certificate, secret, account,
   hardware, artifact, or permission that only Omar controls.
-- **NOT RUN** — not exercised in this audit and not blocked; owner must run it.
+- **NOT RUN**: not exercised in this audit and not blocked; owner must run it.
 
 Branch `web-app`, HEAD `bb8fbf2` at audit start. Audit date 2026-08-07.
 Reviewer: Claude (Cowork), independent final review.
+
+This matrix is a historical snapshot of `bb8fbf2`. The later generic
+six-profile and five-operation revision contract supersedes affected source
+rows. Current release status lives in `docs/RELEASE_GATE_STATUS.md`.
 
 --------------------------------------------------------------------------
 
@@ -24,7 +28,7 @@ Reviewer: Claude (Cowork), independent final review.
 | A3 | Fail-closed QA gate (AND across gates, exit 2 on fail) | PASS | read `autoeditor/pipeline.py` gate/promote/quarantine paths | `qa["pass"]` is AND; each gate defaults `{"ok": False}`; promote only on pass | none |
 | A4 | Quarantine-before-gates delivery | PASS | read `quarantine_outputs`/`promote_outputs` | outputs renamed `*.UNVERIFIED` before any gate; promoted only on full pass | none |
 | A5 | DeepSeek cannot bypass speech/QA gates | PASS | read gate ordering + deterministic post-model validation | model output validated AFTER generation; cannot widen permissions | none |
-| A6 | Py/JS edit-proposal contract parity (`ALLOWED_OPS`) | PASS | diff `render_worker/project_types.py` vs `worker/src/index.js` | op-for-op match on bounds + approval flags; unknown op rejects whole proposal in both | none |
+| A6 | Current Py/JS edit-proposal parity and proposal binding | NOT RUN | generic contract added after this audit | old allowlist result is superseded; current five-op parity and server-bound proposal were not tested here | rerun against current Worker, daemon, and browser |
 | A7 | Prompt-injection safety (transcript/filenames → DeepSeek) | PASS | trace key handling + post-model validation | key never enters a prompt (header/child-env only); deterministic validation blocks widening/exfil | none |
 | A8 | API key redaction in logs/results | PASS | reviewer grep of log/result emitters | key not logged or echoed in result metadata | none |
 
@@ -85,28 +89,28 @@ Reviewer: Claude (Cowork), independent final review.
 ## Release decision (from the matrix)
 
 **BLOCKED for friend distribution.** Every source, engine, and web-security
-gate that can be closed here is PASS (A1–A8, B1–B10, C1–C4, E1, E4). The
+gate that can be closed here is PASS (A1 to A8, B1 to B10, C1 to C4, E1, E4). The
 release is held by two independent walls that no source test can close:
 
-1. **Signed-artifact acceptance (D1–D7, BLOCKED)** — no signing certificates,
+1. **Signed-artifact acceptance (D1 to D7, BLOCKED)**: no signing certificates,
    so no signed Windows `.exe` and no notarized macOS DMG were ever built,
    installed, or verified. This is the primary block.
-2. **Legal (E2 corresponding-source, E3 Remotion, BLOCKED)** — decisions only
+2. **Legal (E2 corresponding-source, E3 Remotion, BLOCKED)**: decisions only
    Omar/counsel can make.
 
-Deployment gates B11–B12 are NOT RUN (owner deploys this revision, then runs
-live two-user acceptance). Desktop-product supply-chain gates C5–C9 are FAIL
-but scoped to the separate Ryan/PSE product, not the friend Helper.
+Deployment gates B11 and B12 are NOT RUN (owner deploys this revision, then runs
+live two-user acceptance). Desktop-product supply-chain gates C5 to C9 are FAIL
+but scoped to the separate desktop/PSE product, not the friend Helper.
 
 Shortest ordered owner actions: (1) configure signing secrets (D1); (2) build
-signed Win `.exe` + notarized Mac DMGs from this revision (D2–D3); (3) run the
+signed Win `.exe` + notarized Mac DMGs from this revision (D2 and D3); (3) run the
 full install/edit/upgrade/uninstall lifecycle on real Windows + Mac hardware
-and verify signatures (D4–D7); (4) resolve GPL corresponding-source + Remotion
-eligibility (E2–E3); (5) deploy this Worker revision and run live two-user
-acceptance (B11–B12); (6) if shipping the desktop product, fix C5–C9.
+and verify signatures (D4 to D7); (4) resolve GPL corresponding-source + Remotion
+eligibility (E2 and E3); (5) deploy this Worker revision and run live two-user
+acceptance (B11 and B12); (6) if shipping the desktop product, fix C5 to C9.
 
 Do not publish an unsigned artifact. A friend release is not "ready" until
-D1–D7 and E2–E3 are closed against the exact signed installers.
+D1 to D7 and E2 and E3 are closed against the exact signed installers.
 
 --------------------------------------------------------------------------
 
@@ -121,16 +125,16 @@ gate rows, with the fixes committed after the run:
 
 | # | Gate | Status at run | Fix in this commit | Remaining owner action |
 |---|------|---------------|--------------------|------------------------|
-| F1 | Packed app contains creative runtime node_modules | FAIL — electron-builder pruned node_modules from extraResources; HyperFrames + Remotion missing in the DMG | explicit `creative-runtime/node_modules` file set in `electron-builder.helper.yml`; CI gate "Verify the packed app ships the complete creative runtime" inspects the PACKED app; contract test locks both | rebuild, confirm gate passes |
-| F2 | Packaged Helper smoke test | FAIL — downstream of F1 (preflight checks hyperframesCli/remotionCli existence) | resolved by F1; smoke unchanged (it caught the defect correctly) | re-run on rebuilt DMG |
-| F3 | Signature survives packaging (no post-seal Finder metadata) | FAIL — Finder metadata attached after sealing broke `codesign --strict` | plain DMG (no background/volume icon); staging stripped of `.DS_Store`/`._*`/xattrs before sealing; CI now verifies the app from a fresh DMG mount incl. FinderInfo xattr check | re-run; verify from the mounted DMG, not a Finder-browsed folder |
-| F4 | Mac CI calls the correct app executable | FAIL — hardcoded binary name was wrong | both workflows resolve `CFBundleExecutable` from the bundle's Info.plist | none |
-| F5 | FFmpeg pin accepts Homebrew bottle revisions | FAIL — guard rejected `8.1.2_1` (a rebuild of the same 8.1.2 source) | regex accepts `8.1.2(_N)?`, still rejects real version moves | none |
-| F6 | Real app icon | FAIL — default Electron icon | `desktop/build/icon.{icns,ico,png}` added and wired into both products | replace with final brand art whenever desired |
-| F7 | Developer ID signing + notarization | BLOCKED (unchanged, = D1–D3) | n/a | configure signing secrets |
-| F8 | Worker transaction fixes present | STALE FINDING — the report flagged them unresolved, but HEAD `c697aa3` contains all of them (atomic invite claim, atomic revision approval, atomic upload complete, rate limits, security headers; verified by line inspection on the device repo) | none needed | re-test against a Worker deployed from HEAD, not an older checkout |
+| F1 | Packed app contains creative runtime node_modules | FAIL: electron-builder pruned node_modules from extraResources; HyperFrames + Remotion missing in the DMG | explicit `creative-runtime/node_modules` file set in `electron-builder.helper.yml`; CI gate "Verify the packed app ships the complete creative runtime" inspects the PACKED app; contract test locks both | rebuild, confirm gate passes |
+| F2 | Packaged Helper smoke test | FAIL: downstream of F1 (preflight checks hyperframesCli/remotionCli existence) | resolved by F1; smoke unchanged (it caught the defect correctly) | re-run on rebuilt DMG |
+| F3 | Signature survives packaging (no post-seal Finder metadata) | FAIL: Finder metadata attached after sealing broke `codesign --strict` | plain DMG (no background/volume icon); staging stripped of `.DS_Store`/`._*`/xattrs before sealing; CI now verifies the app from a fresh DMG mount incl. FinderInfo xattr check | re-run; verify from the mounted DMG, not a Finder-browsed folder |
+| F4 | Mac CI calls the correct app executable | FAIL: hardcoded binary name was wrong | both workflows resolve `CFBundleExecutable` from the bundle's Info.plist | none |
+| F5 | FFmpeg pin accepts Homebrew bottle revisions | FAIL: guard rejected `8.1.2_1` (a rebuild of the same 8.1.2 source) | regex accepts `8.1.2(_N)?`, still rejects real version moves | none |
+| F6 | Real app icon | FAIL: default Electron icon | `desktop/build/icon.{icns,ico,png}` added and wired into both products | replace with final brand art whenever desired |
+| F7 | Developer ID signing + notarization | BLOCKED (unchanged, = D1 to D3) | n/a | configure signing secrets |
+| F8 | Worker transaction fixes present | STALE FINDING: the report flagged them unresolved, but HEAD `c697aa3` contains all of them (atomic invite claim, atomic revision approval, atomic upload complete, rate limits, security headers; verified by line inspection on the device repo) | none needed | re-test against a Worker deployed from HEAD, not an older checkout |
 
 Order to green: rebuild the Mac DMG from this commit, repeat the mounted-DMG
 smoke + signature + launch + real-edit test, then build Windows, then the MSI
 friend-workflow walkthrough. The failed DMG at
-`work/mac-acceptance-c697aa3/` is evidence only — never distribute it.
+`work/mac-acceptance-c697aa3/` is evidence only. Never distribute it.

@@ -37,14 +37,13 @@ function normalizeProviderSetup(input) {
     ? requiredText(value.pixabayKey, 'Pixabay API key') : '';
   const elevenKey = elevenMode === 'connect'
     ? requiredText(value.elevenKey, 'ElevenLabs API key') : '';
-  const remotionMode = ['free', 'paid', 'skip'].includes(value.remotionMode)
+  const remotionMode = ['free', 'paid'].includes(value.remotionMode)
     ? value.remotionMode : '';
   if (!remotionMode) {
-    throw new Error('Choose the Remotion license that applies to you');
+    throw new Error('Remotion is required. Choose the license that applies to you');
   }
   const remotionKey = remotionMode === 'free' ? 'free-license' :
-    (remotionMode === 'paid'
-      ? requiredText(value.remotionKey, 'Remotion license key') : '');
+    requiredText(value.remotionKey, 'Remotion license key');
   if (remotionMode === 'paid' && !/^rm_pub_[A-Za-z0-9]{48}$/.test(remotionKey)) {
     throw new Error('That Remotion public license key does not look valid');
   }

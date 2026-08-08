@@ -9,6 +9,9 @@ import platform
 from pathlib import Path
 
 
+IGNORED_RECEIPT_NAMES = {".DS_Store", ".gitkeep"}
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -20,7 +23,13 @@ def file_sha256(path: Path) -> str:
 def directory_receipt(root: Path) -> dict:
     digest = hashlib.sha256()
     count = size = 0
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    files = (
+        item for item in root.rglob("*")
+        if item.is_file()
+        and item.name not in IGNORED_RECEIPT_NAMES
+        and not item.name.startswith("._")
+    )
+    for path in sorted(files):
         relative = path.relative_to(root).as_posix()
         item_hash = file_sha256(path)
         item_size = path.stat().st_size
@@ -62,6 +71,8 @@ def main() -> None:
         "required_local_capabilities": [
             "frozen_python_engine", "ffmpeg", "ffprobe", "h264", "aac",
             "faster_whisper_small", "faster_whisper_medium", "node",
+            "in_process_low_speech_cutter",
+            "typed_deepseek_revision_contract",
             "hyperframes", "remotion", "chrome_headless_shell", "fonts",
             "certificate_bundle", "creator_profiles",
         ],
@@ -70,7 +81,7 @@ def main() -> None:
             "pexels": "user may connect or explicitly skip stock footage",
             "pixabay": "user may connect or explicitly skip stock footage",
             "elevenlabs": "user may connect or explicitly skip generated sound effects",
-            "remotion": "free-license eligibility, paid key, or explicit skip",
+            "remotion": "required: free-license eligibility or paid key",
         },
         "components": components,
     }

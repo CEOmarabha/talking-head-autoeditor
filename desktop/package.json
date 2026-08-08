@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node tests/clip-catalog.test.js && node tests/process-tree.test.js && node tests/helper-setup.test.js && node tests/platform-contracts.test.js",
+    "test": "node tests/clip-catalog.test.js && node tests/process-tree.test.js && node tests/helper-setup.test.js && node tests/platform-contracts.test.js && node tests/r2-release-storage.test.js",
     "dist": "electron-builder --config electron-builder.yml",
     "dist:mac": "electron-builder --config electron-builder.yml --mac",
     "dist:win": "electron-builder --config electron-builder.yml --win",
@@ -17,11 +17,10 @@
     "dist:helper:win": "electron-builder --config electron-builder.helper.yml --win"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "3.1106.0",
+    "@aws-sdk/lib-storage": "3.1106.0",
     "@electron/notarize": "3.1.1",
     "electron": "43.3.0",
     "electron-builder": "26.15.3"
-  },
-  "dependencies": {
-    "electron-updater": "6.8.9"
   }
 }

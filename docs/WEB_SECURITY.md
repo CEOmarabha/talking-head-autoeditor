@@ -49,8 +49,8 @@
 - Every project/upload/revision/media query is scoped by `user_id` from
   the session, and R2 media paths embed the owner id
   (`u/<user>/<project>/...`) with a server-side prefix check on every
-  read. Verified in acceptance: cross-account project read 404, media 403,
-  signed-out 401.
+  read. Local integration tests cover cross-account project and media access.
+  Production isolation remains a deployment acceptance gate.
 - The daemon API is a separate bearer-token surface with no session
   crossover. Personal daemon tokens recheck job ownership on progress and
   completion, media routes enforce the user prefix, output keys must match the
@@ -67,23 +67,40 @@
   re-checked on every request rather than while a signed URL lives).
 - Uploads are multipart through the Worker; part state persists in D1 so
   an interrupted upload resumes instead of silently losing the project.
+- R2 holds the transfer copy of source footage and the returned output. The
+  signed Helper downloads the source, renders on the friend’s computer, and
+  uploads the output and QA receipt. Temporary work files and provider caches
+  also exist locally. Local rendering does not mean footage stays off cloud
+  storage.
+- Project deletion is the current user-controlled cloud deletion path. No
+  automatic retention period is part of the accepted contract yet.
 
 ## DeepSeek as untrusted planner
 
 - Chat requests become typed proposals validated deterministically against
-  `ALLOWED_OPS` (bounded params, max 8 ops, whole-proposal rejection on
-  any unknown op: no partial application).
-- Speech-affecting, duration-affecting, licensing, and spend ops carry
-  `approval: true` and require an explicit user OK in the UI before an
-  apply job can exist. Visual-only ops auto-apply.
+  `ALLOWED_OPS` (bounded params, no duplicate setting, max 8 ops, and
+  whole-proposal rejection on any unknown op).
+- The executable operations are edit style, aspect ratio, burned or sidecar
+  captions, full or baseline visuals, and selection among the six bundled
+  generic profiles. Baseline is one complete engine mode. It is never described
+  as “fewer punch-ins.”
+- There is no speech or timeline revision operation in this release. Requests
+  to delete speech, target a duration, split clips, select a specific asset,
+  resize captions, grade footage, or tune individual punch-ins or b-roll are
+  rejected before rendering.
+- A revision job must bind the server-stored approved proposal to its revision
+  ID. The daemon validates the same proposal again and fails closed if it is
+  absent, malformed, or unsupported. A default rerender cannot count as the
+  requested change.
 - The engine's fail-closed QA gates remain authoritative: a render that
   fails any required gate is delivered as Needs Review, never as final
-  (verified in acceptance: blank-frame fixture correctly quarantined).
+  (covered by local fixtures; signed-artifact acceptance remains open).
 
 ## Resource acquisition (v1 boundary)
 
 v1 permits only the engine's licensed-API asset path (Pexels/Pixabay)
-with per-asset receipts (source URL, license, hash, project). There is no
+with per-asset receipts (source URL, license, hash, project). Revision chat
+cannot demand one specific replacement asset. There is no
 repo cloning, package installation, or arbitrary download surface exposed
 to friends. The full Resource Broker (sandboxed repo evaluation,
 capability approval flow) is specified for a later phase and requires a

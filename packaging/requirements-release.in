@@ -1,6 +1,7 @@
 # Direct runtime and build requirements for target-specific hashed locks.
+# Low-speech editing is project code over the bundled FFmpeg. Do not add the
+# auto-editor PyPI first-run native-binary downloader to offline releases.
 faster-whisper==1.2.1
-auto-editor==29.3.1
 pillow==12.3.0
 numpy==2.5.1
 cryptography==48.0.1

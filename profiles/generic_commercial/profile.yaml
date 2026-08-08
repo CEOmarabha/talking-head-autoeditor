@@ -1,0 +1,43 @@
+# Generic vertical commercial/ad profile. This changes the real cutting,
+# caption, and DeepSeek creative contract. It does not claim automatic music.
+
+meta:
+  display_name: "Commercial / Ad"
+  status: "approved"
+  description: "Tight vertical product, service, offer, or brand story edit"
+
+brand:
+  accent: "#F2C94C"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "Montserrat"
+  caption_scale: 0.056
+  caption_words: 3
+
+rules:
+  min_pause_long: 0.75
+  min_pause_short: 0.45
+  pad_head: 0.22
+  pad_tail: 0.28
+  retake_min_words: 3
+  retake_max_gap: 10.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "short"
+  short_cap_scale: 0.060
+  short_cap_words: 3
+  short_cap_margin: 0.24
+
+creative:
+  mode: "generic commercial or advertisement"
+  opening: "Open on the spoken customer problem, product result, offer, or strongest proof."
+  performance: "Keep the product, service, customer outcome, and speaker credibility central."
+  punch_ins: "Use punch-ins on proof, benefit reveals, the offer, and the final spoken action."
+  broll: "Use supplied product footage first, then literal licensed footage tied to the spoken use case or result."
+  graphics: "Show only supported benefits, prices, dates, proof, offer terms, and spoken action text."
+  sound: "Protect speech and use restrained transitions. Music is used only when a real music input is supplied."
+  avoid: "No invented claims, testimonials, prices, scarcity, guarantees, offer terms, or unsupported action text."

@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS projects (
   status TEXT NOT NULL DEFAULT 'empty',
   status_detail TEXT DEFAULT '',
   transcript TEXT,
+  delete_token TEXT,      -- non-NULL while destructive cleanup owns project
+  delete_lease_expires_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -53,7 +55,8 @@ CREATE TABLE IF NOT EXISTS uploads (
   size INTEGER NOT NULL DEFAULT 0,
   mp_upload_id TEXT,       -- R2 multipart id while in flight
   parts_json TEXT DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT 'uploading',  -- uploading|interrupted|done
+  -- uploading|interrupted|completing:<started_ms>:<lease_token>|done
+  status TEXT NOT NULL DEFAULT 'uploading',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -61,13 +64,40 @@ CREATE TABLE IF NOT EXISTS jobs (
   project_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   kind TEXT NOT NULL,      -- transcribe|make|chat_proposal|revision_apply
-  status TEXT NOT NULL DEFAULT 'queued', -- queued|running|done|failed|cancelled
+  -- queued|running|finishing:<claim>|done|failed|cancelled
+  status TEXT NOT NULL DEFAULT 'queued',
   payload_json TEXT NOT NULL DEFAULT '{}',   -- NO key material, ever
   progress_json TEXT NOT NULL DEFAULT '[]',
   error TEXT,
   created_at INTEGER NOT NULL,
   started_at INTEGER,
+  claim_token TEXT,                      -- exact daemon attempt owner
+  lease_expires_at INTEGER,              -- heartbeat-controlled claim expiry
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  render_slot INTEGER NOT NULL DEFAULT 0,-- one queued/running render/project
+  completion_request_hash TEXT,          -- exact committed HTTP body receipt
+  completion_receipt_json TEXT,
   finished_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS render_uploads (
+  job_id TEXT NOT NULL,
+  claim_token TEXT NOT NULL,
+  r2_key TEXT NOT NULL,
+  qa_key TEXT NOT NULL,
+  mp_upload_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  multipart_sha256 TEXT NOT NULL,
+  expected_parts_json TEXT NOT NULL,
+  uploaded_parts_json TEXT NOT NULL DEFAULT '[]',
+  -- uploading|completing|done
+  status TEXT NOT NULL DEFAULT 'uploading',
+  completion_token TEXT,
+  completion_lease_expires_at INTEGER,
+  r2_etag TEXT,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  PRIMARY KEY (job_id, claim_token)
 );
 CREATE TABLE IF NOT EXISTS revisions (
   id TEXT PRIMARY KEY,
@@ -96,6 +126,15 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_render
+  ON jobs(project_id) WHERE render_slot = 1;
+CREATE INDEX IF NOT EXISTS idx_jobs_claim
+  ON jobs(id, claim_token, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_render_uploads_job
+  ON render_uploads(job_id, claim_token, status);
 CREATE INDEX IF NOT EXISTS idx_uploads_project ON uploads(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_revisions_project_num
+  ON revisions(project_id, num);
 CREATE INDEX IF NOT EXISTS idx_revisions_project ON revisions(project_id);

@@ -12,10 +12,15 @@ run_worker_first = true
 binding = "DB"
 database_name = "autoeditor-web"
 database_id = "28a0100d-7996-4d8d-b979-180086527c08"
+migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "autoeditor-media"
+
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "autoeditor-releases"
 
 # Secrets are already set in the Cloudflare dashboard and persist across
 # deploys: KEY_WRAP_SECRET, WORKER_TOKEN, ADMIN_TOKEN. To rotate them:

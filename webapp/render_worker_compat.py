@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from pathlib import Path
+from typing import Mapping
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -27,7 +28,7 @@ def aes_gcm_encrypt(key32: bytes, iv: bytes, plaintext: bytes) -> bytes:
 
 def http_json(url: str, payload: dict | None, token: str = "",
               timeout: int = 60) -> dict:
-    data = json.dumps(payload or {}).encode()
+    data = canonical_json_bytes(payload or {})
     req = urllib.request.Request(url, data=data, headers={
         "content-type": "application/json",
         **({"authorization": f"Bearer {token}"} if token else {})})
@@ -35,21 +36,69 @@ def http_json(url: str, payload: dict | None, token: str = "",
         return json.loads(r.read().decode() or "{}")
 
 
+def canonical_json_bytes(payload: dict) -> bytes:
+    """Stable request bytes used by the Worker's completion receipt."""
+    return json.dumps(payload, sort_keys=True,
+                      separators=(",", ":")).encode()
+
+
 def http_get(url: str, dst: Path, token: str = "",
-             timeout: int = 600) -> None:
+             timeout: int = 600,
+             headers: Mapping[str, str] | None = None) -> None:
     req = urllib.request.Request(url, headers={
-        "authorization": f"Bearer {token}"} if token else {})
+        **({"authorization": f"Bearer {token}"} if token else {}),
+        **dict(headers or {}),
+    })
     with urllib.request.urlopen(req, timeout=timeout) as r, \
             open(dst, "wb") as f:
         while chunk := r.read(1 << 20):
             f.write(chunk)
 
 
-def http_put(url: str, src: Path, token: str = "",
-             timeout: int = 1800) -> None:
-    with open(src, "rb") as f:
-        data = f.read()
-    req = urllib.request.Request(url, data=data, method="PUT", headers={
-        "authorization": f"Bearer {token}"} if token else {})
+def http_put(url: str, src: Path, token: str = "", sha256_hex: str = "",
+             timeout: int = 1800,
+             headers: Mapping[str, str] | None = None) -> None:
+    def chunks():
+        with open(src, "rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                yield chunk
+
+    headers = {
+        **({"authorization": f"Bearer {token}"} if token else {}),
+        **({"x-autoeditor-sha256": sha256_hex} if sha256_hex else {}),
+        **dict(headers or {}),
+        "content-length": str(src.stat().st_size),
+    }
+    req = urllib.request.Request(url, data=chunks(), method="PUT",
+                                 headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         r.read()
+
+
+def http_put_range(url: str, src: Path, offset: int, length: int,
+                   token: str = "", timeout: int = 1800,
+                   headers: Mapping[str, str] | None = None) -> None:
+    """Stream exactly one bounded multipart range without loading it in RAM."""
+    if offset < 0 or length <= 0 or offset + length > src.stat().st_size:
+        raise ValueError("invalid file range")
+
+    def chunks():
+        remaining = length
+        with open(src, "rb") as handle:
+            handle.seek(offset)
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise OSError("source file ended during multipart upload")
+                remaining -= len(chunk)
+                yield chunk
+
+    request_headers = {
+        **({"authorization": f"Bearer {token}"} if token else {}),
+        **dict(headers or {}),
+        "content-length": str(length),
+    }
+    req = urllib.request.Request(url, data=chunks(), method="PUT",
+                                 headers=request_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        response.read()

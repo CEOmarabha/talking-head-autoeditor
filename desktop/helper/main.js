@@ -103,7 +103,7 @@ function commandOutput(command, args) {
   return result.status === 0 ? `${result.stdout || ''}\n${result.stderr || ''}` : '';
 }
 
-function preflight() {
+function preflight({ checkKeystore = true } = {}) {
   const p = runtimePaths();
   const checks = {
     daemon: fs.existsSync(p.daemon),
@@ -122,7 +122,10 @@ function preflight() {
     remotion: fs.existsSync(p.remotionCli) &&
       fs.existsSync(path.join(p.remotionProject, 'src', 'index.ts')),
     browser: fs.existsSync(p.browser),
-    keystore: safeStorage.isEncryptionAvailable(),
+    // Artifact smoke and screenshot capture are noninteractive. On macOS an
+    // ad-hoc acceptance build can block on its first Keychain lookup. Real
+    // setup still checks safeStorage here and again immediately before save.
+    keystore: checkKeystore ? safeStorage.isEncryptionAvailable() : true,
     disk: false,
     codecs: false,
     filters: false,
@@ -176,7 +179,7 @@ function daemonEnv(setup) {
     ELEVENLABS_API_KEY: setup.elevenMode === 'connect' ? setup.elevenKey : '',
     REMOTION_LICENSE_KEY: setup.remotionKey || '',
     AUTOEDITOR_REQUIRE_HYPERFRAMES: '1',
-    AUTOEDITOR_REQUIRE_REMOTION: setup.remotionMode === 'skip' ? '0' : '1',
+    AUTOEDITOR_REQUIRE_REMOTION: '1',
     SSL_CERT_FILE: p.caBundle,
     REQUESTS_CA_BUNDLE: p.caBundle,
     HF_HUB_OFFLINE: '1',
@@ -237,19 +240,21 @@ async function stopDaemon() {
 }
 
 function setupIpc() {
-  ipcMain.handle('helper:state', () => ({
-    configured: !!loadSetup(), running: !!daemon, preflight: preflight(),
-    capabilities: (() => {
-      const setup = loadSetup();
-      return setup ? {
+  ipcMain.handle('helper:state', () => {
+    const screenshotMode = !!process.env.AUTOEDITOR_SCREENSHOT_PATH;
+    const setup = screenshotMode ? null : loadSetup();
+    return {
+      configured: !!setup, running: !!daemon,
+      preflight: preflight({ checkKeystore: !screenshotMode }),
+      capabilities: setup ? {
         pexels: setup.pexelsMode === 'connect',
         pixabay: setup.pixabayMode === 'connect',
         elevenlabs: setup.elevenMode === 'connect',
-        remotion: setup.remotionMode !== 'skip',
+        remotion: true,
         hyperframes: true,
-      } : null;
-    })(),
-  }));
+      } : null,
+    };
+  });
   ipcMain.handle('helper:save', async (_event, input) => {
     await saveSetup(input);
     return { ok: true, preflight: preflight() };
@@ -285,7 +290,7 @@ function smokeTest() {
     env: { ...daemonEnv(setup), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
     windowsHide: true, encoding: 'utf8', timeout: 360000,
   });
-  const checks = preflight();
+  const checks = preflight({ checkKeystore: false });
   const result = {
     packaged: PACKAGED,
     preflight: checks.ok,
@@ -315,7 +320,7 @@ function createWindow() {
       await new Promise((resolve) => setTimeout(resolve, 800));
       if (process.env.AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS === '1') {
         await win.webContents.executeJavaScript(`
-          for (const name of ['pexels-mode', 'pixabay-mode', 'eleven-mode', 'remotion-mode']) {
+          for (const name of ['pexels-mode', 'pixabay-mode', 'eleven-mode']) {
             const choice = document.querySelector('input[name="' + name + '"][value="skip"]');
             choice.checked = true;
             choice.dispatchEvent(new Event('change', {bubbles: true}));

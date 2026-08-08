@@ -1,148 +1,263 @@
-"""Project types -> engine invocation, and the typed edit-proposal contract.
+"""Executable web project types and the DeepSeek revision contract.
 
-Everything DeepSeek can propose is enumerated here. The daemon validates
-every proposal against ALLOWED_OPS deterministically; anything outside the
-schema is rejected before it can touch a render. Ops that change speech,
-duration, licensing, or spend are flagged approval_required and the UI
-must collect an explicit OK first.
+This module is intentionally narrower than the product vocabulary. Every
+project default, preset parameter, and revision operation must resolve to an
+actual engine CLI option. Unsupported product promises fail before rendering.
 """
 from __future__ import annotations
 
-# ---------------------------------------------------------- project types
-# type -> engine args. Internal creator profiles stay available for
-# compatibility, but web projects use the generic mapping + the user's
-# style preset parameters.
+
+class UnsupportedProjectTypeError(ValueError):
+    """The selected product type has no complete engine implementation."""
+
+
+GENERIC_PROFILE_IDS = (
+    "generic_short",
+    "generic_long",
+    "generic_commercial",
+    "generic_podcast",
+    "generic_course",
+    "generic_custom",
+)
+
+
+# The engine has two edit grammars. Profiles make supported products distinct
+# through real cutting, caption, and DeepSeek creative-direction settings.
+# `engine_behavior` is executable-contract documentation for tests and callers.
 PROJECT_TYPES = {
-    "short":      {"style": "short", "aspects": "9x16"},
-    "long":       {"style": "long",  "aspects": "16x9"},
-    "commercial": {"style": "short", "aspects": "9x16"},
-    "podcast":    {"style": "long",  "aspects": "16x9"},
-    "course":     {"style": "long",  "aspects": "16x9"},
-    "clips":      {"style": "short", "aspects": "9x16"},
-    "custom":     {"style": "auto",  "aspects": "auto"},
+    "short": {
+        "supported": True,
+        "style": "short",
+        "aspects": "9x16",
+        "profile": "generic_short",
+        "engine_behavior": "social short/reel profile, short grammar, 9:16",
+    },
+    "long": {
+        "supported": True,
+        "style": "long",
+        "aspects": "16x9",
+        "profile": "generic_long",
+        "engine_behavior": "long talking-head profile, long grammar, 16:9",
+    },
+    "commercial": {
+        "supported": True,
+        "style": "short",
+        "aspects": "9x16",
+        "profile": "generic_commercial",
+        "engine_behavior": "commercial/ad profile, short grammar, 9:16",
+    },
+    "podcast": {
+        "supported": True,
+        "style": "long",
+        "aspects": "16x9",
+        "profile": "generic_podcast",
+        "engine_behavior": "podcast/interview profile, long grammar, 16:9",
+    },
+    "course": {
+        "supported": True,
+        "style": "long",
+        "aspects": "16x9",
+        "profile": "generic_course",
+        "engine_behavior": "course/lesson profile, long grammar, 16:9",
+    },
+    "clips": {
+        "supported": False,
+        "style": None,
+        "aspects": None,
+        "profile": None,
+        "engine_behavior": (
+            "unsupported: the engine cannot select moments and emit multiple "
+            "independently gated clips"
+        ),
+    },
+    "custom": {
+        "supported": True,
+        "style": "auto",
+        "aspects": "auto",
+        "profile": "generic_custom",
+        "engine_behavior": "generic custom profile, automatic grammar/aspect",
+    },
 }
 
 
+_PRESET_CHOICES = {
+    "style": ("auto", "short", "long"),
+    "aspects": ("auto", "9x16", "16x9"),
+    "caption_mode": ("burned", "sidecar"),
+    "visual_mode": ("full", "baseline"),
+    "profile": GENERIC_PROFILE_IDS,
+}
+
+
+def _engine_options(project_type: str,
+                    preset_params: dict | None) -> dict[str, str]:
+    if project_type not in PROJECT_TYPES:
+        raise ValueError(f"unknown project type: {project_type!r}")
+    project = PROJECT_TYPES[project_type]
+    if not project["supported"]:
+        raise UnsupportedProjectTypeError(
+            f"project type {project_type!r} is not executable: "
+            f"{project['engine_behavior']}")
+    if preset_params is None:
+        preset_params = {}
+    if not isinstance(preset_params, dict):
+        raise ValueError("preset parameters must be an object")
+    unknown = sorted(set(preset_params) - set(_PRESET_CHOICES))
+    if unknown:
+        raise ValueError(
+            "unsupported preset parameter(s): " + ", ".join(unknown))
+
+    options = {
+        "style": str(project["style"]),
+        "aspects": str(project["aspects"]),
+        "caption_mode": "burned",
+        "visual_mode": "full",
+        "profile": str(project["profile"]),
+    }
+    for name, value in preset_params.items():
+        if value not in _PRESET_CHOICES[name]:
+            choices = ", ".join(_PRESET_CHOICES[name])
+            raise ValueError(
+                f"preset {name} must be one of: {choices}")
+        options[name] = value
+    return options
+
+
 def engine_args(project_type: str, preset_params: dict | None) -> list[str]:
-    t = PROJECT_TYPES.get(project_type, PROJECT_TYPES["custom"])
-    args = ["--style", t["style"], "--aspects", t["aspects"]]
+    """Resolve a product and preset to exact supported engine CLI arguments."""
+    options = _engine_options(project_type, preset_params)
+    args = [
+        "--style", options["style"],
+        "--aspects", options["aspects"],
+        "--profile", options["profile"],
+    ]
+    if options["caption_mode"] == "sidecar":
+        args.append("--no-burn")
+    if options["visual_mode"] == "baseline":
+        args.append("--no-premium")
     return args
 
 
-# ---------------------------------------------------------- proposal ops
-# op -> (params spec, approval_required, human template)
-# params spec: name -> (type, min, max) for numbers, or list of choices
+# DeepSeek may propose only operations with exact mappings above. There is no
+# speech-cut operation here. The engine's word-protection and QA gates remain
+# responsible for every automatic speech decision.
 ALLOWED_OPS = {
-    "faster_hook": {
-        "params": {"factor": (float, 1.0, 2.0)},
+    "set_edit_style": {
+        "params": {"style": ["auto", "short", "long"]},
         "approval": False,
-        "human": "Tighten the opening (about {factor}x faster pacing)",
+        "human": "Use {style} edit pacing",
     },
-    "remove_segment": {
-        "params": {"start": (float, 0.0, 36000.0),
-                   "end": (float, 0.0, 36000.0)},
-        "approval": True,   # deletes speech
-        "human": "Remove the section from {start}s to {end}s",
-    },
-    "fewer_punchins": {
-        "params": {}, "approval": False,
-        "human": "Use fewer punch-ins",
-    },
-    "more_punchins": {
-        "params": {}, "approval": False,
-        "human": "Use more punch-ins",
-    },
-    "caption_scale": {
-        "params": {"scale": (float, 0.03, 0.09)},
+    "set_aspect_ratio": {
+        "params": {"aspect": ["auto", "9x16", "16x9"]},
         "approval": False,
-        "human": "Set caption size to {scale} of frame height",
+        "human": "Deliver in {aspect}",
     },
-    "broll_density": {
-        "params": {"level": ["less", "normal", "more"]},
+    "set_caption_mode": {
+        "params": {"mode": ["burned", "sidecar"]},
         "approval": False,
-        "human": "Use {level} b-roll",
+        "human": "Use {mode} captions",
     },
-    "cinematic_grade": {
-        "params": {}, "approval": False,
-        "human": "Apply a more cinematic look",
+    "set_visual_mode": {
+        "params": {"mode": ["full", "baseline"]},
+        "approval": False,
+        "human": "Use the {mode} visual treatment",
     },
-    "retarget_duration": {
-        "params": {"seconds": (float, 10.0, 3600.0)},
-        "approval": True,   # changes which speech survives
-        "human": "Re-cut the video to about {seconds} seconds",
-    },
-    "split_into_clips": {
-        "params": {"count": (int, 1, 10)},
-        "approval": True,   # produces new deliverables
-        "human": "Create {count} clips from this video",
-    },
-    "acquire_asset": {
-        "params": {"query": (str, 1, 120),
-                   "kind": ["broll", "music", "sfx", "image"]},
-        "approval": True,   # licensing surface: always show first
-        "human": "Find licensed {kind}: \"{query}\"",
+    "set_edit_profile": {
+        "params": {"profile_id": list(GENERIC_PROFILE_IDS)},
+        "approval": False,
+        "human": "Use the {profile_id} edit profile",
     },
 }
 
 
 def validate_proposal(raw: dict) -> tuple[dict, bool, list[str]]:
-    """Deterministically validate a DeepSeek proposal.
-
-    Returns (clean_proposal, needs_approval, errors). A proposal with any
-    error is unusable; the caller must not partially apply it.
-    """
-    errors: list[str] = []
+    """Validate a model proposal without partially accepting any operation."""
+    if not isinstance(raw, dict):
+        return {}, False, ["proposal must be an object"]
     ops_in = raw.get("operations")
     if not isinstance(ops_in, list) or not ops_in:
         return {}, False, ["proposal has no operations list"]
     if len(ops_in) > 8:
         return {}, False, ["too many operations in one proposal (max 8)"]
-    clean, needs_approval = [], False
-    for i, op in enumerate(ops_in):
-        if not isinstance(op, dict) or "op" not in op:
-            errors.append(f"operation {i} is malformed")
+
+    errors: list[str] = []
+    clean: list[dict] = []
+    needs_approval = False
+    seen: set[str] = set()
+    for index, operation in enumerate(ops_in):
+        if not isinstance(operation, dict) or "op" not in operation:
+            errors.append(f"operation {index} is malformed")
             continue
-        name = op["op"]
+        name = operation["op"]
         spec = ALLOWED_OPS.get(name)
         if not spec:
-            errors.append(f"operation '{name}' is not in the contract")
+            errors.append(
+                f"operation {name!r} is not in the executable contract")
             continue
+        if name in seen:
+            errors.append(f"operation {name!r} appears more than once")
+            continue
+        seen.add(name)
+        allowed_keys = {"op", "human", *spec["params"]}
+        extra_keys = sorted(set(operation) - allowed_keys)
+        if extra_keys:
+            errors.append(
+                f"operation {name!r} has unsupported field(s): "
+                + ", ".join(extra_keys))
+            continue
+
         params = {}
-        ok = True
-        for pname, pspec in spec["params"].items():
-            val = op.get(pname)
-            if isinstance(pspec, list):
-                if val not in pspec:
-                    errors.append(f"{name}.{pname} must be one of {pspec}")
-                    ok = False
+        valid = True
+        for param_name, choices in spec["params"].items():
+            value = operation.get(param_name)
+            if value not in choices:
+                errors.append(
+                    f"{name}.{param_name} must be one of {choices}")
+                valid = False
             else:
-                ptype, lo, hi = pspec
-                try:
-                    val = ptype(val)
-                except (TypeError, ValueError):
-                    errors.append(f"{name}.{pname} missing or wrong type")
-                    ok = False
-                    continue
-                if ptype in (int, float) and not (lo <= val <= hi):
-                    errors.append(f"{name}.{pname}={val} outside "
-                                  f"[{lo}, {hi}]")
-                    ok = False
-                if ptype is str and not (lo <= len(val) <= hi):
-                    errors.append(f"{name}.{pname} length outside bounds")
-                    ok = False
-            params[pname] = val
-        if not ok:
+                params[param_name] = value
+        if not valid:
             continue
-        if name == "remove_segment" and params["end"] <= params["start"]:
-            errors.append("remove_segment end must be after start")
-            continue
-        human = spec["human"].format(**params) if params else spec["human"]
-        clean.append({"op": name, **params, "human": human})
-        needs_approval = needs_approval or spec["approval"]
+        clean.append({
+            "op": name,
+            **params,
+            "human": spec["human"].format(**params),
+        })
+        needs_approval = needs_approval or bool(spec["approval"])
+
     if errors:
         return {}, False, errors
-    return {"operations": clean,
-            "summary": raw.get("summary", "")[:400]}, needs_approval, []
+    return {
+        "operations": clean,
+        "summary": str(raw.get("summary") or "")[:400],
+    }, needs_approval, []
+
+
+def revision_engine_args(project_type: str, preset_params: dict | None,
+                         proposal: dict) -> list[str]:
+    """Apply a validated approved proposal to the project's engine options."""
+    clean, needs_approval, errors = validate_proposal(proposal)
+    if errors:
+        raise ValueError("revision proposal rejected: " + "; ".join(errors))
+    if needs_approval:
+        raise ValueError("revision proposal still requires approval")
+
+    params = dict(preset_params or {})
+    for operation in clean["operations"]:
+        name = operation["op"]
+        if name == "set_edit_style":
+            params["style"] = operation["style"]
+        elif name == "set_aspect_ratio":
+            params["aspects"] = operation["aspect"]
+        elif name == "set_caption_mode":
+            params["caption_mode"] = operation["mode"]
+        elif name == "set_visual_mode":
+            params["visual_mode"] = operation["mode"]
+        elif name == "set_edit_profile":
+            params["profile"] = operation["profile_id"]
+        else:  # pragma: no cover - validate_proposal owns this invariant
+            raise ValueError(f"no engine mapping for operation {name!r}")
+    return engine_args(project_type, params)
 
 
 PROPOSAL_PROMPT = """You are the edit planner for a verified video editor.
@@ -158,6 +273,10 @@ Respond with ONLY a JSON object:
 Allowed operations and params (use ONLY these):
 {contract}
 
-Rules: max 8 operations. Prefer the smallest change that satisfies the
-request. If the request cannot be expressed with these operations, return
+Rules: max 8 operations and never repeat an operation. These operations can
+change edit pacing, delivery framing, caption delivery, the complete visual
+layer, or the generic edit profile. They cannot delete speech, target a new
+duration, split clips, acquire a specific asset, resize captions, apply a
+grade, or tune individual punch-ins or b-roll. If the request cannot be
+expressed exactly, return
 {{"summary": "cannot", "operations": []}}."""

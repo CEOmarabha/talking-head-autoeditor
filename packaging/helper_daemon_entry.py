@@ -12,6 +12,57 @@ import tempfile
 from pathlib import Path
 
 
+def revision_contract_check() -> bool:
+    """Prove the frozen daemon contains the executable revision contract."""
+    from webapp.render_worker.project_types import (
+        ALLOWED_OPS,
+        GENERIC_PROFILE_IDS,
+        PROJECT_TYPES,
+        revision_engine_args,
+    )
+
+    expected_ops = {
+        "set_edit_style",
+        "set_aspect_ratio",
+        "set_caption_mode",
+        "set_visual_mode",
+        "set_edit_profile",
+    }
+    expected_profiles = (
+        "generic_short",
+        "generic_long",
+        "generic_commercial",
+        "generic_podcast",
+        "generic_course",
+        "generic_custom",
+    )
+    supported_projects = {
+        name for name, contract in PROJECT_TYPES.items()
+        if contract.get("supported")
+    }
+    mapped = revision_engine_args("custom", None, {
+        "operations": [
+            {"op": "set_edit_style", "style": "short"},
+            {"op": "set_aspect_ratio", "aspect": "9x16"},
+            {"op": "set_caption_mode", "mode": "sidecar"},
+            {"op": "set_visual_mode", "mode": "baseline"},
+            {"op": "set_edit_profile", "profile_id": "generic_commercial"},
+        ],
+    })
+    return (
+        set(ALLOWED_OPS) == expected_ops
+        and tuple(GENERIC_PROFILE_IDS) == expected_profiles
+        and supported_projects == {
+            "short", "long", "commercial", "podcast", "course", "custom",
+        }
+        and PROJECT_TYPES.get("clips", {}).get("supported") is False
+        and mapped == [
+            "--style", "short", "--aspects", "9x16",
+            "--profile", "generic_commercial", "--no-burn", "--no-premium",
+        ]
+    )
+
+
 def smoke_test() -> int:
     required = {
         "engine": os.environ.get("AUTOEDITOR_ENGINE", ""),
@@ -32,6 +83,10 @@ def smoke_test() -> int:
     }
     checks = {name: bool(value) and Path(value).exists()
               for name, value in required.items()}
+    try:
+        checks["typed_deepseek_revision_contract"] = revision_contract_check()
+    except Exception:
+        checks["typed_deepseek_revision_contract"] = False
     print(json.dumps({"event": "helper-daemon-smoke", "checks": checks}))
     return 0 if all(checks.values()) else 1
 

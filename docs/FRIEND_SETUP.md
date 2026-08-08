@@ -9,6 +9,10 @@ Allow 10 to 20 minutes for the first setup. Normal edits are much simpler:
 open the Helper, open the website, choose a video type, upload footage, and
 press **Make It**.
 
+Windows is the first acceptance target. The Mac app has the same accounts,
+video types, edit controls, local rendering, and QA behavior. Only the
+installer steps differ.
+
 ## What you need
 
 - A 64-bit Windows 10 or 11 PC, or a Mac running macOS 12 or newer.
@@ -20,15 +24,17 @@ press **Make It**.
 - Your private invite code from Omar.
 - A DeepSeek account and API key. This one is required because DeepSeek plans
   the edit and handles change requests.
-- Pexels and Pixabay accounts only if you want stock footage from those
-  services. The Helper lets you skip either one.
-- An ElevenLabs account only if you want generated sound effects. The Helper
-  lets you skip it and keep using AutoEditor’s built-in sound effects.
+- A required Connect-or-Skip choice for Pexels and Pixabay. Connect both for
+  the full stock-footage library. If you skip one, AutoEditor clearly disables
+  that source and cannot download from it.
+- A required Connect-or-Skip choice for ElevenLabs. If you skip the account,
+  generated ElevenLabs sound effects are disabled and only bundled effects
+  remain.
 - No HyperFrames account. HyperFrames renders locally and is already included.
 - Usually no Remotion account. Individuals and organizations of up to three
   people can select the free license without signing up. Larger collaborations
-  or organizations need a paid Remotion license, or they can skip Remotion
-  diagrams.
+  or organizations need a paid Remotion license. Remotion and HyperFrames are
+  built-in editing capabilities and are required.
 
 ## Windows setup
 
@@ -49,8 +55,8 @@ press **Make It**.
 
 If Windows SmartScreen says **Windows protected your PC** on a final friend
 release, stop and tell Omar. A tagged release is not allowed to publish unless
-its Windows signature passes. Do not train friends to bypass SmartScreen for a
-release build.
+its Windows signature passes and the signed candidate is physically accepted.
+Do not train friends to bypass SmartScreen for a release build.
 
 ## Mac setup
 
@@ -70,7 +76,8 @@ Omar. Do not use a right-click bypass for the final release.
 ## Required DeepSeek account
 
 DeepSeek is the only account you cannot skip. Without it, AutoEditor cannot
-plan edits or understand requests such as “make the opening faster.”
+plan edits or understand supported requests such as “make it vertical” or
+“use the commercial edit profile.”
 
 1. Open https://platform.deepseek.com/sign_up.
 2. Create an account with an email address and password, then complete any
@@ -96,9 +103,9 @@ DeepSeek chat.
 
 ## Pexels stock footage
 
-Pexels is not required. Connect it for automatic Pexels video clips, or select
-**Skip Pexels**. If you skip it, no Pexels results will be searched or
-downloaded.
+You must choose **Connect Pexels** or **Skip Pexels** during setup. Connect it
+for the full editing resource set. If you skip it, no Pexels result can be
+searched or downloaded and the Helper shows that source as unavailable.
 
 1. In the Helper, keep **Connect Pexels** selected.
 2. Press **Open Pexels signup**.
@@ -119,8 +126,9 @@ the final use.
 
 ## Pixabay stock footage
 
-Pixabay is not required. Connect it for a second stock source, or select
-**Skip Pixabay**. If skipped, no Pixabay result will be searched or downloaded.
+You must choose **Connect Pixabay** or **Skip Pixabay** during setup. Connect
+it for the full editing resource set. If skipped, no Pixabay result can be
+searched or downloaded and the Helper shows that source as unavailable.
 
 1. In the Helper, keep **Connect Pixabay** selected.
 2. Press **Open Pixabay signup**.
@@ -138,10 +146,10 @@ published video.
 
 ## ElevenLabs generated sound effects
 
-ElevenLabs is not required. Connect it when you want AutoEditor to generate a
-sound effect for a specific moment. Select **Skip ElevenLabs** if you do not
-want to create an account. If skipped, generated ElevenLabs sounds are
-unavailable, but AutoEditor can still use its bundled sound effects.
+You must choose **Connect ElevenLabs** or **Skip ElevenLabs** during setup.
+Connect it when you want AutoEditor to generate a sound effect for a specific
+moment. If you do not want an account, select Skip. Generated ElevenLabs sounds
+then stay unavailable, but AutoEditor can still use bundled sound effects.
 
 1. In the Helper, keep **Connect ElevenLabs** selected.
 2. Press **Open ElevenLabs signup**.
@@ -165,7 +173,8 @@ HyperFrames is installed and checked automatically. It does not need a local
 rendering account. The Helper renders a tiny HyperFrames graphic during setup;
 setup fails if the real renderer does not work.
 
-For Remotion, choose one option in the Helper:
+For Remotion, choose the license that applies in the Helper. Remotion is
+required because AutoEditor uses it for animated diagrams and visual systems:
 
 - **Free license:** choose this if you are an individual or your organization
   has one to three people. No Remotion account is needed.
@@ -173,8 +182,6 @@ For Remotion, choose one option in the Helper:
   must follow the Remotion license page, purchase the applicable plan, open the
   Remotion dashboard, copy the public `rm_pub_...` rendering license key, and paste it into
   the Helper.
-- **Skip Remotion:** Remotion diagrams are unavailable, but HyperFrames and all
-  other connected sources remain available.
 
 The current rules and prices are at
 https://www.remotion.dev/docs/license/pricing. The Helper runs a real Remotion
@@ -190,7 +197,8 @@ and success or failure. It does not receive the rendered media or its content.
    validates FFmpeg codecs and filters, and renders tiny HyperFrames and
    Remotion samples.
 4. A green check means the capability is installed and working. A yellow
-   **Skipped** row means you deliberately chose not to connect that source.
+   **Skipped** row can appear only for an account-backed source such as Pexels,
+   Pixabay, or ElevenLabs. HyperFrames and Remotion must both pass.
 5. Leave AutoEditor Helper open while an edit is running. You can close it
    when you are finished for the day.
 
@@ -201,14 +209,17 @@ and success or failure. It does not receive the rendered media or its content.
 3. Choose what you are making:
    - **Short / Reel** for vertical TikTok, Instagram Reel, or YouTube Short.
    - **Long Talking Head** for a YouTube lesson, commentary, or presentation.
-   - **Commercial / Ad** for a short product or service promotion.
+   - **Commercial / Ad** for an offer-focused product or service promotion.
    - **Podcast / Interview** for a conversation or multi-speaker recording.
    - **Course / Lesson** for structured teaching content.
-   - **Turn Long Video Into Clips** to select short moments from a longer file.
    - **Custom** when you want to describe a different result.
-4. Drop in the footage. Files upload to private AutoEditor cloud storage so
-   the website and your local Helper can exchange them. The actual render runs
-   on your computer.
+   Each choice uses its own generic profile. The profiles are Social Short,
+   Long Talking Head, Commercial, Podcast, Course, and Custom. They do not use
+   another friend’s name or personal creator profile. PSE remains a separate
+   owner product.
+4. Drop in the footage. The browser uploads it to private AutoEditor cloud
+   storage. Your Helper downloads the job and renders it on your computer,
+   then uploads the finished MP4 and QA report so the website can show them.
 5. Paste the exact script if you have it. This makes transcript and word-safety
    checks stricter.
 6. Press **Make It** and leave the Helper running.
@@ -220,24 +231,38 @@ and success or failure. It does not receive the rendered media or its content.
 
 ## Ask DeepSeek for changes
 
-Use normal language in **Ask for changes**. Examples:
+Use normal language in **Ask for changes**. This release can apply five kinds
+of change, each tied to a real engine setting:
 
-- “Make the first ten seconds faster.”
-- “Use fewer punch-ins.”
-- “Make the captions larger.”
-- “Replace the stock clip at 18 seconds with something about construction.”
-- “Remove the part where I repeat the pricing.”
-- “Turn this into three separate Shorts.”
+1. Change edit pacing to **Auto**, **Short**, or **Long**.
+2. Change delivery to **Auto**, **9:16**, or **16:9**.
+3. Use **Burned captions** or a **Sidecar caption file**.
+4. Use **Full visuals** or **Baseline visuals**. Baseline intentionally turns
+   off the premium punch-in, b-roll, and graphic layer as one complete mode.
+5. Switch among the six generic profiles: Social Short, Long Talking Head,
+   Commercial, Podcast, Course, and Custom.
 
-AutoEditor converts the request into a typed edit proposal. A change that can
-affect spoken words or remove content must show what will happen and wait for
-approval. DeepSeek cannot bypass transcript locks or QA checks.
+Examples that work are “make it 9:16,” “use long pacing,” “give me sidecar
+captions,” “use baseline visuals,” and “switch to the podcast profile.”
+
+This release rejects requests that do not have an exact engine control. It
+cannot remove a spoken segment, rewrite which words survive, target a new
+duration, split one upload into several clips, choose one specific stock shot,
+resize captions, apply a separate cinematic grade, or tune only the punch-ins
+or b-roll density. DeepSeek must say it cannot apply that request. It must not
+rerender the same edit and claim the change happened.
+
+Every accepted change reruns the speech-protection and QA gates. DeepSeek
+cannot bypass them.
 
 ## Storage and privacy
 
 - Rendering happens on the friend’s Windows PC or Mac.
-- Uploaded footage and finished outputs also live in private Cloudflare R2
-  storage so the website can hand work to the Helper and return the result.
+- The browser copy of uploaded footage, finished outputs, and QA files lives in
+  private Cloudflare R2 storage so the website and Helper can exchange it.
+- The Helper also creates temporary local work files and provider caches while
+  editing. Cloud storage is still required for the website workflow. A local
+  render does not mean the only copy stays on the computer.
 - Press **Delete Project and Cloud Files** to remove that project’s uploads,
   outputs, and QA files from AutoEditor storage. Deletion waits if an edit is
   currently running.
@@ -252,6 +277,53 @@ approval. DeepSeek cannot bypass transcript locks or QA checks.
 
 Do not upload confidential client footage until Omar has confirmed the current
 privacy policy, retention policy, and provider agreements match that job.
+There is no documented automatic deletion period yet. Delete finished test
+projects yourself until Omar publishes one.
+
+## Change accounts, update, reinstall, or uninstall
+
+AutoEditor Helper does not update itself. Omar will tell you when a newer signed
+version has passed testing. Never install a Helper update from a link sent by
+someone else.
+
+To update or reinstall on Windows:
+
+1. Wait for any running edit to finish, then close AutoEditor Helper.
+2. Sign in to the private AutoEditor website and download the current **Windows
+   PC** installer.
+3. Open the downloaded `.exe`, verify the expected publisher, and let it replace
+   the existing app.
+4. Reopen AutoEditor Helper. Your encrypted setup normally remains in place.
+
+To update or reinstall on Mac:
+
+1. Wait for any running edit to finish, then quit AutoEditor Helper.
+2. Download the current DMG for the correct Mac chip from the private website.
+3. Open the DMG and drag AutoEditor Helper into Applications. Choose **Replace**
+   when macOS asks.
+4. Reopen the app. Your encrypted setup normally remains in place.
+
+To change the Helper Setup code or locally saved Pexels, Pixabay, ElevenLabs,
+or Remotion choice, open the Helper and press **Change Accounts or Setup**. This
+stops the Helper and removes its encrypted setup file, then takes you through
+setup again. It does not delete website projects or remove the DeepSeek key from
+your AutoEditor website account. Revoke an old provider key on that provider’s
+website if you no longer want it to work.
+
+To remove AutoEditor completely:
+
+1. Delete any website projects and cloud files you no longer want. Uninstalling
+   the Helper does not delete cloud projects.
+2. In the Helper, press **Change Accounts or Setup** to remove the encrypted
+   local setup, then close the app.
+3. On Windows, open **Settings**, **Apps**, **Installed apps**, find
+   **AutoEditor Helper**, open its menu, and press **Uninstall**.
+4. On Mac, quit AutoEditor Helper, open Applications, and move it to the Trash.
+5. The uninstaller intentionally leaves local work and cache files in case you
+   reinstall. For a full local cleanup, open the Run box on Windows and remove
+   `%APPDATA%\AutoEditor Helper`, or on Mac use Finder, **Go**, **Go to Folder**,
+   and move `~/Library/Application Support/AutoEditor Helper` to the Trash.
+   Do this only after every edit is finished and anything you need is downloaded.
 
 ## If something fails
 

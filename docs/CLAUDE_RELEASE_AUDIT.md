@@ -1,4 +1,4 @@
-# AutoEditor — Independent Deep Release Audit
+# AutoEditor: Independent Deep Release Audit
 
 Reviewer: Claude (Cowork), independent final review per
 `docs/CLAUDE_DEEP_RELEASE_REVIEW_PROMPT.md`.
@@ -8,6 +8,11 @@ AutoEditor release pipeline")   Upstream: none tracked.
 Worktree: clean except untracked `.cache/`, `docs/RELEASE_V2_1.md`,
 `docs/examples/V2_1_REGRESSION_PROOFS.md` (left untouched, as instructed).
 Audit date: 2026-08-07.
+
+This is a historical snapshot of `bb8fbf2`. The generic six-profile and
+five-operation revision contract was added later. Use
+`docs/RELEASE_GATE_STATUS.md` for current status and rerun every affected gate
+before release.
 
 Method: four independent specialist reviewers (web/worker security; engine +
 DeepSeek gating; packaging/supply-chain/licensing; friend-experience +
@@ -38,7 +43,7 @@ hygiene, and the account/isolation logic. Details below.
 - Python safety + web contract tests: `93 passed, 17 subtests` via
   `python3 -m pytest tests/ webapp/tests/` in a clean container with the
   engine deps installed. (Gate doc says "78 Python + 15 web"; the current
-  tree totals 93 across both suites — the count grew, claim not overstated.)
+  tree totals 93 across both suites; the count grew, claim not overstated.)
 - Desktop Helper tests: all four files pass individually via `node --test`
   (`clip-catalog`, `helper-setup`, `platform-contracts`, `process-tree`).
 - Engine/DeepSeek gating invariants CONFIRMED by reading the real code paths
@@ -48,18 +53,16 @@ hygiene, and the account/isolation logic. Details below.
   `promote_outputs` runs only on pass, failure exits 2 with `needs_review`,
   and every gate function defaults to `{"ok": False}` on missing data. The AI
   cannot bypass speech or QA gates.
-- Py/JS edit-proposal contract PARITY confirmed: `webapp/render_worker/
-  project_types.py` `ALLOWED_OPS` and `webapp/worker/src/index.js`
-  `ALLOWED_OPS` match op-for-op on bounds and approval flags; unknown ops
-  reject the whole proposal in both; speech/duration/licensing ops require
-  approval in both; the Worker re-validates the daemon's proposal at
-  job-complete.
+- Historical Py/JS proposal parity was confirmed at `bb8fbf2`. That allowlist
+  is superseded. The current release must separately prove parity for the five
+  executable generic operations, server-bound proposal delivery, and rejection
+  of speech, duration, clip-splitting, and other unmapped requests.
 - Prompt-injection safety confirmed: transcript/filenames reach DeepSeek
   prompts, but deterministic validation AFTER the model prevents the model
   from widening its own permissions or exfiltrating the key (key never enters
   a prompt; lives only in the Authorization header / child env).
 - Dependency locks: `packaging/requirements-{windows-x64,mac-arm64,mac-x64}
-  .txt` — every package version-pinned with exactly one platform-correct
+  .txt`: every package version-pinned with exactly one platform-correct
   `--hash`; no manylinux wheels in the mac locks; per-platform hash
   differences verified against PyPI (e.g. `ctranslate2 4.8.1`). Claim
   CONFIRMED.
@@ -79,7 +82,7 @@ hygiene, and the account/isolation logic. Details below.
   below).
 - Attribution PASS: "Omar Marabha / @CEOmarabha" appears tastefully in the
   website footer, Helper footer, `desktop/package.json`, the helper
-  electron-builder metadata, and engine result metadata — not watermarked on
+  electron-builder metadata, and engine result metadata, not watermarked on
   user videos. Guarded by tests.
 
 --------------------------------------------------------------------------
@@ -100,7 +103,7 @@ and preserve the fail-closed QA/speech protections. Post-fix: worker parses,
    `referrer-policy: no-referrer`, `x-content-type-options: nosniff`.
 
 2. [LOW-MED] No rate limit on the DeepSeek-spending endpoints (`/me/key`,
-   `/assistant`, `/chat`) — only `/auth/signin` was capped.
+   `/assistant`, `/chat`); only `/auth/signin` was capped.
    Fix: per-user `withinRateLimit` buckets on `/me/key` (20 / 10 min),
    `/assistant` and `/chat` (40 / 5 min).
    Proof: hammering `/me/key` returned twenty `422`s then `429` exactly at the
@@ -154,12 +157,12 @@ and preserve the fail-closed QA/speech protections. Post-fix: worker parses,
    a `release.yml` staging step that copies `packaging/THIRD_PARTY_NOTICES.md`
    and `LICENSE` into `desktop/staging/licenses/`. This closes the notices
    gap; it does NOT close the GPL corresponding-source obligation (owner/legal
-   — see below).
+   (see below).
 
 --------------------------------------------------------------------------
 ## Confirmed defects NOT fixed here (documented for the owner)
 
-These are in the desktop "Ryan/PSE" product CI (`.github/workflows/
+These are in the separate desktop/PSE product CI (`.github/workflows/
 release.yml`), a different deliverable from the friend Helper. They are real
 and should be fixed before that product ships, but are lower priority for the
 Helper release and require external SHA/checksum lookups and CI runs I cannot
@@ -182,18 +185,18 @@ reproduce or test offline. The friend Helper workflow
   pass the gate and fail on a user machine. Fix: stop swallowing, or add a
   real transcribe smoke test to the build.
 
-Non-blocking hardening notes (not defects): the web render path uploads a
-QA-failed artifact to a clean R2 `.../{rev}.mp4` key and relies on
-`qa_pass=0`/`needs review` (the on-disk `*.UNVERIFIED` quarantine does not
-survive into R2 — consider an `_UNVERIFIED` key); v1 revision application is a
-full conservative re-render rather than differential op application (safe
-today, watch for drift when ops become real).
+Non-blocking hardening note: the web render path uploads a QA-failed artifact
+to a clean R2 `.../{rev}.mp4` key and relies on `qa_pass=0`/`needs review` (the
+on-disk `*.UNVERIFIED` quarantine does not survive into R2; consider an
+`_UNVERIFIED` key). At this audit commit, revision application was a default
+rerender. The later generic contract supersedes that path and requires fresh
+Worker, daemon, browser, and signed-artifact verification.
 
 --------------------------------------------------------------------------
 ## Licensing / legal (separated from code defects)
 
 Genuine legal uncertainty requiring Omar/counsel, correctly listed as BLOCKED
-in `RELEASE_GATE_STATUS.md` — not a false claim:
+in `RELEASE_GATE_STATUS.md`; this is not a false claim:
 
 - FFmpeg + x264 (GPL-2.0): bundling in a distributed installer triggers a
   corresponding-source obligation. `THIRD_PARTY_NOTICES.md` is inventory-only
@@ -230,7 +233,7 @@ in `RELEASE_GATE_STATUS.md` — not a false claim:
 
 1. Configure signing secrets per `docs/OWNER_SIGNING_SETUP.md` (Apple
    Developer ID + notarization; Windows Authenticode / Azure Trusted
-   Signing). BLOCKED gate — needs accounts/certs.
+   Signing). This BLOCKED gate needs accounts or certificates.
 2. Build the SIGNED Windows `.exe` and NOTARIZED+STAPLED macOS DMGs from this
    revision via `helper-release.yml`.
 3. On a clean Windows 11 machine and a real Mac (Apple Silicon + Intel):
@@ -245,4 +248,4 @@ in `RELEASE_GATE_STATUS.md` — not a false claim:
    supply-chain items above.
 
 Do not publish an unsigned artifact. A friend release is not "ready" until
-items 1–4 are closed against the exact signed installers.
+items 1 to 4 are closed against the exact signed installers.

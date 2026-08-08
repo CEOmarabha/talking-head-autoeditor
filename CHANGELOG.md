@@ -1,17 +1,21 @@
-## v2.2.0-dev (friend-ready desktop build)
+## v2.2.0-dev (AutoEditor Helper candidate)
 
-- Creator profile packages (`profiles/`, `--profile`): pse, ryan_duffy,
-  ryan_humes, shared_skit. Global brand.yaml stays as legacy fallback.
-- Desktop app (`desktop/`): Ryan Reels Editor / PSE AutoEditor from one
-  codebase; OS-keystore key storage; transcript review; QA-gated delivery
-  with explicit Needs Review; auto-update channels.
+- Six generic Helper profiles (`profiles/`, `--profile`): `generic_short`,
+  `generic_long`, `generic_commercial`, `generic_podcast`, `generic_course`,
+  and `generic_custom`. PSE and creator-specific profiles stay outside the
+  friend installer.
+- AutoEditor Helper (`desktop/helper/`): OS-keystore account storage, local
+  rendering, website job pickup, and QA-gated delivery with an explicit Needs
+  Review state.
 - `--transcribe-only`, JSON progress events (`AUTOEDITOR_PROGRESS_JSON`),
   `AUTOEDITOR_FFMPEG`/`AUTOEDITOR_FFPROBE`/`AUTOEDITOR_PROFILES_DIR`/
   `AUTOEDITOR_PACKAGED` for packaged builds; Windows font discovery.
 - Fixed: quoted "#RRGGBB" values in yaml configs were parsed as comments.
 - `scripts/profile_measure.py`: measure a creator's style from finished
   reels into a profile draft.
-- CI: `release.yml` builds Mac/Windows installers per product tag.
+- CI: `helper-release.yml` builds signed Windows and Mac candidates per Helper
+  tag. `helper-promote.yml` can expose them only after Omar physically accepts
+  that exact tag, commit, workflow run, and receipt set.
 
 # Changelog
 

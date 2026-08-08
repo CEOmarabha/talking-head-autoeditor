@@ -6,6 +6,7 @@ lets PyInstaller resolve imports cleanly.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -50,7 +51,59 @@ def _asr_secondary(media: str, output: str) -> None:
         json.dump({"text": text}, handle)
 
 
+def _self_test() -> int:
+    """Prove required native backends survived the PyInstaller freeze."""
+    required = (
+        "av", "ctranslate2", "faster_whisper", "huggingface_hub",
+        "numpy", "onnxruntime", "PIL", "tokenizers",
+    )
+    checks: dict[str, bool] = {}
+    errors: dict[str, str] = {}
+    for name in required:
+        try:
+            importlib.import_module(name)
+            checks[name] = True
+        except Exception as exc:  # pragma: no cover - exercised frozen in CI
+            checks[name] = False
+            errors[name] = type(exc).__name__
+    try:
+        from autoeditor.pipeline import low_speech_cutter_self_test
+
+        checks["in_process_low_speech_cutter"] = bool(
+            low_speech_cutter_self_test()
+        )
+        if not checks["in_process_low_speech_cutter"]:
+            errors["in_process_low_speech_cutter"] = "contract returned false"
+    except Exception as exc:  # pragma: no cover - exercised frozen in CI
+        checks["in_process_low_speech_cutter"] = False
+        errors["in_process_low_speech_cutter"] = type(exc).__name__
+    try:
+        from autoeditor import creative_contract
+
+        contract_hash = creative_contract.contract_sha256()
+        checks["creative_contract_sha256"] = (
+            isinstance(contract_hash, str)
+            and len(contract_hash) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in contract_hash
+            )
+        )
+        if not checks["creative_contract_sha256"]:
+            errors["creative_contract_sha256"] = (
+                "contract returned invalid hash"
+            )
+    except Exception as exc:  # pragma: no cover - exercised frozen in CI
+        checks["creative_contract_sha256"] = False
+        errors["creative_contract_sha256"] = type(exc).__name__
+    print(json.dumps({"event": "autoeditor-engine-self-test",
+                      "checks": checks, "errors": errors}, sort_keys=True))
+    return 0 if all(checks.values()) else 1
+
+
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        raise SystemExit(_self_test())
     if len(sys.argv) == 4 and sys.argv[1] == "--asr-words":
         _asr_words(sys.argv[2], sys.argv[3])
         return

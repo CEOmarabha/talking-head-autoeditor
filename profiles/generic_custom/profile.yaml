@@ -1,0 +1,40 @@
+# Neutral custom profile. Users can select a real edit style, aspect, caption
+# mode, visual mode, or another bundled generic profile through DeepSeek.
+
+meta:
+  display_name: "Custom"
+  status: "approved"
+  description: "Neutral automatic edit with explicit safe revision controls"
+
+brand:
+  accent: "#E8C7A7"
+  text: "#FFFFFF"
+  background: "#000000"
+  font_pattern: "WorkSans"
+  caption_scale: 0.045
+  caption_words: 4
+
+rules:
+  min_pause_long: 0.90
+  min_pause_short: 0.55
+  pad_head: 0.30
+  pad_tail: 0.35
+  retake_min_words: 3
+  retake_max_gap: 14.0
+  sync_tolerance_ms: 25
+  word_integrity_min: 0.96
+  require_script_gate: true
+  target_lufs: -14.0
+
+style:
+  default_style: "auto"
+
+creative:
+  mode: "generic custom video"
+  opening: "Open on the strongest complete spoken idea that matches the source performance."
+  performance: "Keep speech meaning and source performance primary."
+  punch_ins: "Use restrained emphasis only on clear hooks, transitions, reveals, or verdicts."
+  broll: "Use supplied or licensed footage only when it directly matches the nearby speech."
+  graphics: "Use concise transcript-grounded cards and diagrams for spoken information."
+  sound: "Keep dialogue clear and sound design restrained."
+  avoid: "No invented claims, labels, story beats, or unsupported visual meaning."

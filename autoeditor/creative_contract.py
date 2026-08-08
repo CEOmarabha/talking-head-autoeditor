@@ -9,7 +9,6 @@ import hashlib
 import json
 import math
 import re
-from pathlib import Path
 from typing import Iterable
 
 PROTOCOL_VERSION = "pse-creative-edl/2026-07-28.1"
@@ -69,6 +68,29 @@ _NUMBER_SCALES = {
     "billion": 1_000_000_000.0,
 }
 
+# Receipts need the same contract identity in source checkouts and PyInstaller
+# builds, where this module's .py file does not exist. Keep this payload limited
+# to explicit protocol/schema constants, and bump PROTOCOL_VERSION whenever the
+# validator's externally visible semantics change.
+_CONTRACT_PAYLOAD = json.dumps(
+    {
+        "protocol_version": PROTOCOL_VERSION,
+        "timeline_space": TIMELINE_SPACE,
+        "required_top_level": REQUIRED_TOP_LEVEL,
+        "event_keys": {
+            layer: sorted(keys) for layer, keys in _EVENT_KEYS.items()
+        },
+        "spacing": _SPACING,
+        "span_limits": _SPAN_LIMITS,
+        "viz_templates": sorted(VIZ_TEMPLATES),
+        "graphic_kinds": sorted(GRAPHIC_KINDS),
+    },
+    ensure_ascii=True,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8")
+_CONTRACT_SHA256 = hashlib.sha256(_CONTRACT_PAYLOAD).hexdigest()
+
 
 class CreativeContractError(ValueError):
     """The model output cannot safely or faithfully drive the renderer."""
@@ -107,7 +129,8 @@ def transcript_sha256(words: list[dict]) -> str:
 
 
 def contract_sha256() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    """Return the deterministic protocol fingerprint used in receipts."""
+    return _CONTRACT_SHA256
 
 
 def edl_sha256(edl: dict) -> str:
