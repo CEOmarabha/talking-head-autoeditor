@@ -5,6 +5,39 @@ or Mac `.dmg`. Signing is a one-time owner setup in Microsoft, Apple, and
 GitHub so their computers can verify the installer came from Omar and was not
 changed after it was built.
 
+## Protect signing credentials before creating them
+
+Do this before adding any Apple, Windows, Azure, PFX, or release-candidate
+secret. The workflow already names `helper-windows-signing` and
+`helper-macos-signing`; the GitHub environments must exist and be protected
+before a `helper-v*` tag is created.
+
+1. In GitHub, open **Settings**, **Environments**, and create
+   `helper-windows-signing` and `helper-macos-signing`.
+2. Add a required reviewer to each environment. If the repository is private
+   and the current GitHub plan does not support required reviewers and
+   environment secrets, stop and upgrade the plan before adding credentials.
+3. Under **Deployment branches and tags**, choose **Selected branches and
+   tags**. Add only the tag pattern `helper-v*`. Do not allow every branch,
+   every tag, or the default branch.
+4. Open **Settings**, **Rules**, **Rulesets**, and create an active tag ruleset
+   for `helper-v*`. Restrict tag creation, updates, and deletion. Give bypass
+   permission only to Omar or a dedicated release role. A signing tag must
+   point to a reviewed commit on the protected default branch.
+5. Put Windows secrets only in `helper-windows-signing`. Put Apple secrets only
+   in `helper-macos-signing`. Put the candidate-upload secrets in both signing
+   environments because both signed jobs upload their own candidate.
+6. Remove any repository-level copies of those secrets. Environment approval
+   must happen before a signing job can read them.
+
+GitHub documents that environment secrets are limited to jobs that reference
+the environment and stay unavailable until configured protection rules pass.
+The tag ruleset separately prevents unapproved creation, replacement, or
+deletion of a matching release tag.
+
+- [GitHub deployment environments and secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
+- [GitHub branch and tag ruleset controls](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+
 ## Windows, recommended: Azure Artifact Signing
 
 Microsoft renamed Trusted Signing to Azure Artifact Signing. This route avoids
@@ -40,8 +73,8 @@ Check the current price and identity-eligibility list before opening the account
     **Access control (IAM)**, and assign the CI application the **Artifact
     Signing Certificate Profile Signer** role. Keep identity-validation roles
     on the owner account, not the CI application.
-12. In GitHub, open the repository, then **Settings**, **Secrets and
-    variables**, **Actions**, **New repository secret**. Add all seven secrets:
+12. In GitHub, open **Settings**, **Environments**,
+    **helper-windows-signing**, then add all seven as environment secrets:
 
     - `AZURE_TENANT_ID`: Directory tenant ID from step 9.
     - `AZURE_CLIENT_ID`: Application client ID from step 9.
@@ -80,8 +113,8 @@ or identity type.
    a password-protected `.pfx`. Never commit it to Git.
 4. Convert the PFX to base64 locally or use a private authenticated download
    URL supported by Electron Builder.
-5. Add `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` as GitHub Actions repository
-   secrets.
+5. Add `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` only as
+   `helper-windows-signing` environment secrets.
 6. Leave the seven Azure secrets unset. The workflow uses PFX signing only when
    the complete Azure setup is absent.
 
@@ -104,14 +137,16 @@ Friends do not need Apple developer accounts.
 3. Open **Keychain Access**, find that Developer ID Application certificate
    with its private key, export both as a password-protected `.p12`, and keep
    the file outside the repository.
-4. Base64-encode the `.p12` as one line. Save that value in the GitHub secret
-   `CSC_LINK` and its export password in `CSC_KEY_PASSWORD`.
+4. Base64-encode the `.p12` as one line. Save that value only in the
+   `helper-macos-signing` environment secret `CSC_LINK`, and save its export
+   password there as `CSC_KEY_PASSWORD`.
 5. At [Apple Account](https://account.apple.com/), open **Sign-In and Security**,
    choose **App-Specific Passwords**, create one for AutoEditor notarization,
-   and save it as `APPLE_APP_SPECIFIC_PASSWORD`.
-6. Save the Apple ID email as `APPLE_ID`.
+   and save it as the `helper-macos-signing` environment secret
+   `APPLE_APP_SPECIFIC_PASSWORD`.
+6. Save the Apple ID email in that environment as `APPLE_ID`.
 7. Copy the 10-character Team ID from the Apple Developer membership page and
-   save it as `APPLE_TEAM_ID`.
+   save it in that environment as `APPLE_TEAM_ID`.
 8. Run a manual acceptance build first. For a tagged build, the workflow signs
    the app with hardened runtime, submits the app and both DMGs to Apple’s
    notary service, staples the tickets, validates Gatekeeper, and uploads signed
@@ -164,8 +199,9 @@ need a Cloudflare account.
    this token.
 8. Copy the second token's Access Key ID and Secret Access Key, then copy the
    Cloudflare account ID from the dashboard.
-9. In the GitHub repository, open **Settings**, **Secrets and variables**,
-   **Actions**, then add these repository secrets for signed candidate upload:
+9. In each GitHub signing environment, add these three environment secrets for
+   signed candidate upload. Add them to both `helper-windows-signing` and
+   `helper-macos-signing`; do not add repository-level copies:
 
    - `R2_CANDIDATE_ACCESS_KEY_ID`: candidate token Access Key ID.
    - `R2_CANDIDATE_SECRET_ACCESS_KEY`: candidate token Secret Access Key.
@@ -207,7 +243,10 @@ GitHub Releases because a single GitHub release asset must remain under 2 GiB.
 ## Secret safety check
 
 Repository files contain secret names only. Before tagging, run `gh secret
-list` for the signing and candidate-upload names. Before promotion, run `gh
-secret list --env helper-live-release` for the three promotion names. Never
-paste a secret into an issue, commit, workflow input, chat message, screenshot,
-log, or friend guide.
+list --env helper-windows-signing` and `gh secret list --env
+helper-macos-signing`. Confirm that the signing and candidate-upload names are
+present only in their intended environments, then run `gh secret list` and
+remove any repository-level duplicates. Before promotion, run `gh secret list
+--env helper-live-release` for the three promotion names. Never paste a secret
+into an issue, commit, workflow input, chat message, screenshot, log, or friend
+guide.

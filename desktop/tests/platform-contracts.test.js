@@ -64,6 +64,16 @@ assert.ok(helperAzure.includes('azureSignOptions'));
 assert.ok(ownerSigning.includes('AZURE_TENANT_ID'));
 assert.ok(ownerSigning.includes('Signing Certificate Profile Signer'));
 assert.ok(ownerSigning.includes('APPLE_APP_SPECIFIC_PASSWORD'));
+// Signing and candidate credentials stay behind reviewer-approved platform
+// environments. The guide must never send them back to repository scope.
+assert.ok(ownerSigning.includes('helper-windows-signing'));
+assert.ok(ownerSigning.includes('helper-macos-signing'));
+assert.ok(ownerSigning.includes('Add a required reviewer to each environment'));
+assert.ok(ownerSigning.includes('create an active tag ruleset'));
+assert.ok(ownerSigning.includes('Remove any repository-level copies'));
+assert.ok(!ownerSigning.includes('**New repository secret**'));
+assert.ok(!ownerSigning.includes(
+  'repository secrets for signed candidate upload'));
 assert.ok(helperWorkflow.includes('xcrun stapler validate'));
 assert.ok(helperWorkflow.includes(
   'Upload the verified Windows candidate'));

@@ -138,3 +138,29 @@ Order to green: rebuild the Mac DMG from this commit, repeat the mounted-DMG
 smoke + signature + launch + real-edit test, then build Windows, then the MSI
 friend-workflow walkthrough. The failed DMG at
 `work/mac-acceptance-c697aa3/` is evidence only. Never distribute it.
+
+--------------------------------------------------------------------------
+
+## Addendum 2026-08-08: current local result at 3ad08be
+
+This addendum supersedes the historical A6, C5 to C9, and F1 to F6 states. It
+does not change signed, production, provider, or legal blocks.
+
+| Gate | Current status | Direct evidence |
+|------|----------------|-----------------|
+| Current five-operation revision contract and proposal binding | PASS | Python safety, web, and nine-test Worker Miniflare suites passed; Worker claim payload carries the canonical approved proposal |
+| Desktop Windows FFmpeg pin, Mac FFmpeg guard, font pin, Action SHA pins, frozen-engine completeness | PASS | current workflow and platform contracts passed; frozen engine self-test passed from the mounted artifact |
+| Creative runtime present in packed app | PASS | mounted manifest verified HyperFrames 0.7.99, Remotion 4.0.507, Node 22.23.2, and Chrome 152.0.7928.2 |
+| Packaged Helper creative smoke | PASS | all six desktop-smoke booleans true; real HyperFrames and Remotion renders completed |
+| Finder metadata and strict code seal | PASS for unsigned arm64 | fresh read-only mount had no FinderInfo or ResourceFork; `codesign --deep --strict` passed with the expected ad hoc signature |
+| Correct executable and product icon | PASS | normal mounted Electron renderer launched and produced a decoded 1440x4624 UI screenshot with the shipped branding |
+| Mounted real edit | PASS for unsigned arm64 Commercial | 83-second 9:16 edit passed QA, caption safety, exact geometry, full decode, and four 0 ms source-sync probes |
+| Six generic profiles packaged and executable | PASS mechanically | all six exact profile hashes rendered from the mounted DMG, passed QA/full decode, and delivered exact 9:16 or 16:9 geometry |
+| Wrangler migration and bundle path | PASS locally | both migrations applied through Wrangler 4.120.0, dry-run bundle contained all bindings, and live local two-user HTTP checks passed |
+
+The six-profile run uses one synthetic fixture. It proves packaged execution,
+not representative creative quality for long talking head, podcast, course, or
+both Custom auto branches. Developer ID, notarization, Authenticode, signed
+physical acceptance, production Cloudflare, real accounts, GPL corresponding
+source, and Remotion eligibility remain blocked exactly as stated in
+`RELEASE_GATE_STATUS.md`.
