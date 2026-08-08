@@ -2,22 +2,25 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+const readNormalized = (file) =>
+  fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+
 const desktop = path.resolve(__dirname, '..');
 const main = fs.readFileSync(path.join(desktop, 'main.js'), 'utf8');
 const preload = fs.readFileSync(path.join(desktop, 'preload.js'), 'utf8');
 const renderer = fs.readFileSync(
   path.join(desktop, 'renderer', 'app.js'), 'utf8');
-const workflow = fs.readFileSync(
-  path.join(desktop, '..', '.github', 'workflows', 'release.yml'), 'utf8');
+const workflow = readNormalized(
+  path.join(desktop, '..', '.github', 'workflows', 'release.yml'));
 const product = fs.readFileSync(path.join(desktop, 'product.js'), 'utf8');
 const legacyBuilder = fs.readFileSync(
   path.join(desktop, 'electron-builder.yml'), 'utf8');
 const helperMain = fs.readFileSync(
   path.join(desktop, 'helper', 'main.js'), 'utf8');
-const helperWorkflow = fs.readFileSync(
-  path.join(desktop, '..', '.github', 'workflows', 'helper-release.yml'), 'utf8');
-const helperPromotion = fs.readFileSync(
-  path.join(desktop, '..', '.github', 'workflows', 'helper-promote.yml'), 'utf8');
+const helperWorkflow = readNormalized(
+  path.join(desktop, '..', '.github', 'workflows', 'helper-release.yml'));
+const helperPromotion = readNormalized(
+  path.join(desktop, '..', '.github', 'workflows', 'helper-promote.yml'));
 const helperAzure = fs.readFileSync(
   path.join(desktop, 'electron-builder.helper.azure.js'), 'utf8');
 const helperInstaller = fs.readFileSync(
@@ -274,8 +277,8 @@ assert.ok(!helperPromotion.includes('wrangler r2 object put'));
 assert.ok(!helperPromotion.includes('aws s3 cp'));
 assert.ok(workflow.includes('CFBundleExecutable'));
 
-const ciWorkflow = fs.readFileSync(
-  path.join(desktop, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+const ciWorkflow = readNormalized(
+  path.join(desktop, '..', '.github', 'workflows', 'ci.yml'));
 for (const candidate of [workflow, helperWorkflow, helperPromotion, ciWorkflow]) {
   assert.ok(!/uses:\s+actions\/[^@\s]+@v\d/.test(candidate));
   const actionRefs = [...candidate.matchAll(
