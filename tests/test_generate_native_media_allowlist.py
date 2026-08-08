@@ -908,6 +908,8 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             creative_runtime_lock_sha256="c" * 64,
             runtime_build_manifest=Path("runtime"),
             runtime_build_manifest_sha256="d" * 64,
+            electron_native_receipt=Path("electron-native"),
+            electron_native_receipt_sha256="f" * 64,
             mac_normalization_receipt=Path("normalization"),
             mac_normalization_receipt_sha256="e" * 64,
         )
@@ -925,10 +927,20 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             generator, "_validate_runtime_build_manifest"
         ), mock.patch.object(
             generator, "_validate_normalization"
+        ), mock.patch.object(
+            generator.electron_native,
+            "load_authenticated_receipt",
+            return_value=({"native": True}, "f" * 64),
+        ), mock.patch.object(
+            generator.electron_native, "validate_claim_modes"
+        ), mock.patch.object(
+            generator.electron_native,
+            "claims_from_receipt",
+            return_value={},
         ):
             with self.assertRaisesRegex(
                 generator.MissingProducerContractError,
-                "Mac FFmpeg bundle receipt.*Mac Remotion.*final Electron app",
+                "Mac FFmpeg bundle receipt.*Mac Remotion.*Electron native producer receipt is already",
             ):
                 generator._load_producers(
                     Path("unused"), "mac-arm64", inputs
@@ -953,7 +965,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         ):
                 generator._unique_owner(relative, [owner, other])
 
-    def test_production_owners_leave_final_electron_paths_unclaimed(self):
+    def test_production_owners_bind_final_electron_paths_to_exact_receipt(self):
         platform = "windows-x64"
         contracts = generator.native.PLATFORM_COMPONENT_RULES[platform]
         onnx = self._authenticated({"onnx": True}, name="onnx.json")
@@ -973,8 +985,21 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             remotion=remotion,
             ffmpeg_source=source,
             normalization=None,
+            electron_native_sha256="f" * 64,
         )
-        self.assertNotIn("electron", owners)
+        self.assertEqual(
+            owners["electron"],
+            generator.ProducerOwner(
+                "electron",
+                contracts["electron"]["lineage_id"],
+                "f" * 64,
+                "exact final Electron native producer receipt",
+            ),
+        )
+        self.assertEqual(
+            owners["supporting-native"].source_manifest_sha256,
+            "f" * 64,
+        )
         self.assertEqual(
             owners["browser"],
             generator.ProducerOwner(
@@ -1242,6 +1267,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         help_text = result.stdout
         self.assertIn("--onnx-receipt-sha256", help_text)
         self.assertIn("--electron-chromium-receipt-sha256", help_text)
+        self.assertIn("--electron-native-receipt-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-manifest-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-lock-sha256", help_text)
         self.assertIn("--windows-ffmpeg-capabilities-sha256", help_text)

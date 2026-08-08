@@ -7,10 +7,9 @@ SHA256 before its schema is interpreted. Native paths are discovered by the
 held-handle scanner in ``native_media_receipt``. A path is emitted only when
 one exact producer contract owns it.
 
-The current repository has no exact producer contract for the transformed
-macOS FFmpeg bundle, the installed macOS Remotion compositor, or native files
-created by Electron Builder outside the staged Resources tree. Those paths are
-rejected instead of accepting a generic claim manifest.
+Native files created by Electron Builder outside the staged Resources tree are
+accepted only through the exact final-app Electron producer receipt. Remaining
+producer gaps are rejected instead of accepting a generic claim manifest.
 """
 from __future__ import annotations
 
@@ -84,6 +83,8 @@ class GeneratorInputs:
     creative_runtime_lock_sha256: str
     runtime_build_manifest: Path
     runtime_build_manifest_sha256: str
+    electron_native_receipt: Path | None = None
+    electron_native_receipt_sha256: str | None = None
     remotion_receipt: Path | None = None
     remotion_receipt_sha256: str | None = None
     windows_ffmpeg_build_receipt: Path | None = None
@@ -121,6 +122,7 @@ native = _load_sibling("native_media_receipt")
 normalizer = _load_sibling("normalize_pyinstaller_symlinks")
 helper_manifest = _load_sibling("generate_helper_manifest")
 source_bundle = _load_sibling("source_bundle")
+electron_native = _load_sibling("electron_native_receipt")
 try:
     windows_ffmpeg_verifier = _load_sibling("verify_windows_ffmpeg")
     windows_ffmpeg_verifier_error: Exception | None = None
@@ -1294,6 +1296,7 @@ def _component_owners(
     remotion: AuthenticatedJson | None,
     ffmpeg_source: AuthenticatedJson | None,
     normalization: AuthenticatedJson | None,
+    electron_native_sha256: str,
 ) -> dict[str, ProducerOwner]:
     contracts = native.PLATFORM_COMPONENT_RULES[platform]
     owners = {
@@ -1311,6 +1314,18 @@ def _component_owners(
                 "Helper runtime build manifest bound to the pinned "
                 "Chrome/HyperFrames provenance receipt"
             ),
+        ),
+        "electron": ProducerOwner(
+            "electron",
+            contracts["electron"]["lineage_id"],
+            electron_native_sha256,
+            "exact final Electron native producer receipt",
+        ),
+        "supporting-native": ProducerOwner(
+            "supporting-native",
+            f"npm:electron@43.3.0:{platform}:electron-builder@26.15.3",
+            electron_native_sha256,
+            "exact final Electron native producer receipt",
         ),
     }
     if platform == "windows-x64":
@@ -1424,6 +1439,32 @@ def _load_producers(
         inputs.electron_chromium_receipt_sha256,
         "Electron and Chromium provenance receipt",
     )
+    electron_native_path, electron_native_sha = _require_pair(
+        inputs.electron_native_receipt,
+        inputs.electron_native_receipt_sha256,
+        "final Electron native producer receipt",
+    )
+    try:
+        electron_native_payload, electron_native_digest = (
+            electron_native.load_authenticated_receipt(
+                electron_native_path,
+                electron_native_sha,
+                platform,
+            )
+        )
+        electron_native.validate_claim_modes(
+            app_root,
+            electron_native_payload,
+            platform,
+        )
+        exact_electron_claims = electron_native.claims_from_receipt(
+            electron_native_payload,
+            platform,
+        )
+    except electron_native.ElectronNativeReceiptError as exc:
+        raise AllowlistGenerationError(
+            f"invalid final Electron native producer receipt: {exc}"
+        ) from exc
     _validate_electron_chromium(electron, platform)
     _embedded_receipt_matches(
         app_root,
@@ -1483,14 +1524,13 @@ def _load_producers(
         )
         _validate_normalization(normalization, app_root, platform)
         raise MissingProducerContractError(
-            "macOS native allowlist generation is closed until three exact "
+            "macOS native allowlist generation is closed until two exact "
             "producer contracts exist: (1) a Mac FFmpeg bundle receipt that "
             "enumerates every final Contents/Resources/bin and lib Mach-O "
             "with byte count and SHA256, (2) a canonical Mac Remotion "
             "post-install receipt that binds the complete target compositor "
-            "inventory, and (3) a final Electron app build manifest that "
-            "enumerates every Electron Builder-created Mach-O outside the "
-            "staged Resources tree"
+            "inventory; the final Electron native producer receipt is already "
+            "required and authenticated"
         )
 
     remotion_path, remotion_sha = _require_pair(
@@ -1593,8 +1633,21 @@ def _load_producers(
         remotion=remotion,
         ffmpeg_source=source,
         normalization=None,
+        electron_native_sha256=electron_native_digest,
     )
     claims: dict[str, ProducerClaim] = {}
+    for relative, exact in exact_electron_claims.items():
+        owner = owners.get(exact.component)
+        if owner is None:
+            raise AllowlistGenerationError(
+                "final Electron native claim has no component owner: "
+                f"{relative}"
+            )
+        claims[relative] = ProducerClaim(
+            owner,
+            exact.sha256,
+            exact.byte_count,
+        )
     onnx_root = native._onnx_package_root(platform)
     onnx_owner = owners["onnxruntime-node"]
     for relative, digest in native._expected_onnx_target_inventory(
@@ -1846,6 +1899,8 @@ def _parser() -> argparse.ArgumentParser:
         "--electron-chromium-receipt", type=Path, required=True
     )
     parser.add_argument("--electron-chromium-receipt-sha256", required=True)
+    parser.add_argument("--electron-native-receipt", type=Path, required=True)
+    parser.add_argument("--electron-native-receipt-sha256", required=True)
     parser.add_argument("--creative-runtime-lock", type=Path, required=True)
     parser.add_argument("--creative-runtime-lock-sha256", required=True)
     parser.add_argument("--runtime-build-manifest", type=Path, required=True)
@@ -1880,6 +1935,10 @@ def main() -> None:
         electron_chromium_receipt=args.electron_chromium_receipt,
         electron_chromium_receipt_sha256=(
             args.electron_chromium_receipt_sha256
+        ),
+        electron_native_receipt=args.electron_native_receipt,
+        electron_native_receipt_sha256=(
+            args.electron_native_receipt_sha256
         ),
         creative_runtime_lock=args.creative_runtime_lock,
         creative_runtime_lock_sha256=args.creative_runtime_lock_sha256,

@@ -695,6 +695,40 @@ jobs:
             --version "${{ steps.release.outputs.version }}"
           echo "Packed creative runtime is complete."
 
+      - name: Create exact packed Electron native producer receipt
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' -print -quit)
+            APP_ROOT=$(dirname "$APP_EXE")
+            TARGET="windows-x64"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip"
+          else
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' -print -quit)
+            TARGET="mac-${{ matrix.arch }}"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip"
+          fi
+          test -n "$APP_ROOT" && test -d "$APP_ROOT"
+          RECEIPT="$RUNNER_TEMP/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "$TARGET" \
+            --electron-archive "$ARCHIVE" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --output "$RECEIPT"
+          test -s "$RECEIPT"
+
       - name: Release duplicate staging bytes before artifact acceptance
         shell: bash
         run: |
@@ -763,6 +797,25 @@ jobs:
           if (-not (Test-Path $app)) { throw "Installed Helper app is missing" }
           if (-not (Test-Path $runtimeCache)) {
             throw "Installed Helper did not retain its verified runtime package"
+          }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version "${{ steps.release.outputs.version }}" `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper Electron native receipt verification failed"
           }
           python packaging/verify_helper_manifest.py `
             --resources (Join-Path $root "resources") `
@@ -846,13 +899,27 @@ jobs:
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
           MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' \
             -print -quit)
-          test -n "$MOUNTED_APP"
+          MOUNTED_APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$MOUNTED_APP_COUNT" = 1
           if xattr -lr "$MOUNTED_APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
             echo "Finder metadata is attached to the app inside the DMG" >&2
             exit 1
           fi
           codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$MOUNTED_APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
           MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
             "$MOUNTED_APP/Contents/Info.plist")
           test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
@@ -894,6 +961,7 @@ jobs:
             ${{ runner.temp }}/helper-dist/nsis-web/*.nsis.7z
             ${{ runner.temp }}/helper-dist/*.dmg
             ${{ runner.temp }}/helper-dist/*.blockmap
+            ${{ runner.temp }}/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json
             desktop/helper-staging/runtime-manifest.json
           if-no-files-found: error
           compression-level: 0
@@ -1028,6 +1096,25 @@ jobs:
             --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
+
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' -print -quit)
+          APP_ROOT=$(dirname "$APP_EXE")
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target windows-x64 \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-windows-x64.json"
 
       - name: Release duplicate signed staging bytes before acceptance
         shell: bash
@@ -1164,6 +1251,25 @@ jobs:
           if (-not (Test-Path $runtimeCache)) {
             throw "Signed Helper did not retain its verified runtime package"
           }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version ($env:GITHUB_REF_NAME -replace '^helper-v', '') `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper Electron native receipt verification failed"
+          }
           $resources = Join-Path $root "resources"
           $resourceExecutables = @(Get-ChildItem $resources -Recurse -Filter *.exe -File)
           if ($resourceExecutables.Count -eq 0) {
@@ -1255,6 +1361,8 @@ jobs:
             --output "$RECEIPT"
           cp desktop/helper-staging/runtime-manifest.json \
             "$RECEIPT_DIR/runtime-manifest-windows-x64.json"
+          cp "$RUNNER_TEMP/electron-native-windows-x64.json" \
+            "$RECEIPT_DIR/electron-native-windows-x64.json"
           KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
           SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
           TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
@@ -1371,6 +1479,24 @@ jobs:
             --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST"
 
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+
       - name: Release duplicate signed staging bytes before acceptance
         shell: bash
         run: |
@@ -1392,7 +1518,9 @@ jobs:
           hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
           APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' -print -quit)
-          test -n "$APP"
+          APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
           test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)"
           if xattr -lr "$APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
@@ -1400,6 +1528,18 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict --verbose=4 "$APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${GITHUB_REF_NAME#helper-v}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
           codesign -dv --verbose=4 "$APP" 2>&1 | \
             grep -q 'Authority=Developer ID Application'
           spctl --assess --type execute --verbose=2 "$APP"
@@ -1456,6 +1596,8 @@ jobs:
             --output "$RECEIPT"
           cp desktop/helper-staging/runtime-manifest.json \
             "$RECEIPT_DIR/runtime-manifest-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json" \
+            "$RECEIPT_DIR/electron-native-mac-${{ matrix.arch }}.json"
           KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
           SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
           TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
