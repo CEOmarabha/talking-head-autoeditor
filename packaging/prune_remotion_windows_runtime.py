@@ -26,6 +26,9 @@ PACKAGE_VERSION = "4.0.507"
 PACKAGE_RELATIVE_ROOT = Path(
     "creative-runtime/node_modules/@remotion/compositor-win32-x64-msvc"
 )
+RECEIPT_RELATIVE_PATH = Path(
+    "licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json"
+)
 LOCK_PACKAGE_KEY = "node_modules/@remotion/compositor-win32-x64-msvc"
 PACKAGE_RESOLVED = (
     "https://registry.npmjs.org/@remotion/compositor-win32-x64-msvc/-/"
@@ -252,15 +255,30 @@ def _require_plain_directory(path: Path, label: str) -> Path:
     return path.resolve(strict=True)
 
 
-def _require_contained_path(stage_root: Path, candidate: Path, label: str) -> Path:
-    absolute = candidate if candidate.is_absolute() else Path.cwd() / candidate
-    parent = absolute.parent.resolve(strict=True)
-    resolved = parent / absolute.name
+def _path_exists_without_following(path: Path) -> bool:
     try:
-        resolved.relative_to(stage_root)
-    except ValueError as exc:
-        raise GateError(f"{label} must stay inside the staging root") from exc
-    return resolved
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise GateError(f"cannot inspect receipt path: {path}: {exc}") from exc
+    return True
+
+
+def _canonical_receipt_path(stage_root: Path) -> Path:
+    parent = stage_root
+    for component in RECEIPT_RELATIVE_PATH.parent.parts:
+        parent = _require_plain_directory(
+            parent / component,
+            "pruning receipt directory",
+        )
+    receipt = parent / RECEIPT_RELATIVE_PATH.name
+    temporary = receipt.with_name(receipt.name + ".tmp")
+    if _path_exists_without_following(receipt):
+        raise GateError("canonical pruning receipt already exists")
+    if _path_exists_without_following(temporary):
+        raise GateError("canonical pruning receipt temporary path already exists")
+    return receipt
 
 
 def _reject_symlink_components(stage_root: Path, package_root: Path) -> None:
@@ -575,24 +593,32 @@ def _stray_stale_paths(
 
 
 def _write_receipt(path: Path, payload: Mapping[str, object]) -> None:
-    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    temporary = path.with_name(path.name + ".tmp")
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
     try:
-        temporary.write_text(encoded, encoding="utf-8")
-        os.replace(temporary, path)
+        descriptor = os.open(path, flags, 0o644)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
         raise GateError(f"cannot write pruning receipt: {exc}") from exc
 
 
 def run_gate(
     stage_root: Path,
     lock_path: Path,
-    receipt_path: Path,
     require_package: bool,
     policy: Policy = PRODUCTION_POLICY,
 ) -> dict[str, object]:
     stage_root = _require_plain_directory(stage_root, "staging root")
-    receipt_path = _require_contained_path(stage_root, receipt_path, "receipt")
+    receipt_path = _canonical_receipt_path(stage_root)
     package_root = stage_root / policy.package_relative_root
 
     if not package_root.exists():
@@ -699,6 +725,14 @@ def run_gate(
         ],
     }
     _write_receipt(receipt_path, payload)
+    final_inventory = _inventory(package_root)
+    _compare_inventory(
+        final_inventory,
+        expected_after,
+        "final pruned Remotion package",
+    )
+    if final_inventory != after:
+        raise GateError("Remotion package changed while writing the pruning receipt")
     return payload
 
 
@@ -711,7 +745,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stage-root", required=True, type=Path)
     parser.add_argument("--package-lock", required=True, type=Path)
-    parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument(
         "--require-package",
         action="store_true",
@@ -726,7 +759,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = run_gate(
             stage_root=args.stage_root,
             lock_path=args.package_lock,
-            receipt_path=args.receipt,
             require_package=args.require_package,
         )
     except (GateError, OSError) as exc:

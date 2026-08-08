@@ -248,6 +248,9 @@ assert.ok(remotionWindowsPruner.includes('candidate.unlink()'));
 assert.ok(!remotionWindowsPruner.includes('.glob('));
 assert.ok(!remotionWindowsPruner.includes('--expected-digest'));
 assert.ok(!remotionWindowsPruner.includes('--policy'));
+assert.ok(!remotionWindowsPruner.includes('parser.add_argument("--receipt"'));
+assert.ok(remotionWindowsPruner.includes(
+  'licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
 
 const helperCreativeBundleAt = helperWorkflow.indexOf(
   '- name: Bundle pinned Node, HyperFrames, Remotion and rendering browser');
@@ -264,8 +267,7 @@ assert.ok(helperRuntimeManifestAt > helperCreativeProbeAt);
 const helperRemotionPruneBlock = helperWorkflow.slice(
   helperRemotionPruneAt, helperCreativeProbeAt);
 assert.ok(helperRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
-assert.ok(helperRemotionPruneBlock.includes(
-  '--receipt desktop/helper-staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
+assert.ok(!helperRemotionPruneBlock.includes('--receipt'));
 assert.ok(helperRemotionPruneBlock.includes('--require-package'));
 
 const pseRemotionPruneAt = workflow.indexOf(
@@ -277,8 +279,7 @@ assert.ok(pseRuntimeManifestAt > pseRemotionPruneAt);
 const pseRemotionPruneBlock = workflow.slice(
   pseRemotionPruneAt, pseRuntimeManifestAt);
 assert.ok(pseRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
-assert.ok(pseRemotionPruneBlock.includes(
-  '--receipt desktop/staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
+assert.ok(!pseRemotionPruneBlock.includes('--receipt'));
 assert.ok(!pseRemotionPruneBlock.includes('--require-package'));
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/client-s3'],
   '3.1106.0');

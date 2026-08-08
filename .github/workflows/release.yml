@@ -321,8 +321,7 @@ jobs:
         run: |
           python packaging/prune_remotion_windows_runtime.py \
             --stage-root desktop/staging \
-            --package-lock packaging/helper-runtime/package-lock.json \
-            --receipt desktop/staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json
+            --package-lock packaging/helper-runtime/package-lock.json
 
       - name: Generate byte-verifiable product runtime manifest
         shell: bash

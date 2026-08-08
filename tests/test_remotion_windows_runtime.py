@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_PATH = (
@@ -173,7 +174,6 @@ class Fixture:
         return PRUNER.run_gate(
             self.stage,
             self.lock,
-            self.receipt,
             require,
             policy or self.policy,
         )
@@ -350,20 +350,68 @@ class RemotionWindowsRuntimeGateTests(unittest.TestCase):
                 all((real_root / name).exists() for name in fixture.policy.stale_files)
             )
 
+    def test_canonical_receipt_collision_fails_before_deletion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            active = fixture.root / "avcodec-61.dll"
+            active_digest = sha256(active)
+            fixture.receipt.write_bytes(b"preexisting receipt")
+
+            with self.assertRaisesRegex(PRUNER.GateError, "already exists"):
+                fixture.run()
+
+            self.assertEqual(sha256(active), active_digest)
+            self.assertTrue(all(path.exists() for path in fixture.stale_paths()))
+
+    def test_linked_temporary_receipt_collision_fails_before_deletion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            outside = Path(temporary) / "outside"
+            outside.write_bytes(b"do not overwrite")
+            temporary_receipt = fixture.receipt.with_name(
+                fixture.receipt.name + ".tmp"
+            )
+            try:
+                temporary_receipt.symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"file symlinks unavailable: {exc}")
+
+            with self.assertRaisesRegex(PRUNER.GateError, "temporary path"):
+                fixture.run()
+
+            self.assertEqual(outside.read_bytes(), b"do not overwrite")
+            self.assertTrue(all(path.exists() for path in fixture.stale_paths()))
+
+    def test_final_inventory_is_rechecked_after_receipt_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            original_write = PRUNER._write_receipt
+
+            def write_then_tamper(path, payload):
+                original_write(path, payload)
+                (fixture.root / "avcodec-61.dll").write_bytes(
+                    b"tampered after receipt"
+                )
+
+            with mock.patch.object(PRUNER, "_write_receipt", write_then_tamper):
+                with self.assertRaisesRegex(PRUNER.GateError, "inventory drift"):
+                    fixture.run()
+
     def test_absent_package_is_recorded_but_stray_stale_name_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / "stage"
             licenses = stage / "licenses"
             licenses.mkdir(parents=True)
-            receipt = licenses / "receipt.json"
+            receipt = stage / PRUNER.RECEIPT_RELATIVE_PATH
             payload = PRUNER.run_gate(
                 stage,
                 Path(temporary) / "unused-lock.json",
-                receipt,
                 False,
             )
             self.assertEqual(payload["status"], "package-not-present")
+            self.assertTrue(receipt.is_file())
 
+            receipt.unlink()
             stray = stage / "other" / "avcodec-60.dll"
             stray.parent.mkdir()
             stray.write_bytes(b"stale")
@@ -371,7 +419,6 @@ class RemotionWindowsRuntimeGateTests(unittest.TestCase):
                 PRUNER.run_gate(
                     stage,
                     Path(temporary) / "unused-lock.json",
-                    receipt,
                     False,
                 )
 
@@ -384,7 +431,6 @@ class RemotionWindowsRuntimeGateTests(unittest.TestCase):
                 PRUNER.run_gate(
                     stage,
                     Path(temporary) / "unused-lock.json",
-                    licenses / "receipt.json",
                     True,
                 )
 
@@ -397,8 +443,6 @@ class RemotionWindowsRuntimeGateTests(unittest.TestCase):
                     "stage",
                     "--package-lock",
                     "package-lock.json",
-                    "--receipt",
-                    "receipt.json",
                     "--expected-digest",
                     "0" * 64,
                 ]
@@ -410,6 +454,7 @@ class RemotionWindowsRuntimeGateTests(unittest.TestCase):
         }
         self.assertNotIn("--policy", option_strings)
         self.assertNotIn("--expected-digest", option_strings)
+        self.assertNotIn("--receipt", option_strings)
 
     def test_embedded_production_policy_matches_repository_lock(self):
         lock_path = (

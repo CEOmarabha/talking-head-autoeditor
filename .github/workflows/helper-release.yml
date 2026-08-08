@@ -410,7 +410,6 @@ jobs:
           python packaging/prune_remotion_windows_runtime.py \
             --stage-root desktop/helper-staging \
             --package-lock packaging/helper-runtime/package-lock.json \
-            --receipt desktop/helper-staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json \
             --require-package
 
       - name: Render real HyperFrames and Remotion probes
