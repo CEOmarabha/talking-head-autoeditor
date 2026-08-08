@@ -446,6 +446,375 @@ def _directory_identity(path: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+class _WindowsDirectoryOperations:
+    """Use NT handles for rename and child creation without path fallbacks."""
+
+    FILE_LIST_DIRECTORY = 0x0001
+    FILE_READ_ATTRIBUTES = 0x0080
+    FILE_WRITE_DATA = 0x0002
+    DELETE = 0x00010000
+    SYNCHRONIZE = 0x00100000
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    OPEN_EXISTING = 3
+    FILE_OPEN = 1
+    FILE_CREATE = 2
+    FILE_ATTRIBUTE_NORMAL = 0x00000080
+    FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    FILE_DIRECTORY_FILE = 0x00000001
+    FILE_NON_DIRECTORY_FILE = 0x00000040
+    FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+    FILE_OPEN_REPARSE_POINT = 0x00200000
+    OBJ_CASE_INSENSITIVE = 0x00000040
+    FILE_RENAME_INFO_EX = 22
+
+    def __init__(
+        self,
+        package_parent: Path,
+        transaction: Path,
+        package_identity: tuple[int, int],
+        transaction_identity: tuple[int, int],
+    ) -> None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except ImportError as exc:  # pragma: no cover - Windows standard library
+            raise GateError("Windows handle APIs are unavailable") from exc
+        self.ctypes = ctypes
+        self.wintypes = wintypes
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.ntdll = ctypes.WinDLL("ntdll")
+
+        class ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [
+                ("Length", wintypes.USHORT),
+                ("MaximumLength", wintypes.USHORT),
+                ("Buffer", wintypes.LPWSTR),
+            ]
+
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [
+                ("Length", wintypes.ULONG),
+                ("RootDirectory", wintypes.HANDLE),
+                ("ObjectName", ctypes.POINTER(UnicodeString)),
+                ("Attributes", wintypes.ULONG),
+                ("SecurityDescriptor", wintypes.LPVOID),
+                ("SecurityQualityOfService", wintypes.LPVOID),
+            ]
+
+        class IoStatusBlock(ctypes.Structure):
+            _fields_ = [
+                ("Status", wintypes.LPVOID),
+                ("Information", ctypes.c_size_t),
+            ]
+
+        class FileRenameInfoEx(ctypes.Structure):
+            _fields_ = [
+                ("Flags", wintypes.DWORD),
+                ("RootDirectory", wintypes.HANDLE),
+                ("FileNameLength", wintypes.DWORD),
+                ("FileName", wintypes.WCHAR * 1),
+            ]
+
+        self.ByHandleFileInformation = ByHandleFileInformation
+        self.UnicodeString = UnicodeString
+        self.ObjectAttributes = ObjectAttributes
+        self.IoStatusBlock = IoStatusBlock
+        self.FileRenameInfoEx = FileRenameInfoEx
+
+        self.kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        self.kernel32.CreateFileW.restype = wintypes.HANDLE
+        self.kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ByHandleFileInformation),
+        ]
+        self.kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        self.kernel32.SetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        self.kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+        self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.kernel32.CloseHandle.restype = wintypes.BOOL
+        self.ntdll.NtCreateFile.argtypes = [
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.DWORD,
+            ctypes.POINTER(ObjectAttributes),
+            ctypes.POINTER(IoStatusBlock),
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.ULONG,
+        ]
+        self.ntdll.NtCreateFile.restype = ctypes.c_long
+        self.package_handle: int | None = None
+        self.transaction_handle: int | None = None
+        try:
+            self.package_handle = self._open_root(
+                package_parent,
+                package_identity,
+            )
+            self.transaction_handle = self._open_root(
+                transaction,
+                transaction_identity,
+            )
+        except Exception:
+            self.close()
+            raise
+
+    def _last_error(self, label: str) -> GateError:
+        code = self.ctypes.get_last_error()
+        return GateError(f"{label} failed with Windows error {code}")
+
+    def _handle_information(self, handle: int) -> object:
+        information = self.ByHandleFileInformation()
+        if not self.kernel32.GetFileInformationByHandle(
+            self.wintypes.HANDLE(handle),
+            self.ctypes.byref(information),
+        ):
+            raise self._last_error("GetFileInformationByHandle")
+        return information
+
+    def _handle_identity(self, handle: int) -> tuple[int, int]:
+        information = self._handle_information(handle)
+        index = (information.nFileIndexHigh << 32) | information.nFileIndexLow
+        return information.dwVolumeSerialNumber, index
+
+    def _reject_reparse(self, handle: int, label: str) -> None:
+        information = self._handle_information(handle)
+        if information.dwFileAttributes & self.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise GateError(f"{label} is a Windows reparse point")
+
+    def _open_root(self, path: Path, expected: tuple[int, int]) -> int:
+        handle = self.kernel32.CreateFileW(
+            str(path),
+            self.FILE_LIST_DIRECTORY | self.FILE_READ_ATTRIBUTES | self.SYNCHRONIZE,
+            self.FILE_SHARE_READ | self.FILE_SHARE_WRITE | self.FILE_SHARE_DELETE,
+            None,
+            self.OPEN_EXISTING,
+            self.FILE_FLAG_BACKUP_SEMANTICS | self.FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        invalid = self.ctypes.c_void_p(-1).value
+        if handle in (None, invalid):
+            raise self._last_error(f"open Windows directory {path}")
+        value = int(handle)
+        try:
+            self._reject_reparse(value, str(path))
+            if self._handle_identity(value)[1] != expected[1]:
+                raise GateError(f"Windows directory identity drifted: {path}")
+            return value
+        except Exception:
+            self.kernel32.CloseHandle(self.wintypes.HANDLE(value))
+            raise
+
+    def _open_relative(
+        self,
+        root: int,
+        name: str,
+        *,
+        directory: bool,
+        create: bool = False,
+        for_rename: bool = False,
+        allow_delete_share: bool = False,
+    ) -> int:
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            raise GateError(f"unsafe Windows relative name: {name!r}")
+        buffer = self.ctypes.create_unicode_buffer(name)
+        encoded_length = len(name.encode("utf-16-le"))
+        unicode_name = self.UnicodeString(
+            encoded_length,
+            encoded_length + 2,
+            self.ctypes.cast(buffer, self.wintypes.LPWSTR),
+        )
+        attributes = self.ObjectAttributes(
+            self.ctypes.sizeof(self.ObjectAttributes),
+            self.wintypes.HANDLE(root),
+            self.ctypes.pointer(unicode_name),
+            self.OBJ_CASE_INSENSITIVE,
+            None,
+            None,
+        )
+        status_block = self.IoStatusBlock()
+        handle = self.wintypes.HANDLE()
+        desired = self.SYNCHRONIZE
+        options = self.FILE_SYNCHRONOUS_IO_NONALERT | self.FILE_OPEN_REPARSE_POINT
+        if directory:
+            desired |= self.FILE_LIST_DIRECTORY | self.FILE_READ_ATTRIBUTES
+            options |= self.FILE_DIRECTORY_FILE
+        else:
+            desired |= self.GENERIC_WRITE | self.FILE_WRITE_DATA
+            options |= self.FILE_NON_DIRECTORY_FILE
+        if for_rename:
+            desired |= self.DELETE
+        share = 0 if create else self.FILE_SHARE_READ | self.FILE_SHARE_WRITE
+        if allow_delete_share and not create:
+            share |= self.FILE_SHARE_DELETE
+        status = self.ntdll.NtCreateFile(
+            self.ctypes.byref(handle),
+            desired,
+            self.ctypes.byref(attributes),
+            self.ctypes.byref(status_block),
+            None,
+            self.FILE_ATTRIBUTE_NORMAL,
+            share,
+            self.FILE_CREATE if create else self.FILE_OPEN,
+            options,
+            None,
+            0,
+        )
+        if status != 0:
+            raise GateError(
+                f"NtCreateFile failed for {name!r} with NTSTATUS "
+                f"0x{status & 0xFFFFFFFF:08x}"
+            )
+        value = int(handle.value)
+        try:
+            if directory:
+                self._reject_reparse(value, name)
+            return value
+        except Exception:
+            self.kernel32.CloseHandle(self.wintypes.HANDLE(value))
+            raise
+
+    def _rename(self, source_root: int, source: str, target_root: int, target: str) -> None:
+        source_handle = self._open_relative(
+            source_root,
+            source,
+            directory=True,
+            for_rename=True,
+        )
+        try:
+            source_identity = self._handle_identity(source_handle)
+            target_bytes = target.encode("utf-16-le")
+            offset = self.FileRenameInfoEx.FileName.offset
+            size = offset + len(target_bytes)
+            raw = self.ctypes.create_string_buffer(size)
+            information = self.FileRenameInfoEx.from_buffer(raw)
+            information.Flags = 0
+            information.RootDirectory = self.wintypes.HANDLE(target_root)
+            information.FileNameLength = len(target_bytes)
+            self.ctypes.memmove(
+                self.ctypes.addressof(raw) + offset,
+                target_bytes,
+                len(target_bytes),
+            )
+            if not self.kernel32.SetFileInformationByHandle(
+                self.wintypes.HANDLE(source_handle),
+                self.FILE_RENAME_INFO_EX,
+                self.ctypes.byref(raw),
+                size,
+            ):
+                raise self._last_error("SetFileInformationByHandle(FileRenameInfoEx)")
+            target_handle = self._open_relative(
+                target_root,
+                target,
+                directory=True,
+                allow_delete_share=True,
+            )
+            try:
+                if self._handle_identity(target_handle) != source_identity:
+                    raise GateError("Windows handle-relative rename identity drifted")
+            finally:
+                self.kernel32.CloseHandle(self.wintypes.HANDLE(target_handle))
+        finally:
+            self.kernel32.CloseHandle(self.wintypes.HANDLE(source_handle))
+
+    def write_relative_file(self, directory: str, filename: str, data: bytes) -> None:
+        import msvcrt
+
+        if self.transaction_handle is None:
+            raise GateError("Windows transaction directory handle is closed")
+        directory_handle = self._open_relative(
+            self.transaction_handle,
+            directory,
+            directory=True,
+        )
+        file_handle: int | None = None
+        descriptor: int | None = None
+        try:
+            file_handle = self._open_relative(
+                directory_handle,
+                filename,
+                directory=False,
+                create=True,
+            )
+            descriptor = msvcrt.open_osfhandle(
+                file_handle,
+                os.O_WRONLY | getattr(os, "O_BINARY", 0),
+            )
+            file_handle = None
+            with os.fdopen(descriptor, "wb") as output:
+                descriptor = None
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if file_handle is not None:
+                self.kernel32.CloseHandle(self.wintypes.HANDLE(file_handle))
+            self.kernel32.CloseHandle(self.wintypes.HANDLE(directory_handle))
+
+    def rename_to_transaction(self, source: str, destination: str) -> None:
+        if self.package_handle is None or self.transaction_handle is None:
+            raise GateError("Windows directory handles are closed")
+        self._rename(
+            self.package_handle,
+            source,
+            self.transaction_handle,
+            destination,
+        )
+
+    def rename_to_package(self, source: str, destination: str) -> None:
+        if self.package_handle is None or self.transaction_handle is None:
+            raise GateError("Windows directory handles are closed")
+        self._rename(
+            self.transaction_handle,
+            source,
+            self.package_handle,
+            destination,
+        )
+
+    def close(self) -> None:
+        for name in ("package_handle", "transaction_handle"):
+            handle = getattr(self, name, None)
+            if handle is not None:
+                self.kernel32.CloseHandle(self.wintypes.HANDLE(handle))
+                setattr(self, name, None)
+
+
 class _DirectoryRenamer:
     def __init__(self, package_parent: Path, transaction: Path):
         self.package_parent = package_parent
@@ -454,6 +823,7 @@ class _DirectoryRenamer:
         self.transaction_identity = _directory_identity(transaction)
         self.package_fd: int | None = None
         self.transaction_fd: int | None = None
+        self.windows: _WindowsDirectoryOperations | None = None
         if os.rename in os.supports_dir_fd and hasattr(os, "O_DIRECTORY"):
             flags = os.O_RDONLY | os.O_DIRECTORY
             if hasattr(os, "O_NOFOLLOW"):
@@ -464,6 +834,15 @@ class _DirectoryRenamer:
             except OSError:
                 self.close()
                 raise
+        elif os.name == "nt":
+            self.windows = _WindowsDirectoryOperations(
+                package_parent,
+                transaction,
+                self.package_identity,
+                self.transaction_identity,
+            )
+        else:
+            raise GateError("safe handle-relative directory operations are unavailable")
 
     def close(self) -> None:
         for descriptor in (self.package_fd, self.transaction_fd):
@@ -471,12 +850,52 @@ class _DirectoryRenamer:
                 os.close(descriptor)
         self.package_fd = None
         self.transaction_fd = None
+        if self.windows is not None:
+            self.windows.close()
+            self.windows = None
 
-    def _verify_fallback_parents(self) -> None:
-        if _directory_identity(self.package_parent) != self.package_identity:
-            raise GateError("ONNX Runtime package parent raced")
-        if _directory_identity(self.transaction) != self.transaction_identity:
-            raise GateError("ONNX Runtime transaction directory raced")
+    def write_receipt(
+        self,
+        directory_name: str,
+        filename: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+        if self.package_fd is not None and self.transaction_fd is not None:
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                directory_flags |= os.O_NOFOLLOW
+            directory_fd = os.open(
+                directory_name,
+                directory_flags,
+                dir_fd=self.transaction_fd,
+            )
+            descriptor: int | None = None
+            try:
+                file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                if hasattr(os, "O_NOFOLLOW"):
+                    file_flags |= os.O_NOFOLLOW
+                descriptor = os.open(
+                    filename,
+                    file_flags,
+                    0o644,
+                    dir_fd=directory_fd,
+                )
+                with os.fdopen(descriptor, "wb") as handle:
+                    descriptor = None
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                os.close(directory_fd)
+            return
+        if self.windows is None:
+            raise GateError("safe receipt creation backend is unavailable")
+        self.windows.write_relative_file(directory_name, filename, encoded)
 
     def to_transaction(self, source_name: str, destination_name: str) -> None:
         if self.package_fd is not None and self.transaction_fd is not None:
@@ -487,11 +906,9 @@ class _DirectoryRenamer:
                 dst_dir_fd=self.transaction_fd,
             )
             return
-        self._verify_fallback_parents()
-        os.rename(
-            self.package_parent / source_name,
-            self.transaction / destination_name,
-        )
+        if self.windows is None:
+            raise GateError("safe directory rename backend is unavailable")
+        self.windows.rename_to_transaction(source_name, destination_name)
 
     def to_package(self, source_name: str, destination_name: str) -> None:
         if self.package_fd is not None and self.transaction_fd is not None:
@@ -502,30 +919,52 @@ class _DirectoryRenamer:
                 dst_dir_fd=self.package_fd,
             )
             return
-        self._verify_fallback_parents()
-        os.rename(
-            self.transaction / source_name,
-            self.package_parent / destination_name,
-        )
+        if self.windows is None:
+            raise GateError("safe directory rename backend is unavailable")
+        self.windows.rename_to_package(source_name, destination_name)
 
 
-def _write_receipt(path: Path, payload: Mapping[str, object]) -> None:
-    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(path, flags, 0o644)
-        with os.fdopen(descriptor, "wb") as handle:
-            descriptor = None
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError as exc:
-        if descriptor is not None:
-            os.close(descriptor)
-        raise GateError(f"cannot write ONNX Runtime pruning receipt: {exc}") from exc
+def _expected_payload(
+    policy: Policy,
+    target_os: str,
+    target_arch: str,
+) -> tuple[dict[str, object], dict[str, str], dict[str, str]]:
+    target_key = (target_os, target_arch)
+    if target_key not in policy.targets:
+        raise GateError(f"unsupported ONNX Runtime target: {target_os}/{target_arch}")
+    keep_prefix = policy.targets[target_key] + "/"
+    kept = {
+        relative: digest
+        for relative, digest in policy.inventory.items()
+        if relative.startswith(keep_prefix)
+    }
+    if not kept:
+        raise GateError("target ONNX Runtime inventory is empty")
+    removed = {
+        relative: digest
+        for relative, digest in policy.inventory.items()
+        if relative not in kept
+    }
+    payload: dict[str, object] = {
+        "schema": "autoeditor-onnxruntime-node-target-prune/v2",
+        "target": {"os": target_os, "arch": target_arch},
+        "package": {
+            "name": policy.package_name,
+            "version": policy.package_version,
+            "integrity": policy.lock_entry.get("integrity"),
+            "inventorySha256Before": _inventory_digest(policy.inventory),
+            "inventorySha256After": _inventory_digest(kept),
+        },
+        "kept": [
+            {"path": relative, "sha256": digest}
+            for relative, digest in sorted(kept.items())
+        ],
+        "removed": [
+            {"path": relative, "sha256": digest}
+            for relative, digest in sorted(removed.items())
+        ],
+    }
+    return payload, kept, removed
 
 
 def run_gate(
@@ -537,8 +976,11 @@ def run_gate(
     policy: Policy = PRODUCTION_POLICY,
 ) -> dict[str, object]:
     target_key = (target_os, target_arch)
-    if target_key not in policy.targets:
-        raise GateError(f"unsupported ONNX Runtime target: {target_os}/{target_arch}")
+    payload, expected_after, remove = _expected_payload(
+        policy,
+        target_os,
+        target_arch,
+    )
     stage_root = _require_plain_directory(stage_root, "staging root")
     transaction_parent = _require_plain_directory(
         transaction_parent,
@@ -574,20 +1016,6 @@ def run_gate(
         policy.inventory,
         "published onnxruntime-node native",
     )
-    keep_prefix = policy.targets[target_key] + "/"
-    expected_after = {
-        relative: digest
-        for relative, digest in policy.inventory.items()
-        if relative.startswith(keep_prefix)
-    }
-    if not expected_after:
-        raise GateError("target ONNX Runtime inventory is empty")
-
-    remove = {
-        relative: digest
-        for relative, digest in policy.inventory.items()
-        if relative not in expected_after
-    }
     expected_target_package = _target_package_inventory(policy, expected_after)
     transaction = Path(
         tempfile.mkdtemp(
@@ -620,43 +1048,33 @@ def run_gate(
         expected_after,
         "prepared target-only onnxruntime-node native",
     )
-    payload: dict[str, object] = {
-        "schema": "autoeditor-onnxruntime-node-target-prune/v2",
-        "target": {"os": target_os, "arch": target_arch},
-        "package": {
-            "name": policy.package_name,
-            "version": policy.package_version,
-            "integrity": policy.lock_entry.get("integrity"),
-            "inventorySha256Before": _inventory_digest(before),
-            "inventorySha256After": _inventory_digest(after),
-        },
-        "kept": [
-            {"path": relative, "sha256": digest}
-            for relative, digest in sorted(expected_after.items())
-        ],
-        "removed": [
-            {"path": relative, "sha256": digest}
-            for relative, digest in sorted(remove.items())
-        ],
-    }
-    receipt_path = replacement / RECEIPT_RELATIVE_PATH
-    _write_receipt(receipt_path, payload)
-    expected_committed_package = dict(expected_target_package)
-    expected_committed_package[RECEIPT_RELATIVE_PATH.as_posix()] = _sha256(
-        receipt_path
-    )
-    prepared_files, prepared_directories = _inventory(replacement)
-    _compare_inventory(
-        prepared_files,
-        prepared_directories,
-        expected_committed_package,
-        "receipted target-only onnxruntime-node package",
-    )
-
+    if payload["package"]["inventorySha256Before"] != _inventory_digest(before):
+        raise GateError("published ONNX Runtime inventory digest drifted")
+    if payload["package"]["inventorySha256After"] != _inventory_digest(after):
+        raise GateError("target ONNX Runtime inventory digest drifted")
     renamer = _DirectoryRenamer(package_root.parent, transaction)
     original_moved = False
     replacement_moved = False
     try:
+        renamer.write_receipt(
+            replacement.name,
+            RECEIPT_RELATIVE_PATH.name,
+            payload,
+        )
+        receipt_bytes = (
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        expected_committed_package = dict(expected_target_package)
+        expected_committed_package[RECEIPT_RELATIVE_PATH.as_posix()] = (
+            hashlib.sha256(receipt_bytes).hexdigest()
+        )
+        prepared_files, prepared_directories = _inventory(replacement)
+        _compare_inventory(
+            prepared_files,
+            prepared_directories,
+            expected_committed_package,
+            "receipted target-only onnxruntime-node package",
+        )
         renamer.to_transaction(package_root.name, backup_name)
         original_moved = True
         renamer.to_package(replacement.name, package_root.name)
@@ -669,9 +1087,7 @@ def run_gate(
             "committed target-only onnxruntime-node package",
         )
         _verify_package_metadata(package_root, policy)
-        if (package_root / RECEIPT_RELATIVE_PATH).read_bytes() != (
-            json.dumps(payload, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8"):
+        if (package_root / RECEIPT_RELATIVE_PATH).read_bytes() != receipt_bytes:
             raise GateError("committed ONNX Runtime pruning receipt drifted")
     except Exception as exc:
         rollback_errors: list[str] = []
@@ -711,13 +1127,67 @@ def run_gate(
     return payload
 
 
+def verify_gate(
+    stage_root: Path,
+    lock_path: Path,
+    target_os: str,
+    target_arch: str,
+    policy: Policy = PRODUCTION_POLICY,
+) -> dict[str, object]:
+    payload, expected_native, _ = _expected_payload(
+        policy,
+        target_os,
+        target_arch,
+    )
+    stage_root = _require_plain_directory(stage_root, "staging root")
+    package_root = stage_root / policy.package_relative_root
+    native_root = package_root / policy.native_relative_root
+    _reject_linked_ancestors(stage_root, native_root)
+    package_root = _require_plain_directory(package_root, "onnxruntime-node package")
+    native_root = _require_plain_directory(native_root, "onnxruntime-node native root")
+    _verify_lock(lock_path.resolve(strict=True), policy)
+    _verify_package_metadata(package_root, policy)
+
+    receipt_bytes = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    receipt_path = package_root / RECEIPT_RELATIVE_PATH
+    try:
+        actual_receipt = receipt_path.read_bytes()
+    except OSError as exc:
+        raise GateError(f"cannot read ONNX Runtime pruning receipt: {exc}") from exc
+    if actual_receipt != receipt_bytes:
+        raise GateError("ONNX Runtime pruning receipt is noncanonical or drifted")
+
+    expected_package = _target_package_inventory(policy, expected_native)
+    expected_package[RECEIPT_RELATIVE_PATH.as_posix()] = hashlib.sha256(
+        receipt_bytes
+    ).hexdigest()
+    observed_package, observed_package_directories = _inventory(package_root)
+    _compare_inventory(
+        observed_package,
+        observed_package_directories,
+        expected_package,
+        "committed target-only onnxruntime-node package",
+    )
+    observed_native, observed_native_directories = _inventory(native_root)
+    _compare_inventory(
+        observed_native,
+        observed_native_directories,
+        expected_native,
+        "committed target-only onnxruntime-node native",
+    )
+    return payload
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prune exact non-target ONNX Runtime native files"
     )
     parser.add_argument("--stage-root", required=True, type=Path)
     parser.add_argument("--package-lock", required=True, type=Path)
-    parser.add_argument("--transaction-parent", required=True, type=Path)
+    parser.add_argument("--transaction-parent", type=Path)
+    parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--target-os", required=True, choices=("mac", "windows"))
     parser.add_argument("--target-arch", required=True, choices=("arm64", "x64"))
     return parser
@@ -726,13 +1196,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        payload = run_gate(
-            stage_root=args.stage_root,
-            lock_path=args.package_lock,
-            transaction_parent=args.transaction_parent,
-            target_os=args.target_os,
-            target_arch=args.target_arch,
-        )
+        if args.verify_only:
+            if args.transaction_parent is not None:
+                raise GateError("verify-only mode does not accept a transaction parent")
+            payload = verify_gate(
+                stage_root=args.stage_root,
+                lock_path=args.package_lock,
+                target_os=args.target_os,
+                target_arch=args.target_arch,
+            )
+        else:
+            if args.transaction_parent is None:
+                raise GateError("pruning requires --transaction-parent")
+            payload = run_gate(
+                stage_root=args.stage_root,
+                lock_path=args.package_lock,
+                transaction_parent=args.transaction_parent,
+                target_os=args.target_os,
+                target_arch=args.target_arch,
+            )
     except (GateError, OSError) as exc:
         print(f"ONNX Runtime target pruning failed: {exc}", file=sys.stderr)
         return 1

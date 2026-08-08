@@ -266,6 +266,7 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
     def _stage(self, product="helper") -> tuple[Path, Path]:
         licenses = self.root / f"{product}-licenses"
         browser = self.root / f"{product}-browser"
+        electron_dist = self.root / f"{product}-electron-dist"
         provenance.stage(
             lock_path=self.lock_path,
             desktop_package_lock=self.desktop_lock,
@@ -275,6 +276,7 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
             target_os="mac",
             target_arch="arm64",
             browser_dir=browser if product == "helper" else None,
+            electron_dist_dir=electron_dist,
             npm_package_archive=self.npm_archive,
             electron_archive=self.electron_archive,
             chrome_archive=(
@@ -367,6 +369,12 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
         executable = browser / "chrome-headless-shell-mac" / "chrome-headless-shell"
         self.assertTrue(executable.is_file())
         self.assertTrue(executable.stat().st_mode & 0o100)
+        retained = (
+            self.root
+            / "helper-electron-dist"
+            / self.lock["electron"]["archives"]["mac-arm64"]["filename"]
+        )
+        self.assertEqual(retained.read_bytes(), self.electron_archive.read_bytes())
         receipt = json.loads(
             (licenses / provenance.RECEIPT_FILENAME).read_text()
         )
@@ -400,8 +408,25 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
                 target_os="mac",
                 target_arch="arm64",
                 browser_dir=None,
+                electron_dist_dir=self.root / "repacked-electron-dist",
                 npm_package_archive=self.npm_archive,
                 electron_archive=repacked,
+            )
+
+    def test_verified_electron_distribution_cannot_be_replaced(self):
+        self._stage(product="pse")
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "destination already exists"
+        ):
+            provenance.prepare_electron_distribution(
+                lock_path=self.lock_path,
+                desktop_package_lock=self.desktop_lock,
+                electron_root=self.electron_root,
+                output_directory=self.root / "pse-electron-dist",
+                target_os="mac",
+                target_arch="arm64",
+                npm_package_archive=self.npm_archive,
+                electron_archive=self.electron_archive,
             )
 
     def test_notice_tampering_breaks_receipt_verification(self):
@@ -450,6 +475,7 @@ class ElectronChromiumProvenanceTests(unittest.TestCase):
                 target_os="mac",
                 target_arch="arm64",
                 browser_dir=self.root / "unsafe-browser",
+                electron_dist_dir=self.root / "unsafe-electron-dist",
                 npm_package_archive=self.npm_archive,
                 electron_archive=self.electron_archive,
                 chrome_archive=unsafe,

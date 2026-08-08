@@ -381,6 +381,48 @@ def _archive_path(
         yield path
 
 
+def _retain_verified_archive(
+    source: Path,
+    destination_directory: Path,
+    record: dict,
+) -> Path:
+    try:
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        metadata = destination_directory.lstat()
+    except OSError as exc:
+        raise ProvenanceError(
+            f"cannot prepare Electron distribution directory: {exc}"
+        ) from exc
+    if destination_directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise ProvenanceError("Electron distribution destination must be a plain directory")
+    destination = destination_directory / record["filename"]
+    if destination.exists() or destination.is_symlink():
+        raise ProvenanceError(f"Electron distribution destination already exists: {destination}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(destination, flags, 0o644)
+        with source.open("rb") as input_handle, os.fdopen(descriptor, "wb") as output:
+            descriptor = None
+            shutil.copyfileobj(input_handle, output, 1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        _verify_file(destination, record, "retained Electron binary archive")
+    except (OSError, ProvenanceError) as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if isinstance(exc, ProvenanceError):
+            raise
+        raise ProvenanceError(f"cannot retain Electron binary archive: {exc}") from exc
+    return destination
+
+
 def _tar_member_bytes(bundle: tarfile.TarFile, name: str) -> bytes:
     matches = [member for member in bundle.getmembers() if member.name == name]
     if len(matches) != 1 or not matches[0].isfile():
@@ -697,24 +739,18 @@ def verify_staged_notices(
         _verify_file(licenses / filename, record, filename)
 
 
-def stage(
+def prepare_electron_distribution(
     *,
     lock_path: Path,
     desktop_package_lock: Path,
     electron_root: Path,
-    licenses: Path,
-    product: str,
+    output_directory: Path,
     target_os: str,
     target_arch: str,
-    browser_dir: Path | None,
     npm_package_archive: Path | None = None,
     electron_archive: Path | None = None,
-    chrome_archive: Path | None = None,
-) -> Path | None:
+) -> tuple[Path, dict[str, bytes]]:
     lock = load_lock(lock_path)
-    receipt = expected_receipt(
-        lock, product=product, target_os=target_os, target_arch=target_arch
-    )
     target_key = TARGET_KEYS[(target_os, target_arch)]
     verify_desktop_package_lock(desktop_package_lock, lock)
     npm_record = lock["electron"]["npm_package"]
@@ -730,24 +766,62 @@ def stage(
             lock["electron"]["version"],
         )
     package_license = verify_installed_electron_package(electron_root, lock)
-    electron_archive_record = lock["electron"]["archives"][target_key]
-    electron_notice_records = (
+    archive_record = lock["electron"]["archives"][target_key]
+    notice_records = (
         lock["electron"]["notices"]["license"],
         lock["electron"]["notices"]["chromium_licenses"][target_os],
     )
     with _archive_path(
         electron_archive,
-        url=electron_archive_record["url"],
-        filename=electron_archive_record["filename"],
+        url=archive_record["url"],
+        filename=archive_record["filename"],
     ) as electron_path:
         notice_bytes = verify_electron_archive(
             electron_path,
-            electron_archive_record,
-            electron_notice_records,
+            archive_record,
+            notice_records,
             lock["electron"]["version"],
+        )
+        retained = _retain_verified_archive(
+            electron_path,
+            output_directory,
+            archive_record,
         )
     if notice_bytes[ELECTRON_NOTICE_NAMES[0]] != package_license:
         raise ProvenanceError("Electron package and binary licenses differ")
+    return retained, notice_bytes
+
+
+def stage(
+    *,
+    lock_path: Path,
+    desktop_package_lock: Path,
+    electron_root: Path,
+    licenses: Path,
+    product: str,
+    target_os: str,
+    target_arch: str,
+    browser_dir: Path | None,
+    electron_dist_dir: Path,
+    npm_package_archive: Path | None = None,
+    electron_archive: Path | None = None,
+    chrome_archive: Path | None = None,
+) -> Path | None:
+    lock = load_lock(lock_path)
+    receipt = expected_receipt(
+        lock, product=product, target_os=target_os, target_arch=target_arch
+    )
+    target_key = TARGET_KEYS[(target_os, target_arch)]
+    _, notice_bytes = prepare_electron_distribution(
+        lock_path=lock_path,
+        desktop_package_lock=desktop_package_lock,
+        electron_root=electron_root,
+        output_directory=electron_dist_dir,
+        target_os=target_os,
+        target_arch=target_arch,
+        npm_package_archive=npm_package_archive,
+        electron_archive=electron_archive,
+    )
     staged_browser = None
     if product == "helper":
         if browser_dir is None:
@@ -795,11 +869,25 @@ def main() -> None:
     stage_parser = subparsers.add_parser("stage", parents=[common])
     stage_parser.add_argument("--desktop-package-lock", type=Path, required=True)
     stage_parser.add_argument("--electron-root", type=Path, required=True)
+    stage_parser.add_argument("--electron-dist-dir", type=Path, required=True)
     stage_parser.add_argument("--browser-dir", type=Path)
     stage_parser.add_argument("--npm-package-archive", type=Path)
     stage_parser.add_argument("--electron-archive", type=Path)
     stage_parser.add_argument("--chrome-archive", type=Path)
     subparsers.add_parser("verify", parents=[common])
+    dist_parser = subparsers.add_parser("electron-dist")
+    dist_parser.add_argument("--lock", type=Path, required=True)
+    dist_parser.add_argument("--desktop-package-lock", type=Path, required=True)
+    dist_parser.add_argument("--electron-root", type=Path, required=True)
+    dist_parser.add_argument("--output-dir", type=Path, required=True)
+    dist_parser.add_argument(
+        "--target-os", choices=("mac", "windows"), required=True
+    )
+    dist_parser.add_argument(
+        "--target-arch", choices=("arm64", "x64"), required=True
+    )
+    dist_parser.add_argument("--npm-package-archive", type=Path)
+    dist_parser.add_argument("--electron-archive", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "stage":
@@ -812,12 +900,25 @@ def main() -> None:
                 target_os=args.target_os,
                 target_arch=args.target_arch,
                 browser_dir=args.browser_dir,
+                electron_dist_dir=args.electron_dist_dir,
                 npm_package_archive=args.npm_package_archive,
                 electron_archive=args.electron_archive,
                 chrome_archive=args.chrome_archive,
             )
             suffix = f" and browser {staged_browser}" if staged_browser else ""
             print(f"Electron and Chromium notices staged{suffix}")
+        elif args.command == "electron-dist":
+            retained, _ = prepare_electron_distribution(
+                lock_path=args.lock,
+                desktop_package_lock=args.desktop_package_lock,
+                electron_root=args.electron_root,
+                output_directory=args.output_dir,
+                target_os=args.target_os,
+                target_arch=args.target_arch,
+                npm_package_archive=args.npm_package_archive,
+                electron_archive=args.electron_archive,
+            )
+            print(f"Verified Electron distribution retained at {retained}")
         else:
             lock = load_lock(args.lock)
             verify_staged_notices(

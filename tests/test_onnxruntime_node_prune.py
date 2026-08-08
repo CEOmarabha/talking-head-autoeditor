@@ -214,8 +214,8 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
             fixture = Fixture(temp)
             before, before_directories = PRUNER._inventory(fixture.package)
             with mock.patch.object(
-                PRUNER,
-                "_write_receipt",
+                PRUNER._DirectoryRenamer,
+                "write_receipt",
                 side_effect=PRUNER.GateError("forced receipt failure"),
             ):
                 with self.assertRaisesRegex(PRUNER.GateError, "receipt failure"):
@@ -223,6 +223,81 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
             after, after_directories = PRUNER._inventory(fixture.package)
             self.assertEqual(after, before)
             self.assertEqual(after_directories, before_directories)
+
+    def test_receipt_parent_swap_never_writes_outside_transaction(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(temp)
+            outside = Path(temp) / "outside-receipt-target"
+            outside.mkdir()
+            original = PRUNER._DirectoryRenamer.write_receipt
+
+            def swap_then_write(renamer, directory_name, filename, payload):
+                candidate = renamer.transaction / directory_name
+                moved = renamer.transaction / "moved-target-package"
+                candidate.rename(moved)
+                candidate.symlink_to(outside, target_is_directory=True)
+                return original(renamer, directory_name, filename, payload)
+
+            with mock.patch.object(
+                PRUNER._DirectoryRenamer,
+                "write_receipt",
+                autospec=True,
+                side_effect=swap_then_write,
+            ):
+                with self.assertRaises((PRUNER.GateError, OSError)):
+                    fixture.run()
+            self.assertFalse(
+                (outside / PRUNER.RECEIPT_RELATIVE_PATH.name).exists()
+            )
+
+    def test_verify_only_rejects_payload_or_receipt_drift(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(temp)
+            expected = fixture.run()
+            self.assertEqual(
+                PRUNER.verify_gate(
+                    fixture.stage,
+                    fixture.lock,
+                    "windows",
+                    "x64",
+                    fixture.policy,
+                ),
+                expected,
+            )
+            binding = fixture.native / "win32" / "x64" / "binding.node"
+            binding.write_bytes(b"drift after prune")
+            with self.assertRaisesRegex(PRUNER.GateError, "inventory drift"):
+                PRUNER.verify_gate(
+                    fixture.stage,
+                    fixture.lock,
+                    "windows",
+                    "x64",
+                    fixture.policy,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(temp)
+            fixture.run()
+            fixture.receipt.write_bytes(b"{}\n")
+            with self.assertRaisesRegex(PRUNER.GateError, "receipt"):
+                PRUNER.verify_gate(
+                    fixture.stage,
+                    fixture.lock,
+                    "windows",
+                    "x64",
+                    fixture.policy,
+                )
+
+    def test_no_unsafe_path_rename_fallback_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            package_parent = Path(temp) / "package-parent"
+            transaction = Path(temp) / "transaction"
+            package_parent.mkdir()
+            transaction.mkdir()
+            with mock.patch.object(PRUNER.os, "supports_dir_fd", set()), \
+                    mock.patch.object(PRUNER.os, "name", "posix"):
+                with self.assertRaisesRegex(PRUNER.GateError, "unavailable"):
+                    PRUNER._DirectoryRenamer(package_parent, transaction)
 
     def test_late_replacement_drift_leaves_published_package_byte_identical(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -318,6 +393,7 @@ class OnnxRuntimeNodePruneTests(unittest.TestCase):
         self.assertNotIn("--receipt", options)
         self.assertNotIn("--expected-digest", options)
         self.assertIn("--transaction-parent", options)
+        self.assertIn("--verify-only", options)
 
     def test_production_policy_and_repository_lock_are_exact(self):
         root = Path(__file__).resolve().parents[1]

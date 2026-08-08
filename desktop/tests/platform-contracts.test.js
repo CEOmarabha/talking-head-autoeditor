@@ -127,7 +127,20 @@ assert.ok(helperWorkflow.includes(
   'stage_electron_chromium_provenance.py verify'));
 assert.ok(helperWorkflow.includes('--product helper'));
 assert.ok(helperWorkflow.includes('--browser-dir "$STAGE/browser"'));
+assert.ok(helperWorkflow.includes(
+  '--electron-dist-dir "$RUNNER_TEMP/electron-dist"'));
 assert.ok(!helperWorkflow.includes('browser ensure'));
+assert.strictEqual(
+  (helperWorkflow.match(/npx (?:--no-install )?electron-builder /g) || []).length,
+  4);
+assert.strictEqual(
+  (helperWorkflow.match(
+    /--config\.electronDist="\$RUNNER_TEMP\/electron-dist"/g) || []).length,
+  4);
+assert.strictEqual(
+  (helperWorkflow.match(
+    /stage_electron_chromium_provenance\.py electron-dist/g) || []).length,
+  2);
 const helperProvenanceStageAt = helperWorkflow.indexOf(
   'stage_electron_chromium_provenance.py stage');
 const helperRenderProbeAt = helperWorkflow.indexOf(
@@ -144,6 +157,19 @@ assert.ok(workflow.includes('Stage hash-locked Electron and Chromium notices'));
 assert.ok(workflow.includes('stage_electron_chromium_provenance.py stage'));
 assert.ok(workflow.includes('stage_electron_chromium_provenance.py verify'));
 assert.ok(workflow.includes('--product pse'));
+assert.ok(workflow.includes(
+  '--electron-dist-dir "$RUNNER_TEMP/electron-dist"'));
+assert.strictEqual(
+  (workflow.match(/npx (?:--no-install )?electron-builder /g) || []).length,
+  3);
+assert.strictEqual(
+  (workflow.match(
+    /--config\.electronDist="\$RUNNER_TEMP\/electron-dist"/g) || []).length,
+  3);
+assert.strictEqual(
+  (workflow.match(
+    /stage_electron_chromium_provenance\.py electron-dist/g) || []).length,
+  2);
 const pseProvenanceStageAt = workflow.indexOf(
   'stage_electron_chromium_provenance.py stage');
 const pseProvenanceVerifyAt = workflow.indexOf(
@@ -158,6 +184,11 @@ assert.ok(electronChromiumProvenance.includes(
   'Electron npm package SHA-512 integrity drifted'));
 assert.ok(electronChromiumProvenance.includes(
   'Chrome Headless Shell archive'));
+assert.ok(electronChromiumProvenance.includes(
+  'def prepare_electron_distribution('));
+assert.ok(electronChromiumProvenance.includes(
+  'retained Electron binary archive'));
+assert.ok(electronChromiumProvenance.includes('os.O_EXCL'));
 assert.strictEqual(electronChromiumLock.provenance_status, 'complete');
 assert.strictEqual(electronChromiumLock.electron.version, '43.3.0');
 assert.strictEqual(electronChromiumLock.electron.source.commit,
@@ -324,11 +355,15 @@ const helperCreativeProbeAt = helperWorkflow.indexOf(
   '- name: Render real HyperFrames and Remotion probes');
 const helperRuntimeManifestAt = helperWorkflow.indexOf(
   '- name: Write exact runtime manifest');
+const helperOnnxVerifyAt = helperWorkflow.indexOf(
+  'prune_onnxruntime_node.py --verify-only');
 assert.ok(helperCreativeBundleAt >= 0);
 assert.ok(helperOnnxPruneAt > helperCreativeBundleAt);
 assert.ok(helperRemotionPruneAt > helperOnnxPruneAt);
 assert.ok(helperCreativeProbeAt > helperRemotionPruneAt);
 assert.ok(helperRuntimeManifestAt > helperCreativeProbeAt);
+assert.ok(helperOnnxVerifyAt > helperCreativeProbeAt);
+assert.ok(helperOnnxVerifyAt < helperManifestGenerationAt);
 const helperOnnxPruneBlock = helperWorkflow.slice(
   helperOnnxPruneAt, helperRemotionPruneAt);
 assert.ok(helperOnnxPruneBlock.includes('prune_onnxruntime_node.py'));
@@ -347,6 +382,13 @@ assert.ok(onnxRuntimeNodePruner.includes(
   'autoeditor-onnxruntime-node-target-prune/v2'));
 assert.ok(onnxRuntimeNodePruner.includes('shutil.copytree'));
 assert.ok(onnxRuntimeNodePruner.includes('published-package'));
+assert.ok(onnxRuntimeNodePruner.includes('SetFileInformationByHandle'));
+assert.ok(onnxRuntimeNodePruner.includes('NtCreateFile'));
+assert.ok(onnxRuntimeNodePruner.includes('dir_fd=self.transaction_fd'));
+assert.ok(onnxRuntimeNodePruner.includes('def verify_gate('));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'safe handle-relative directory operations are unavailable'));
+assert.ok(!onnxRuntimeNodePruner.includes('_verify_fallback_parents'));
 assert.ok(!onnxRuntimeNodePruner.includes('shutil.rmtree'));
 assert.ok(!onnxRuntimeNodePruner.includes('.glob('));
 assert.ok(!onnxRuntimeNodePruner.includes('.unlink('));
@@ -499,6 +541,24 @@ const pseUnsigned = jobSlice(workflow, '\n  build:', '\n  sign-windows:');
 const pseWindows = jobSlice(workflow, '\n  sign-windows:', '\n  sign-macos:');
 const pseMac = jobSlice(workflow, '\n  sign-macos:', '\n  release:');
 const releaseWorkflow = jobSlice(workflow, '\n  release:', null);
+
+for (const packagingJob of [
+  helperUnsigned, helperWindows, helperMac, pseUnsigned, pseWindows, pseMac,
+]) {
+  const stageAt = packagingJob.indexOf(
+    'stage_electron_chromium_provenance.py stage');
+  const distAt = packagingJob.indexOf(
+    'stage_electron_chromium_provenance.py electron-dist');
+  const prepareAt = Math.max(stageAt, distAt);
+  const buildAt = packagingJob.indexOf('electron-builder --config');
+  const builds = (packagingJob.match(
+    /npx (?:--no-install )?electron-builder /g) || []).length;
+  const pinned = (packagingJob.match(
+    /--config\.electronDist="\$RUNNER_TEMP\/electron-dist"/g) || []).length;
+  assert.ok(prepareAt >= 0);
+  assert.ok(buildAt > prepareAt);
+  assert.strictEqual(pinned, builds);
+}
 
 for (const windowsInstallerJob of [helperUnsigned, helperWindows]) {
   const prepareAt = windowsInstallerJob.indexOf('prepare_nsis_web.py');
