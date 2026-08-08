@@ -6,6 +6,7 @@ umask 022
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 VERIFIER="$SCRIPT_DIR/verify_windows_ffmpeg.py"
+LINKAGE_VERIFIER="$SCRIPT_DIR/windows_ffmpeg_link_receipt.py"
 SOURCE_LOCK="$SCRIPT_DIR/windows-ffmpeg-sources.lock.json"
 CAPABILITIES="$SCRIPT_DIR/windows-ffmpeg-capabilities.json"
 
@@ -137,6 +138,32 @@ inside_container() {
     --tools-makefile fftools/Makefile \
     --config-mak ffbuild/config.mak
   make -j2 ffmpeg.exe ffprobe.exe
+  rm -f -- ffmpeg.exe ffmpeg_g.exe ffprobe.exe ffprobe_g.exe
+  mkdir -p /artifact/linkage
+  local program
+  for program in ffmpeg ffprobe; do
+    local link_flags
+    link_flags="-Wl,--Map=/artifact/linkage/$program.lldmap,--verbose,--threads=1,--reproduce=/artifact/linkage/$program-reproduce.tar"
+    make -j1 "$program.exe" "LDFLAGS-$program=$link_flags" 2>&1 | \
+      tee "/artifact/linkage/$program.verbose.log"
+    [[ -f "$program.exe" && -f "${program}_g.exe" ]] || \
+      fail "The captured $program link did not create both executables"
+    install -m 0755 "${program}_g.exe" "/artifact/linkage/${program}_g.exe"
+    python3 /repository/packaging/windows_ffmpeg_link_receipt.py create \
+      --program "$program" \
+      --reproduce "/artifact/linkage/$program-reproduce.tar" \
+      --lld-map "/artifact/linkage/$program.lldmap" \
+      --verbose-log "/artifact/linkage/$program.verbose.log" \
+      --unstripped-executable "/artifact/linkage/${program}_g.exe" \
+      --receipt "/artifact/linkage/$program-linkage-receipt.json"
+    python3 /repository/packaging/windows_ffmpeg_link_receipt.py verify \
+      --program "$program" \
+      --reproduce "/artifact/linkage/$program-reproduce.tar" \
+      --lld-map "/artifact/linkage/$program.lldmap" \
+      --verbose-log "/artifact/linkage/$program.verbose.log" \
+      --unstripped-executable "/artifact/linkage/${program}_g.exe" \
+      --receipt "/artifact/linkage/$program-linkage-receipt.json"
+  done
   "$TARGET-strip" --strip-all ffmpeg.exe ffprobe.exe
   install -m 0755 ffmpeg.exe /artifact/ffmpeg.exe
   install -m 0755 ffprobe.exe /artifact/ffprobe.exe
@@ -154,6 +181,7 @@ inside_container() {
     /artifact/licenses/zlib-LICENSE
   touch -d "@$SOURCE_DATE_EPOCH" \
     /artifact/ffmpeg.exe /artifact/ffprobe.exe /artifact/licenses/*
+  find /artifact/linkage -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
   if find /artifact -maxdepth 1 -type f -iname '*.dll' -print -quit | grep -q .; then
     fail "The Windows FFmpeg artifact unexpectedly contains a DLL"
   fi
@@ -199,6 +227,7 @@ outer_build() {
     packaging/windows-ffmpeg-capabilities.json \
     packaging/build_windows_ffmpeg.sh \
     packaging/verify_windows_ffmpeg.py \
+    packaging/windows_ffmpeg_link_receipt.py \
     packaging/WINDOWS_FFMPEG_BUILD.md \
     packaging/source_bundle.py; do
     git -C "$REPO_ROOT" cat-file -e "$repository_commit:$tracked" || \
@@ -306,6 +335,16 @@ PY
     --capabilities "$CAPABILITIES" \
     --ffmpeg "$output_dir/ffmpeg.exe" \
     --ffprobe "$output_dir/ffprobe.exe"
+  local program
+  for program in ffmpeg ffprobe; do
+    python3 "$LINKAGE_VERIFIER" verify \
+      --program "$program" \
+      --reproduce "$output_dir/linkage/$program-reproduce.tar" \
+      --lld-map "$output_dir/linkage/$program.lldmap" \
+      --verbose-log "$output_dir/linkage/$program.verbose.log" \
+      --unstripped-executable "$output_dir/linkage/${program}_g.exe" \
+      --receipt "$output_dir/linkage/$program-linkage-receipt.json"
+  done
   printf '%s\n' "Windows FFmpeg source build completed: $output_dir"
 }
 

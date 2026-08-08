@@ -35,6 +35,7 @@ jobs:
       - name: Verify source-build contracts
         run: |
           python -m unittest -v tests.test_windows_ffmpeg_contract
+          python -m unittest -v tests.test_windows_ffmpeg_link_receipt
           python packaging/verify_windows_ffmpeg.py contracts
           bash -n packaging/build_windows_ffmpeg.sh
           git diff --check
@@ -153,11 +154,35 @@ jobs:
         with:
           name: windows-ffmpeg-one
           path: ${{ runner.temp }}/accepted
+      - name: Download second build for linkage comparison
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-two
+          path: ${{ runner.temp }}/second-build
       - name: Require reproducible executable and source receipts
         run: |
           python packaging/verify_windows_ffmpeg.py compare-receipts \
             --first "${RUNNER_TEMP}/receipt-one/windows-ffmpeg-build-receipt.json" \
             --second "${RUNNER_TEMP}/receipt-two/windows-ffmpeg-build-receipt.json"
+          for program in ffmpeg ffprobe; do
+            python packaging/windows_ffmpeg_link_receipt.py verify \
+              --program "$program" \
+              --reproduce "${RUNNER_TEMP}/accepted/linkage/$program-reproduce.tar" \
+              --lld-map "${RUNNER_TEMP}/accepted/linkage/$program.lldmap" \
+              --verbose-log "${RUNNER_TEMP}/accepted/linkage/$program.verbose.log" \
+              --unstripped-executable "${RUNNER_TEMP}/accepted/linkage/${program}_g.exe" \
+              --receipt "${RUNNER_TEMP}/accepted/linkage/$program-linkage-receipt.json"
+            python packaging/windows_ffmpeg_link_receipt.py verify \
+              --program "$program" \
+              --reproduce "${RUNNER_TEMP}/second-build/linkage/$program-reproduce.tar" \
+              --lld-map "${RUNNER_TEMP}/second-build/linkage/$program.lldmap" \
+              --verbose-log "${RUNNER_TEMP}/second-build/linkage/$program.verbose.log" \
+              --unstripped-executable "${RUNNER_TEMP}/second-build/linkage/${program}_g.exe" \
+              --receipt "${RUNNER_TEMP}/second-build/linkage/$program-linkage-receipt.json"
+            cmp \
+              "${RUNNER_TEMP}/accepted/linkage/$program-linkage-receipt.json" \
+              "${RUNNER_TEMP}/second-build/linkage/$program-linkage-receipt.json"
+          done
           cp \
             "${RUNNER_TEMP}/receipt-one/windows-ffmpeg-build-receipt.json" \
             "${RUNNER_TEMP}/accepted/windows-ffmpeg-build-receipt.json"
