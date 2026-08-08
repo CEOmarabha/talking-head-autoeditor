@@ -785,6 +785,14 @@ print(json.dumps({"streams": [
         self.assertIn("compare-receipts", workflow)
         self.assertEqual(workflow.count("--license-dir"), 2)
         self.assertEqual(workflow.count("overwrite: true"), 3)
+        self.assertIn("workflow_call:", workflow)
+        self.assertNotIn("push:\n    branches:", workflow)
+        self.assertIn("artifact_id: ${{ steps.accepted.outputs.artifact-id }}", workflow)
+        self.assertIn(
+            "artifact_digest: ${{ steps.accepted.outputs.artifact-digest }}",
+            workflow,
+        )
+        self.assertIn("id: accepted", workflow)
         self.assertLess(
             workflow.index("compare-receipts"),
             workflow.index("Upload accepted source-built runtime"),

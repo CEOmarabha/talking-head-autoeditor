@@ -1,10 +1,18 @@
 name: Build source-pinned Windows FFmpeg
 
 on:
+  workflow_call:
+    outputs:
+      artifact_id:
+        description: Artifact ID for the accepted source-built Windows runtime
+        value: ${{ jobs.compare.outputs.artifact_id }}
+      artifact_name:
+        description: Exact accepted artifact name
+        value: ${{ jobs.compare.outputs.artifact_name }}
+      artifact_digest:
+        description: GitHub artifact SHA-256 digest
+        value: ${{ jobs.compare.outputs.artifact_digest }}
   workflow_dispatch:
-  push:
-    branches:
-      - work/windows-ffmpeg-foundation
 
 permissions:
   contents: read
@@ -119,6 +127,10 @@ jobs:
     needs: receipt
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      artifact_id: ${{ steps.accepted.outputs.artifact-id }}
+      artifact_name: windows-ffmpeg-accepted-${{ github.sha }}
+      artifact_digest: ${{ steps.accepted.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -150,6 +162,7 @@ jobs:
             "${RUNNER_TEMP}/receipt-one/windows-ffmpeg-build-receipt.json" \
             "${RUNNER_TEMP}/accepted/windows-ffmpeg-build-receipt.json"
       - name: Upload accepted source-built runtime
+        id: accepted
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: windows-ffmpeg-accepted-${{ github.sha }}
