@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -20,6 +21,7 @@ SCRIPT = ROOT / "packaging" / "verify_windows_ffmpeg.py"
 SOURCE_LOCK = ROOT / "packaging" / "windows-ffmpeg-sources.lock.json"
 CAPABILITIES = ROOT / "packaging" / "windows-ffmpeg-capabilities.json"
 BUILD_SCRIPT = ROOT / "packaging" / "build_windows_ffmpeg.sh"
+NASM_PATCH_SCRIPT = ROOT / "packaging" / "patch_nasm_coff_timestamp.py"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
 SPEC = importlib.util.spec_from_file_location("verify_windows_ffmpeg", SCRIPT)
 if SPEC is None or SPEC.loader is None:
@@ -36,6 +38,15 @@ if SOURCE_BUNDLE_SPEC is None or SOURCE_BUNDLE_SPEC.loader is None:
 source_bundle = importlib.util.module_from_spec(SOURCE_BUNDLE_SPEC)
 sys.modules[SOURCE_BUNDLE_SPEC.name] = source_bundle
 SOURCE_BUNDLE_SPEC.loader.exec_module(source_bundle)
+
+NASM_PATCH_SPEC = importlib.util.spec_from_file_location(
+    "patch_nasm_coff_timestamp_for_test", NASM_PATCH_SCRIPT
+)
+if NASM_PATCH_SPEC is None or NASM_PATCH_SPEC.loader is None:
+    raise RuntimeError("cannot load patch_nasm_coff_timestamp.py")
+nasm_patch = importlib.util.module_from_spec(NASM_PATCH_SPEC)
+sys.modules[NASM_PATCH_SPEC.name] = nasm_patch
+NASM_PATCH_SPEC.loader.exec_module(nasm_patch)
 
 
 def canonical(value):
@@ -1005,11 +1016,12 @@ print(json.dumps({"streams": [
         self.assertIn("verify-configure-help", text)
         self.assertIn("verify-makefile", text)
         self.assertIn("verify-link-evidence", text)
-        self.assertIn("export NASMENV=--reproducible", text)
-        self.assertEqual(
-            self.capability_value["build"]["environment"]["NASMENV"],
-            "--reproducible",
-        )
+        self.assertNotIn("NASMENV", text)
+        self.assertNotIn("NASMENV", self.capability_value["build"]["environment"])
+        self.assertIn("patch_nasm_coff_timestamp.py apply", text)
+        self.assertIn("patch_nasm_coff_timestamp.py verify", text)
+        self.assertIn("packaging/patch_nasm_coff_timestamp.py \\", text)
+        self.assertIn("tail -n 300 ffbuild/config.log", text)
         self.assertIn("make -j2 ffmpeg.exe ffprobe.exe", text)
         self.assertIn("--Map=/artifact/link-evidence/", text)
         self.assertIn("--verbose", text)
@@ -1060,6 +1072,50 @@ print(json.dumps({"streams": [
             workflow.index("compare-receipts"),
             workflow.index("Upload reproducible unverified evidence candidate"),
         )
+
+    def test_nasm_source_contract_binds_timestamp_only_patch(self):
+        nasm = next(
+            source for source in self.source_value["sources"] if source["id"] == "nasm"
+        )
+        patch_path = "packaging/patch_nasm_coff_timestamp.py"
+        self.assertEqual(nasm["patches"], [patch_path])
+        self.assertEqual(nasm["build"][-1], patch_path)
+        raw = b"prefix\n" + nasm_patch.UPSTREAM_LINE + b"suffix\n"
+        patched = nasm_patch.patched_bytes(raw)
+        self.assertEqual(patched.count(nasm_patch.PATCHED_LINE), 1)
+        self.assertNotIn(nasm_patch.UPSTREAM_LINE, patched)
+        self.assertEqual(patched[:4], raw[:4])
+        self.assertEqual(patched[-7:], raw[-7:])
+        with self.assertRaisesRegex(nasm_patch.PatchError, "source seam drifted"):
+            nasm_patch.patched_bytes(b"no pinned timestamp seam\n")
+        with self.assertRaisesRegex(nasm_patch.PatchError, "LF line endings"):
+            nasm_patch.patched_bytes(raw.replace(b"\n", b"\r\n"))
+
+    def test_nasm_timestamp_patch_applies_atomically_and_rejects_symlink(self):
+        raw = b"prefix\n" + nasm_patch.UPSTREAM_LINE + b"suffix\n"
+        patched = nasm_patch.patched_bytes(raw)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "output"
+            output.mkdir()
+            source = output / "outcoff.c"
+            source.write_bytes(raw)
+            with (
+                mock.patch.object(
+                    nasm_patch, "UPSTREAM_SHA256", hashlib.sha256(raw).hexdigest()
+                ),
+                mock.patch.object(
+                    nasm_patch, "PATCHED_SHA256", hashlib.sha256(patched).hexdigest()
+                ),
+            ):
+                nasm_patch.apply_patch(root)
+                nasm_patch.verify_patch(root)
+                self.assertEqual(source.read_bytes(), patched)
+                self.assertFalse((output / "outcoff.c.autoeditor-patch").exists())
+                source.unlink()
+                source.symlink_to(root / "outside.c")
+                with self.assertRaisesRegex(nasm_patch.PatchError, "non-symlink"):
+                    nasm_patch.verify_patch(root)
 
 
 if __name__ == "__main__":

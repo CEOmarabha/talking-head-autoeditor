@@ -44,9 +44,12 @@ docker.io/mstorsjo/llvm-mingw:20260616@sha256:a6371b0e370e2e9839a147a8a23195ed98
 ```
 
 The container builds NASM 3.01, static zlib, static x264, FFmpeg, and FFprobe.
-Every NASM invocation inherits `NASMENV=--reproducible`, which removes the
-COFF timestamp and version fields that otherwise change static archive bytes
-between clean builds.
+Before NASM is compiled, `patch_nasm_coff_timestamp.py` verifies the exact
+upstream `output/outcoff.c` bytes and changes only the Win32/Win64 COFF header
+timestamp to zero. The normal `.file` auxiliary record and all other NASM
+output semantics remain intact. This removes the sole 172-object difference
+observed between the two hosted clean builds without using NASM's broader
+`--reproducible` mode.
 It binds the pinned FFmpeg make rules and configured `.exe` suffix before
 running `make -j2 ffmpeg.exe ffprobe.exe`. Each final program link is repeated
 with one LLD thread and evidence flags. The MinGW LLD driver translates

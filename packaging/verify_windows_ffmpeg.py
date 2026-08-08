@@ -27,10 +27,10 @@ CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
 RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v3"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "e0aa5a65142d0d9c70fe6cdad7e147662b038f1f6a39d733c64c1a1d25407cd8"
+    "c4f222982b5f0d61f0a612108705802fa5aad139d195bc24561721c2320ad6ff"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "dc070e461ab436c0ebe0e9b18ecabcc32f84a2086bf91565001267f925195f0e"
+    "1c0bcc226d76d8e8a9520ffc93d3f19b3f23342e50836d163cb4aae53aa098b7"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -715,9 +715,23 @@ def _validate_source_lock(value: dict[str, Any]) -> None:
         if not SHA256_RE.fullmatch(digest):
             raise WindowsFFmpegError(f"{label}.archive_sha256 is invalid")
         _string_list(source["license"], f"{label}.license")
-        _string_list(source["build"], f"{label}.build")
-        if source["patches"] != ["none"]:
-            raise WindowsFFmpegError(f"{label}.patches must explicitly be ['none']")
+        build_entries = _string_list(source["build"], f"{label}.build")
+        patch_entries = _string_list(source["patches"], f"{label}.patches")
+        expected_patch = "packaging/patch_nasm_coff_timestamp.py"
+        expected_patches = [expected_patch] if source_id == "nasm" else ["none"]
+        if patch_entries != expected_patches:
+            raise WindowsFFmpegError(
+                f"{label}.patches must be exactly {expected_patches!r}"
+            )
+        if source_id == "nasm":
+            if build_entries != [
+                "packaging/build_windows_ffmpeg.sh",
+                "packaging/WINDOWS_FFMPEG_BUILD.md",
+                expected_patch,
+            ]:
+                raise WindowsFFmpegError("NASM build contract does not bind its exact patch")
+        elif expected_patch in build_entries:
+            raise WindowsFFmpegError(f"{label}.build must not claim the NASM patch")
 
         git_ref = source["git_ref"]
         if not isinstance(git_ref, dict):
@@ -815,7 +829,7 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
     _exact_fields(
         environment,
         {
-            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "NASMENV", "PATH_PREFIX",
+            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "PATH_PREFIX",
             "PREFIX", "SOURCE_DATE_EPOCH", "TARGET", "TZ", "ZERO_AR_DATE",
         },
         "build.environment",
@@ -824,8 +838,6 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
         raise WindowsFFmpegError("build SOURCE_DATE_EPOCH drifted")
     if environment["LC_ALL"] != "C" or environment["TZ"] != "UTC":
         raise WindowsFFmpegError("build locale or timezone drifted")
-    if environment["NASMENV"] != "--reproducible":
-        raise WindowsFFmpegError("NASM reproducible-output mode drifted")
     link_evidence = build["link_evidence"]
     if not isinstance(link_evidence, dict):
         raise WindowsFFmpegError("build.link_evidence must be an object")
@@ -1897,7 +1909,7 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
     _exact_fields(
         environment,
         {
-            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "NASMENV", "PATH_PREFIX",
+            "COMMON_CFLAGS", "COMMON_LDFLAGS", "LC_ALL", "PATH_PREFIX",
             "PREFIX", "SOURCE_DATE_EPOCH", "TARGET", "TZ", "ZERO_AR_DATE",
         },
         "receipt build.environment",

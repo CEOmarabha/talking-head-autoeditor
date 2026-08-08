@@ -57,7 +57,6 @@ inside_container() {
   export PREFIX=/build/autoeditor-media/prefix
   export SOURCE_DATE_EPOCH=1785458830
   export ZERO_AR_DATE=1
-  export NASMENV=--reproducible
   export TZ=UTC
   export LC_ALL=C
   export COMMON_CFLAGS='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media'
@@ -90,6 +89,11 @@ inside_container() {
     /source-cache/mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz \
     -C sources \
     mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt
+
+  python3 /repository/packaging/patch_nasm_coff_timestamp.py apply \
+    --source-root sources/nasm-3.01
+  python3 /repository/packaging/patch_nasm_coff_timestamp.py verify \
+    --source-root sources/nasm-3.01
 
   find sources -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
@@ -140,7 +144,13 @@ inside_container() {
     --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
     --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
     --configure-help /build/autoeditor-media/ffmpeg-configure-help.txt
-  ./configure "${CONFIGURE_ARGS[@]}"
+  if ! ./configure "${CONFIGURE_ARGS[@]}"; then
+    if [[ -f ffbuild/config.log ]]; then
+      printf '%s\n' "FFmpeg configure failed; final config.log section follows" >&2
+      tail -n 300 ffbuild/config.log >&2
+    fi
+    fail "FFmpeg configure rejected the pinned source build"
+  fi
   python3 /repository/packaging/verify_windows_ffmpeg.py verify-makefile \
     --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
     --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
@@ -250,6 +260,7 @@ outer_build() {
     packaging/windows-ffmpeg-sources.lock.json \
     packaging/windows-ffmpeg-capabilities.json \
     packaging/build_windows_ffmpeg.sh \
+    packaging/patch_nasm_coff_timestamp.py \
     packaging/verify_windows_ffmpeg.py \
     packaging/windows_ffmpeg_link_receipt.py \
     packaging/WINDOWS_FFMPEG_BUILD.md \

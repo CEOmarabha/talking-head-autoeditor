@@ -61,7 +61,6 @@
       "COMMON_CFLAGS": "-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -ffile-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media -fdebug-prefix-map=/build/autoeditor-media=/usr/src/autoeditor-media",
       "COMMON_LDFLAGS": "-Wl,--nxcompat,--dynamicbase,--high-entropy-va,--no-insert-timestamp",
       "LC_ALL": "C",
-      "NASMENV": "--reproducible",
       "PATH_PREFIX": "/opt/nasm-3.01/bin",
       "PREFIX": "/build/autoeditor-media/prefix",
       "SOURCE_DATE_EPOCH": "1785458830",
@@ -88,7 +87,7 @@
         "ffprobe.exe"
       ]
     },
-    "source_lock_sha256": "e0aa5a65142d0d9c70fe6cdad7e147662b038f1f6a39d733c64c1a1d25407cd8",
+    "source_lock_sha256": "c4f222982b5f0d61f0a612108705802fa5aad139d195bc24561721c2320ad6ff",
     "strip": {
       "arguments": [
         "--strip-all"

@@ -135,7 +135,8 @@
       "archive_sha256": "b7324cbe86e767b65f26f467ed8b12ad80e124e3ccb89076855c98e43a9eddd4",
       "build": [
         "packaging/build_windows_ffmpeg.sh",
-        "packaging/WINDOWS_FFMPEG_BUILD.md"
+        "packaging/WINDOWS_FFMPEG_BUILD.md",
+        "packaging/patch_nasm_coff_timestamp.py"
       ],
       "fetch": {
         "method": "https-archive",
@@ -153,7 +154,7 @@
         "LICENSE"
       ],
       "patches": [
-        "none"
+        "packaging/patch_nasm_coff_timestamp.py"
       ],
       "role": "build-tool",
       "version": "3.01"
