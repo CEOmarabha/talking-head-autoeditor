@@ -1,6 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const {UUID} = require('builder-util-runtime');
 
 const readNormalized = (file) =>
   fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
@@ -17,6 +18,8 @@ const legacyBuilder = fs.readFileSync(
   path.join(desktop, 'electron-builder.yml'), 'utf8');
 const helperMain = fs.readFileSync(
   path.join(desktop, 'helper', 'main.js'), 'utf8');
+const helperBuilder = fs.readFileSync(
+  path.join(desktop, 'electron-builder.helper.yml'), 'utf8');
 const helperWorkflow = readNormalized(
   path.join(desktop, '..', '.github', 'workflows', 'helper-release.yml'));
 const helperPromotion = readNormalized(
@@ -79,6 +82,12 @@ assert.ok(legacyBuilder.includes('appId: com.marabha.pseautoeditor'));
 assert.ok(legacyBuilder.includes('productName: PSE AutoEditor'));
 assert.ok(legacyBuilder.includes('writeUpdateInfo: false'));
 assert.ok(legacyBuilder.includes('differentialPackage: false'));
+assert.ok(helperBuilder.includes('appId: com.marabha.autoeditor.helper'));
+const electronBuilderNamespace = UUID.parse(
+  '50e065bc-3134-11e6-9bab-38c9862bdaf3');
+const helperInstallGuid = UUID.v5(
+  'com.marabha.autoeditor.helper', electronBuilderNamespace);
+assert.strictEqual(helperInstallGuid, '35e34d8c-801d-53c1-a216-54f6187b5698');
 assert.ok(workflow.includes('Smoke-test Windows installer'));
 assert.ok(workflow.includes('Smoke-test macOS app and DMG'));
 assert.ok(workflow.includes('Publish only after every platform passes'));
@@ -215,8 +224,6 @@ const helperHtml = fs.readFileSync(
 assert.ok(helperHtml.includes('Built by Omar Marabha'));
 
 // 2026-08 Mac acceptance regressions must stay fixed.
-const helperBuilder = fs.readFileSync(
-  path.join(desktop, 'electron-builder.helper.yml'), 'utf8');
 // The creative runtime's node_modules ships as an explicit file set so
 // electron-builder cannot prune HyperFrames/Remotion out of the installer.
 assert.ok(helperBuilder.includes(
@@ -818,8 +825,19 @@ function assertWindowsHelperAcceptance(gate) {
   const decoderClosedAt = gate.indexOf('$stream.Dispose()');
   const smokeAt = gate.indexOf('$env:AUTOEDITOR_SMOKE_TEST = "1"');
   const uninstallAt = gate.indexOf('$remove = Start-Process $uninstaller');
+  const registryAt = gate.indexOf(
+    'HKCU:\\Software\\35e34d8c-801d-53c1-a216-54f6187b5698');
   assert.ok(gate.includes(
     '$engine = Join-Path $root "resources/engine/autoeditor-engine.exe"'));
+  assert.ok(registryAt >= 0);
+  assert.ok(gate.includes(
+    '-LiteralPath $installRegistryKey -Name InstallLocation'));
+  assert.ok(gate.includes(
+    '[System.IO.Path]::GetRelativePath($programsRoot, $root)'));
+  assert.ok(gate.includes('outside per-user Programs'));
+  assert.ok(gate.includes(
+    '-or (Test-Path -LiteralPath $installRegistryKey)'));
+  assert.ok(!gate.includes('Programs/AutoEditor Helper'));
   assert.ok(gate.includes('$screenshot = Join-Path $env:RUNNER_TEMP'));
   assert.ok(gate.includes('$capture = Start-Process $app -Wait -PassThru'));
   assert.ok(gate.includes(
@@ -832,7 +850,7 @@ function assertWindowsHelperAcceptance(gate) {
     '[System.Drawing.Imaging.ImageFormat]::Png.Guid'));
   assert.ok(gate.includes('$image.Width -le 0 -or $image.Height -le 0'));
   assert.ok(gate.includes('screenshot is not a decodable PNG'));
-  assert.ok(selfTestAt >= 0);
+  assert.ok(selfTestAt > registryAt);
   assert.ok(screenshotAt > selfTestAt);
   assert.ok(skipAccountsAt > screenshotAt);
   assert.ok(captureAt > skipAccountsAt);
