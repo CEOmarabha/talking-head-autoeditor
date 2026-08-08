@@ -51,6 +51,9 @@ const thirdPartyNotices = fs.readFileSync(
 const ffmpegFormulaVerifier = fs.readFileSync(
   path.join(desktop, '..', 'packaging',
     'verify_macos_ffmpeg_formulae.py'), 'utf8');
+const remotionWindowsPruner = fs.readFileSync(
+  path.join(desktop, '..', 'packaging',
+    'prune_remotion_windows_runtime.py'), 'utf8');
 const ffmpegFormulaInventories = ['arm64', 'x64'].map((arch) =>
   fs.readFileSync(path.join(desktop, '..', 'packaging',
     `macos-ffmpeg-formulae-${arch}.txt`), 'utf8'));
@@ -218,6 +221,65 @@ for (const nativeMediaRuntime of ['Electron', 'Remotion compositor']) {
 }
 assert.ok(thirdPartyNotices.includes('PyAV remains a build-environment dependency'));
 assert.ok(thirdPartyNotices.includes('excluded from the frozen engine'));
+// Remotion 4.0.507's Windows package carries one active FFmpeg 7.1 runtime
+// plus seven stale FFmpeg 6.1 DLLs. The release gate recognizes the complete
+// published npm payload and its PE imports before deleting exact paths.
+assert.ok(remotionWindowsPruner.includes(
+  'f0e006a1b84d7ac3caf6970ea6cfa4c0419371db230a2bd593996e86db197749'));
+assert.ok(remotionWindowsPruner.includes(
+  'sha512-FCkZDLcPBCO2WO/MyrtMB5tpsIuqqkc7E1nY2lfY6WmRX2quGfykcsz4S9inYx/'));
+for (const [stale, active] of [
+  ['avcodec-60.dll', 'avcodec-61.dll'],
+  ['avdevice-60.dll', 'avdevice-61.dll'],
+  ['avfilter-9.dll', 'avfilter-10.dll'],
+  ['avformat-60.dll', 'avformat-61.dll'],
+  ['avutil-58.dll', 'avutil-59.dll'],
+  ['swresample-4.dll', 'swresample-5.dll'],
+  ['swscale-7.dll', 'swscale-8.dll'],
+]) {
+  assert.ok(remotionWindowsPruner.includes(`"${stale}"`));
+  assert.ok(remotionWindowsPruner.includes(`"${active}"`));
+}
+assert.ok(remotionWindowsPruner.includes('machine != 0x8664'));
+assert.ok(remotionWindowsPruner.includes(
+  '_descriptor_imports(layout, 13, 32, 4, "delay-import"'));
+assert.ok(remotionWindowsPruner.includes('imports stale FFmpeg runtime'));
+assert.ok(remotionWindowsPruner.includes('candidate.unlink()'));
+assert.ok(!remotionWindowsPruner.includes('.glob('));
+assert.ok(!remotionWindowsPruner.includes('--expected-digest'));
+assert.ok(!remotionWindowsPruner.includes('--policy'));
+
+const helperCreativeBundleAt = helperWorkflow.indexOf(
+  '- name: Bundle pinned Node, HyperFrames, Remotion and rendering browser');
+const helperRemotionPruneAt = helperWorkflow.indexOf(
+  '- name: Prune the exact stale Windows Remotion FFmpeg runtime');
+const helperCreativeProbeAt = helperWorkflow.indexOf(
+  '- name: Render real HyperFrames and Remotion probes');
+const helperRuntimeManifestAt = helperWorkflow.indexOf(
+  '- name: Write exact runtime manifest');
+assert.ok(helperCreativeBundleAt >= 0);
+assert.ok(helperRemotionPruneAt > helperCreativeBundleAt);
+assert.ok(helperCreativeProbeAt > helperRemotionPruneAt);
+assert.ok(helperRuntimeManifestAt > helperCreativeProbeAt);
+const helperRemotionPruneBlock = helperWorkflow.slice(
+  helperRemotionPruneAt, helperCreativeProbeAt);
+assert.ok(helperRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
+assert.ok(helperRemotionPruneBlock.includes(
+  '--receipt desktop/helper-staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
+assert.ok(helperRemotionPruneBlock.includes('--require-package'));
+
+const pseRemotionPruneAt = workflow.indexOf(
+  '- name: Gate the Windows Remotion compositor staging payload');
+const pseRuntimeManifestAt = workflow.indexOf(
+  '- name: Generate byte-verifiable product runtime manifest');
+assert.ok(pseRemotionPruneAt >= 0);
+assert.ok(pseRuntimeManifestAt > pseRemotionPruneAt);
+const pseRemotionPruneBlock = workflow.slice(
+  pseRemotionPruneAt, pseRuntimeManifestAt);
+assert.ok(pseRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
+assert.ok(pseRemotionPruneBlock.includes(
+  '--receipt desktop/staging/licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
+assert.ok(!pseRemotionPruneBlock.includes('--require-package'));
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/client-s3'],
   '3.1106.0');
 assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/lib-storage'],
