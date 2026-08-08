@@ -64,10 +64,16 @@ test pass is not approval to send an installer to friends.
 
 ## Blocked before a friend release
 
-- The protected GitHub signing environments, environment-scoped credentials,
-  tag ruleset, candidate buckets, and Cloudflare production credentials have
-  not been owner-verified. The local GitHub CLI credential was invalid on
-  August 8, so remote settings were not inspected or changed.
+- GitHub now has protected `main`, an active `helper-v*` tag ruleset, SHA-pinned
+  GitHub-owned Actions only, and three reviewer-protected Helper environments
+  restricted to the exact signing tags or `main`. Candidate-upload credentials
+  are attached only to the two signing environments, and separate promotion
+  credentials are attached only to the live-release environment. Repository
+  Actions secrets remain empty. The required Windows and Apple signing
+  credentials have not been created or attached.
+- The separate private Cloudflare candidate and live-release buckets now exist
+  with isolated API tokens. Production still runs the older Worker and has not
+  received the current D1 migrations or required `RELEASES` binding.
 - No Windows Authenticode-signed installer has been built and installed on a
   clean Windows 11 computer.
 - No Apple Developer ID signed, notarized, and stapled Apple Silicon or Intel

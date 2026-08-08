@@ -407,6 +407,34 @@ assert.ok(!helperWorkflow.includes(
 assert.ok(!workflow.includes(
   "\n    if: startsWith(github.ref, 'refs/tags/pse-v')"));
 
+// A signing tag must be created from the protected default-branch head. Live
+// promotion rechecks ancestry so a later main commit does not invalidate an
+// already accepted release while an unmerged release commit still fails.
+for (const [unsignedJob, tagPrefix, failure] of [
+  [helperUnsigned, 'helper-v', 'A Helper release tag must point'],
+  [pseUnsigned, 'pse-v', 'A PSE release tag must point'],
+]) {
+  assert.ok(unsignedJob.includes(
+    `startsWith(github.ref, 'refs/tags/${tagPrefix}')`));
+  assert.ok(unsignedJob.includes('TAG_REF_PROTECTED: ${{ github.ref_protected }}'));
+  assert.ok(unsignedJob.includes('test "$TAG_REF_PROTECTED" = true'));
+  assert.ok(unsignedJob.includes(
+    'git ls-remote --exit-code origin'));
+  assert.ok(unsignedJob.includes('test "$TAG_COMMIT" = "$DEFAULT_COMMIT"'));
+  assert.ok(unsignedJob.includes(failure));
+}
+assert.ok(helperPromote.includes(
+  '"repos/$GITHUB_REPOSITORY/compare/$ACCEPTED_COMMIT...$DEFAULT_BRANCH"'));
+assert.ok(helperPromote.includes('identical|ahead'));
+assert.ok(helperPromote.includes(
+  'Accepted release commit is not on the protected default branch'));
+const helperAncestryAt = helperPromote.indexOf(
+  'compare/$ACCEPTED_COMMIT...$DEFAULT_BRANCH');
+const helperCandidateDownloadAt = helperPromote.indexOf(
+  'actions/download-artifact@');
+assert.ok(helperAncestryAt > 0);
+assert.ok(helperCandidateDownloadAt > helperAncestryAt);
+
 // A failed version regex must terminate before any output can mask its status.
 const hardVersionGuard =
   '[[ "$VERSION" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {';
