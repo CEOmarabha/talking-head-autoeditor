@@ -173,7 +173,6 @@ outer_build() {
   command -v curl >/dev/null || fail "curl is required"
   command -v docker >/dev/null || fail "Docker is required"
   command -v git >/dev/null || fail "Git is required"
-  command -v gzip >/dev/null || fail "gzip is required"
   command -v python3 >/dev/null || fail "Python 3 is required"
 
   output_dir=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$output_dir")
@@ -230,22 +229,6 @@ outer_build() {
     if [[ "$method" == "https-archive" ]]; then
       curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
         --silent --show-error "$url" -o "$destination"
-    elif [[ "$method" == "git-archive" ]]; then
-      local bare_repo="$build_work/$source_id.git"
-      git -C "$build_work" init --bare --quiet "$bare_repo"
-      git -C "$bare_repo" remote add origin "$url"
-      GIT_TERMINAL_PROMPT=0 git -C "$bare_repo" fetch \
-        --no-tags --depth=1 origin "$object_id" </dev/null
-      [[ "$(git -C "$bare_repo" rev-parse FETCH_HEAD)" == "$object_id" ]] || \
-        fail "$source_id fetched object drifted"
-      [[ "$(git -C "$bare_repo" rev-parse "FETCH_HEAD^{commit}")" == "$commit_id" ]] || \
-        fail "$source_id fetched commit drifted"
-      [[ "$(git -C "$bare_repo" rev-parse "FETCH_HEAD^{tree}")" == "$tree_id" ]] || \
-        fail "$source_id fetched tree drifted"
-      [[ "$archive_prefix" != "-" ]] || fail "$source_id archive prefix is missing"
-      git -C "$bare_repo" archive \
-        --format=tar --prefix="$archive_prefix" "$commit_id" | \
-        gzip -n -9 > "$destination"
     else
       fail "Unsupported fetch method for $source_id: $method"
     fi

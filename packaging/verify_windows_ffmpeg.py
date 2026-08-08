@@ -25,10 +25,10 @@ CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
 RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v1"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "50cd030fc4e0b1795f84f4e37ad941bbb49f5ac26a5d7516b3b2ac6cb442f20b"
+    "9ddeb34ef69d577c77379dfeeccb7414400495119c9ca5d5888ea703fa5f63ab"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "c32e22d1df9a85c576000bc204c0e22e3299898c32d48d03e374f7d82919e64f"
+    "b365d4fd074e3cf3bcc78c0426c0944060f68e079b649c9b59da6e63ab9fa4cf"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")

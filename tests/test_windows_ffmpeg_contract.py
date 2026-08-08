@@ -180,8 +180,8 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             "x264": (
                 "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
                 "0b8e15dd14ad8d2fb8905df7785003b475236315",
-                "30c018b5aff7cd05135b40d7130a8434cfeb958115427d068333f25564dfb875",
-                1022933,
+                "d0967a1348c85dfde363bb52610403be898171493100561efa0dd05d5fd1ae50",
+                1040667,
             ),
             "zlib": (
                 "e3dc0a85b7032e98380dec011bc8f2c2ee0d8fca",
@@ -646,12 +646,11 @@ print(json.dumps({"streams": [
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "lacks H.264"):
                 verifier.run_runtime_smoke(ffmpeg, ffprobe)
 
-    def test_build_script_has_offline_container_and_exact_git_archive_contract(self):
+    def test_build_script_has_offline_container_and_immutable_source_contract(self):
         text = BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("docker run --rm --network=none", text)
-        self.assertIn("gzip -n -9", text)
-        self.assertIn('origin "$object_id" </dev/null', text)
-        self.assertIn('rev-parse "FETCH_HEAD^{tree}"', text)
+        self.assertNotIn("git-archive", text)
+        self.assertNotIn("code.videolan.org", text)
         self.assertIn("verify-source-cache", text)
         self.assertIn("verify-configure-help", text)
         self.assertIn("verify-makefile", text)

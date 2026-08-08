@@ -92,17 +92,15 @@
     },
     {
       "archive": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.gz",
-      "archive_bytes": 1022933,
-      "archive_sha256": "30c018b5aff7cd05135b40d7130a8434cfeb958115427d068333f25564dfb875",
+      "archive_bytes": 1040667,
+      "archive_sha256": "d0967a1348c85dfde363bb52610403be898171493100561efa0dd05d5fd1ae50",
       "build": [
         "packaging/build_windows_ffmpeg.sh",
         "packaging/WINDOWS_FFMPEG_BUILD.md"
       ],
       "fetch": {
-        "archive_prefix": "x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/",
-        "compression": "gzip-9-no-name",
-        "method": "git-archive",
-        "url": "https://code.videolan.org/videolan/x264.git"
+        "method": "https-archive",
+        "url": "https://codeload.github.com/mirror/x264/tar.gz/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee"
       },
       "git_ref": {
         "commit": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",

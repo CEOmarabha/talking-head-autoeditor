@@ -75,7 +75,7 @@
         "ffprobe.exe"
       ]
     },
-    "source_lock_sha256": "50cd030fc4e0b1795f84f4e37ad941bbb49f5ac26a5d7516b3b2ac6cb442f20b",
+    "source_lock_sha256": "9ddeb34ef69d577c77379dfeeccb7414400495119c9ca5d5888ea703fa5f63ab",
     "strip": {
       "arguments": [
         "--strip-all"

@@ -26,9 +26,9 @@ packaging/build_windows_ffmpeg.sh \
   --repository-commit "$GITHUB_SHA"
 ```
 
-The outer script downloads four immutable HTTPS archives and creates the x264
-archive from the exact official Git object. It verifies archive byte counts,
-SHA-256 values, Git commits, and Git trees before compilation.
+The outer script downloads five immutable, commit-addressed HTTPS archives.
+It verifies archive byte counts and SHA-256 values before compilation. The
+source lock separately records the audited Git commits and trees.
 
 Compilation runs with networking disabled in this digest-pinned image:
 
