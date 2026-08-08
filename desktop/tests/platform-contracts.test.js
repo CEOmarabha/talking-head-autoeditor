@@ -285,6 +285,12 @@ assert.ok(ciWorkflow.includes('persist-credentials: false'));
 assert.ok(ciWorkflow.includes('packaging/requirements-linux-x64.txt'));
 assert.ok(ciWorkflow.includes('--require-hashes --only-binary=:all:'));
 assert.ok(ciWorkflow.includes('python -m pytest -q tests webapp/tests'));
+const ciDesktopInstallAt = ciWorkflow.indexOf('npm ci --prefix desktop');
+const ciPythonSafetyAt = ciWorkflow.indexOf(
+  'python -m pytest -q tests webapp/tests');
+assert.ok(ciDesktopInstallAt >= 0);
+assert.ok(ciPythonSafetyAt > ciDesktopInstallAt);
+assert.ok(ciWorkflow.includes('npm test --prefix desktop'));
 assert.ok(!ciWorkflow.includes('pip install -r requirements.txt'));
 
 // The generic Helper is the sole friend product. The creator-specific Ryan
