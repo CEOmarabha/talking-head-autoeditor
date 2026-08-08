@@ -296,7 +296,10 @@ jobs:
           test -x "$FFPROBE" || test -f "$FFPROBE"
           export AUTOEDITOR_FFMPEG="$FFMPEG"
           export AUTOEDITOR_FFPROBE="$FFPROBE"
-          python -m unittest tests.test_safety
+          ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
+          [[ "${{ matrix.target_os }}" == "windows" ]] && ENGINE="${ENGINE}.exe"
+          "$ENGINE" --audio-decoder-self-test
+          python -m unittest tests.test_safety tests.test_asr
 
       - name: Fetch digest-pinned open-license font
         shell: bash

@@ -11,7 +11,7 @@ repo_root = spec_dir.parent
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
-            "onnxruntime", "av"):
+            "onnxruntime"):
     # Every release lock includes these runtime backends.  Failing the freeze
     # is safer than creating an installer that opens normally and only finds
     # out on a friend's first transcript that a native ASR dependency was
@@ -35,7 +35,7 @@ a = Analysis(
     # auto-editor 29.3.1 on PyPI is only a first-run native-binary downloader.
     # The product uses its own frozen in-process low-speech cutter instead,
     # so keep the network loader out of every Mac and Windows artifact.
-    excludes=["tkinter", "matplotlib", "pytest", "auto_editor"],
+    excludes=["tkinter", "matplotlib", "pytest", "auto_editor", "av"],
 )
 pyz = PYZ(a.pure)
 options = [("X utf8", None, "OPTION")]

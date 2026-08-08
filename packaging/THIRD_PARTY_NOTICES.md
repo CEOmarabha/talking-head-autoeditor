@@ -16,11 +16,15 @@ sizes are recorded beside this file in `runtime-manifest.json`.
   GPL components with counsel or the binary provider. For installer downloads,
   this means equivalent source access alongside the installer.
 - x264, GPL-2.0-or-later.
-- Native media code also ships inside the PyAV wheel, Electron or Chromium
-  runtime, and Remotion compositor. The release source review must account for
-  each embedded FFmpeg-derived copy, its exact build configuration, and every
+- Native media code also ships inside the Electron or Chromium runtime and
+  Remotion compositor. The release source review must account for each
+  embedded FFmpeg-derived copy, its exact build configuration, and every
   linked copyleft codec. Supplying source only for the top-level `ffmpeg`
   executable is not treated as a complete corresponding-source gate.
+- PyAV remains a build-environment dependency of faster-whisper, but is
+  excluded from the frozen engine. AutoEditor decodes speech audio through
+  the same manifest-bound FFmpeg executable used by the editing pipeline, so
+  no PyAV FFmpeg libraries are distributed.
 - The low-speech cutter is AutoEditor project code built on the bundled
   FFmpeg. The `auto-editor` 29.3.1 PyPI launcher and its separately downloaded
   WyattBlue native executable are not included. This avoids a first-run
