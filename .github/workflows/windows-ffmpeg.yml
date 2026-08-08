@@ -2,6 +2,9 @@ name: Build source-pinned Windows FFmpeg
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - work/windows-ffmpeg-foundation
 
 permissions:
   contents: read
