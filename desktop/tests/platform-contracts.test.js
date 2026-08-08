@@ -54,6 +54,9 @@ const ffmpegFormulaVerifier = fs.readFileSync(
 const remotionWindowsPruner = fs.readFileSync(
   path.join(desktop, '..', 'packaging',
     'prune_remotion_windows_runtime.py'), 'utf8');
+const onnxRuntimeNodePruner = fs.readFileSync(
+  path.join(desktop, '..', 'packaging',
+    'prune_onnxruntime_node.py'), 'utf8');
 const ffmpegFormulaInventories = ['arm64', 'x64'].map((arch) =>
   fs.readFileSync(path.join(desktop, '..', 'packaging',
     `macos-ffmpeg-formulae-${arch}.txt`), 'utf8'));
@@ -254,6 +257,8 @@ assert.ok(remotionWindowsPruner.includes(
 
 const helperCreativeBundleAt = helperWorkflow.indexOf(
   '- name: Bundle pinned Node, HyperFrames, Remotion and rendering browser');
+const helperOnnxPruneAt = helperWorkflow.indexOf(
+  '- name: Keep only the target ONNX Runtime native payload');
 const helperRemotionPruneAt = helperWorkflow.indexOf(
   '- name: Prune the exact stale Windows Remotion FFmpeg runtime');
 const helperCreativeProbeAt = helperWorkflow.indexOf(
@@ -261,9 +266,32 @@ const helperCreativeProbeAt = helperWorkflow.indexOf(
 const helperRuntimeManifestAt = helperWorkflow.indexOf(
   '- name: Write exact runtime manifest');
 assert.ok(helperCreativeBundleAt >= 0);
-assert.ok(helperRemotionPruneAt > helperCreativeBundleAt);
+assert.ok(helperOnnxPruneAt > helperCreativeBundleAt);
+assert.ok(helperRemotionPruneAt > helperOnnxPruneAt);
 assert.ok(helperCreativeProbeAt > helperRemotionPruneAt);
 assert.ok(helperRuntimeManifestAt > helperCreativeProbeAt);
+const helperOnnxPruneBlock = helperWorkflow.slice(
+  helperOnnxPruneAt, helperRemotionPruneAt);
+assert.ok(helperOnnxPruneBlock.includes('prune_onnxruntime_node.py'));
+assert.ok(helperOnnxPruneBlock.includes('--transaction-parent "$RUNNER_TEMP"'));
+assert.ok(helperOnnxPruneBlock.includes('--target-os "${{ matrix.target_os }}"'));
+assert.ok(helperOnnxPruneBlock.includes('--target-arch "${{ matrix.arch }}"'));
+assert.ok(onnxRuntimeNodePruner.includes('onnxruntime-node-1.21.1.tgz'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'ONNXRUNTIME_NODE_TARGET_PRUNE.json'));
+assert.ok(onnxRuntimeNodePruner.includes('win32/x64/onnxruntime.dll'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'darwin/arm64/libonnxruntime.1.21.1.dylib'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'darwin/x64/libonnxruntime.1.21.1.dylib'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'autoeditor-onnxruntime-node-target-prune/v2'));
+assert.ok(onnxRuntimeNodePruner.includes('shutil.copytree'));
+assert.ok(onnxRuntimeNodePruner.includes('published-package'));
+assert.ok(!onnxRuntimeNodePruner.includes('shutil.rmtree'));
+assert.ok(!onnxRuntimeNodePruner.includes('.glob('));
+assert.ok(!onnxRuntimeNodePruner.includes('.unlink('));
+assert.ok(!onnxRuntimeNodePruner.includes('.rmdir('));
 const helperRemotionPruneBlock = helperWorkflow.slice(
   helperRemotionPruneAt, helperCreativeProbeAt);
 assert.ok(helperRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
