@@ -95,6 +95,73 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         return bytes(data)
 
     @staticmethod
+    def _resedit_layout_pe(
+        *,
+        rsrc_virtual_size: int,
+        rsrc_raw_size: int,
+        reloc_virtual_address: int,
+        reloc_raw_pointer: int,
+    ) -> bytes:
+        data = bytearray(reloc_raw_pointer + 0x200)
+        data[:2] = b"MZ"
+        struct.pack_into("<I", data, 0x3C, 0x80)
+        data[0x80:0x84] = b"PE\0\0"
+        struct.pack_into("<HHIIIHH", data, 0x84, 0x8664, 2, 7, 0, 0, 0xF0, 0x22)
+        optional = 0x98
+        struct.pack_into("<H", data, optional, 0x20B)
+        struct.pack_into("<I", data, optional + 32, 0x1000)
+        struct.pack_into("<I", data, optional + 36, 0x200)
+        struct.pack_into(
+            "<I",
+            data,
+            optional + 56,
+            receipt._align(reloc_virtual_address + 0x100, 0x1000),
+        )
+        struct.pack_into("<I", data, optional + 60, 0x200)
+        struct.pack_into("<I", data, optional + 108, 16)
+        struct.pack_into(
+            "<II", data, optional + 112 + 2 * 8, 0x1000, rsrc_virtual_size
+        )
+        struct.pack_into(
+            "<II", data, optional + 112 + 5 * 8, reloc_virtual_address, 0x100
+        )
+        rsrc = optional + 0xF0
+        data[rsrc : rsrc + 8] = b".rsrc\0\0\0"
+        struct.pack_into(
+            "<IIIIIIHHI",
+            data,
+            rsrc + 8,
+            rsrc_virtual_size,
+            0x1000,
+            rsrc_raw_size,
+            0x200,
+            0,
+            0,
+            0,
+            0,
+            0x40000040,
+        )
+        reloc = rsrc + 40
+        data[reloc : reloc + 8] = b".reloc\0\0"
+        struct.pack_into(
+            "<IIIIIIHHI",
+            data,
+            reloc + 8,
+            0x100,
+            reloc_virtual_address,
+            0x200,
+            reloc_raw_pointer,
+            0,
+            0,
+            0,
+            0,
+            0x42000040,
+        )
+        data[0x200 : 0x200 + rsrc_raw_size] = b"R" * rsrc_raw_size
+        data[reloc_raw_pointer : reloc_raw_pointer + 0x200] = b"L" * 0x200
+        return bytes(data)
+
+    @staticmethod
     def _macho(*, signature_bytes: int, linkedit_vmsize: int, code_byte: int = 0x41) -> bytes:
         text = struct.pack(
             "<II16sQQQQIIII",
@@ -177,6 +244,17 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         self.assertEqual(details["certificate_sha256"], hashlib.sha256(certificate).hexdigest())
         with self.assertRaisesRegex(receipt.ElectronNativeReceiptError, "non-terminal Authenticode"):
             receipt._parse_pe(self._pe(certificate=certificate, bad_certificate_offset=True), "hostile")
+        with self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "archive electron.exe unexpectedly has Authenticode",
+        ):
+            receipt._windows_root_transformation(
+                signed_raw,
+                unsigned_raw,
+                b"fixture-icon",
+                {},
+                Path("."),
+            )
 
     def test_archive_members_use_authenticated_buffer_after_atomic_path_swap(self):
         trusted = self._windows_archive(b"trusted")
@@ -224,6 +302,161 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         hostile = receipt._parse_pe(self._resource_pe(b"manifest", hostile_gap=True), "hostile")
         with self.assertRaisesRegex(receipt.ElectronNativeReceiptError, "unowned nonzero"):
             receipt._resource_leaves(hostile)
+
+    def test_resedit_growth_shifts_only_the_terminal_relocation_section(self):
+        source_leaves = {
+            (24, 1, 1033): receipt._ResourceLeaf((24, 1, 1033), 0, b"manifest")
+        }
+        final_leaves = {
+            **source_leaves,
+            ("INTEGRITY", "ELECTRONASAR", 1033): receipt._ResourceLeaf(
+                ("INTEGRITY", "ELECTRONASAR", 1033),
+                1200,
+                b"integrity",
+            ),
+        }
+        source = self._resedit_layout_pe(
+            rsrc_virtual_size=0x180,
+            rsrc_raw_size=0x200,
+            reloc_virtual_address=0x2000,
+            reloc_raw_pointer=0x400,
+        )
+        final = self._resedit_layout_pe(
+            rsrc_virtual_size=0x280,
+            rsrc_raw_size=0x400,
+            reloc_virtual_address=0x2000,
+            reloc_raw_pointer=0x600,
+        )
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            receipt,
+            "_validate_windows_resources",
+            return_value={"fixture": "validated"},
+        ), mock.patch.object(
+            receipt,
+            "_resource_leaves",
+            side_effect=[source_leaves, final_leaves],
+        ):
+            canonical, details = receipt._windows_root_transformation(
+                source,
+                final,
+                b"fixture-icon",
+                {},
+                Path(td),
+            )
+        self.assertEqual(canonical, final)
+        self.assertEqual(details["resource_edit"], {"fixture": "validated"})
+
+        hostile_suffix = bytearray(final)
+        hostile_suffix[0x600] ^= 0x01
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            receipt,
+            "_validate_windows_resources",
+            return_value={"fixture": "validated"},
+        ), mock.patch.object(
+            receipt,
+            "_resource_leaves",
+            side_effect=[source_leaves, final_leaves],
+        ), self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "outside the exact resource rewrite",
+        ):
+            receipt._windows_root_transformation(
+                source,
+                bytes(hostile_suffix),
+                b"fixture-icon",
+                {},
+                Path(td),
+            )
+
+        hostile_gap = self._resedit_layout_pe(
+            rsrc_virtual_size=0x280,
+            rsrc_raw_size=0x400,
+            reloc_virtual_address=0x2000,
+            reloc_raw_pointer=0x800,
+        )
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            receipt,
+            "_validate_windows_resources",
+            return_value={"fixture": "validated"},
+        ), mock.patch.object(
+            receipt,
+            "_resource_leaves",
+            side_effect=[source_leaves, final_leaves],
+        ), self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            r"exact \.rsrc raw growth",
+        ):
+            receipt._windows_root_transformation(
+                source,
+                hostile_gap,
+                b"fixture-icon",
+                {},
+                Path(td),
+            )
+
+    def test_resedit_virtual_page_shrink_moves_only_relocation_rva(self):
+        source_leaves = {
+            (24, 1, 1033): receipt._ResourceLeaf((24, 1, 1033), 0, b"manifest")
+        }
+        final_leaves = {
+            **source_leaves,
+            ("INTEGRITY", "ELECTRONASAR", 1033): receipt._ResourceLeaf(
+                ("INTEGRITY", "ELECTRONASAR", 1033),
+                1200,
+                b"integrity",
+            ),
+        }
+        source = self._resedit_layout_pe(
+            rsrc_virtual_size=0x1180,
+            rsrc_raw_size=0x1200,
+            reloc_virtual_address=0x3000,
+            reloc_raw_pointer=0x1400,
+        )
+        final = self._resedit_layout_pe(
+            rsrc_virtual_size=0xF80,
+            rsrc_raw_size=0x1200,
+            reloc_virtual_address=0x2000,
+            reloc_raw_pointer=0x1400,
+        )
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            receipt,
+            "_validate_windows_resources",
+            return_value={"fixture": "validated"},
+        ), mock.patch.object(
+            receipt,
+            "_resource_leaves",
+            side_effect=[source_leaves, final_leaves],
+        ):
+            canonical, _ = receipt._windows_root_transformation(
+                source,
+                final,
+                b"fixture-icon",
+                {},
+                Path(td),
+            )
+        self.assertEqual(canonical, final)
+
+    def test_resedit_raw_allocation_retains_larger_asar_integrity_pass(self):
+        source_leaves = {
+            (24, 1, 1033): receipt._ResourceLeaf((24, 1, 1033), 0, b"m")
+        }
+        final_leaves = {
+            ("INTEGRITY", "ELECTRONASAR", 1033): receipt._ResourceLeaf(
+                ("INTEGRITY", "ELECTRONASAR", 1033),
+                1200,
+                b"I" * 1200,
+            )
+        }
+        self.assertEqual(
+            receipt._expected_resedit_rsrc_raw_size(
+                source_raw_size=0x200,
+                final_virtual_size=0x280,
+                file_alignment=0x200,
+                source_leaves=source_leaves,
+                final_leaves=final_leaves,
+            ),
+            0x600,
+        )
 
     def test_macho_normalizes_only_signature_allocation_and_linkedit_rounding(self):
         source = self._macho(signature_bytes=0x40, linkedit_vmsize=0x4000)

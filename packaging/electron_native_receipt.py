@@ -625,7 +625,11 @@ def _pe_profile(image: _PeImage, normalized: bytes) -> dict[str, Any]:
     }
 
 
-def _resource_leaves(image: _PeImage) -> dict[tuple[str | int, ...], _ResourceLeaf]:
+def _resource_leaves(
+    image: _PeImage,
+    *,
+    require_exact_extent: bool = False,
+) -> dict[tuple[str | int, ...], _ResourceLeaf]:
     resource_rva, resource_size = image.directories[2]
     resource = _section(image, ".rsrc")
     if (
@@ -713,6 +717,10 @@ def _resource_leaves(image: _PeImage) -> dict[tuple[str | int, ...], _ResourceLe
     walk(0, ())
     if not leaves:
         raise ElectronNativeReceiptError("PE resource tree is empty")
+    if require_exact_extent and max(end for _, end in used) != limit:
+        raise ElectronNativeReceiptError(
+            "generated PE resource extent is not exactly owned"
+        )
     covered = bytearray(resource.raw_size)
     for start, end in used:
         covered[start - base : end - base] = b"\1" * (end - start)
@@ -770,6 +778,72 @@ def _align(value: int, alignment: int) -> int:
     if alignment <= 0 or alignment & (alignment - 1):
         raise ElectronNativeReceiptError("non-power-of-two binary alignment")
     return (value + alignment - 1) & ~(alignment - 1)
+
+
+def _serialized_resource_size(entries: Iterable[_ResourceLeaf]) -> int:
+    """Reproduce pe-library 0.4.1's generated resource virtual size."""
+    ordered = tuple(entries)
+    if not ordered:
+        raise ElectronNativeReceiptError("cannot serialize an empty PE resource tree")
+    tree: dict[str | int, dict[str | int, set[str | int]]] = {}
+    strings: set[str] = set()
+    for entry in ordered:
+        if len(entry.path) != 3 or not entry.data:
+            raise ElectronNativeReceiptError("invalid resource leaf for serialization")
+        resource_type, resource_id, language = entry.path
+        languages = tree.setdefault(resource_type, {}).setdefault(resource_id, set())
+        if language in languages:
+            raise ElectronNativeReceiptError("duplicate resource leaf for serialization")
+        languages.add(language)
+        strings.update(part for part in entry.path if isinstance(part, str))
+
+    size = 16 + 8 * len(tree)
+    for ids in tree.values():
+        size += 16 + 8 * len(ids)
+        for languages in ids.values():
+            size += 16 + 8 * len(languages)
+    for value in strings:
+        try:
+            code_units = len(value.encode("utf-16le")) // 2
+        except UnicodeEncodeError as exc:
+            raise ElectronNativeReceiptError("invalid resource string for serialization") from exc
+        size += 2 + min(code_units, 65535) * 2
+    size = _align(size, 8) + 16 * len(ordered)
+    for entry in ordered:
+        size = _align(size, 8) + len(entry.data)
+    return size
+
+
+def _expected_resedit_rsrc_raw_size(
+    *,
+    source_raw_size: int,
+    final_virtual_size: int,
+    file_alignment: int,
+    source_leaves: Mapping[tuple[str | int, ...], _ResourceLeaf],
+    final_leaves: Mapping[tuple[str | int, ...], _ResourceLeaf],
+) -> int:
+    """Model Electron Builder's ASAR-integrity then icon/version resource passes."""
+    if any(path[:2] == ("INTEGRITY", "ELECTRONASAR") for path in source_leaves):
+        raise ElectronNativeReceiptError(
+            "pinned archive unexpectedly has an Electron ASAR integrity resource"
+        )
+    integrity = [
+        leaf
+        for path, leaf in final_leaves.items()
+        if path[:2] == ("INTEGRITY", "ELECTRONASAR")
+    ]
+    if len(integrity) != 1:
+        raise ElectronNativeReceiptError(
+            "final executable must have one Electron ASAR integrity resource"
+        )
+    first_pass_virtual_size = _serialized_resource_size(
+        (*source_leaves.values(), integrity[0])
+    )
+    return max(
+        source_raw_size,
+        _align(first_pass_virtual_size, file_alignment),
+        _align(final_virtual_size, file_alignment),
+    )
 
 
 def _version_node(raw: bytes, start: int, limit: int) -> tuple[dict[str, Any], int]:
@@ -884,9 +958,18 @@ def _validate_windows_resources(
     icon_raw: bytes,
     configuration: Mapping[str, Any],
     app_root: Path,
+    *,
+    source_leaves: Mapping[tuple[str | int, ...], _ResourceLeaf] | None = None,
+    final_leaves: Mapping[tuple[str | int, ...], _ResourceLeaf] | None = None,
 ) -> dict[str, Any]:
-    source_leaves = _resource_leaves(source)
-    final_leaves = _resource_leaves(final)
+    source_leaves = (
+        dict(source_leaves) if source_leaves is not None else _resource_leaves(source)
+    )
+    final_leaves = (
+        dict(final_leaves)
+        if final_leaves is not None
+        else _resource_leaves(final, require_exact_extent=True)
+    )
     retained = {
         path: leaf
         for path, leaf in source_leaves.items()
@@ -923,7 +1006,7 @@ def _validate_windows_resources(
     quad, strings = _decode_version(version_leaf.data)
     expected_quad = tuple(configuration["version_quad"])
     expected_strings = {
-        "CompanyName": "GitHub, Inc.",
+        "CompanyName": "Omar Marabha",
         "FileDescription": PRODUCT_NAME,
         "FileVersion": configuration["version"],
         "InternalName": PRODUCT_NAME,
@@ -975,10 +1058,26 @@ def _windows_root_transformation(
     final_normalized, final_signature = _normalized_pe(final_signed)
     source = _parse_pe(source_normalized, "normalized archive electron.exe")
     final = _parse_pe(final_normalized, "normalized final AutoEditor Helper.exe")
-    if source.certificate_bytes:
+    if source_signed.certificate_bytes:
         raise ElectronNativeReceiptError("pinned archive electron.exe unexpectedly has Authenticode")
-    if len(source_normalized) != len(final_normalized):
-        raise ElectronNativeReceiptError("rcedit changed the normalized root executable byte count")
+    source_layout = (
+        source.pe_offset,
+        source.optional_offset,
+        source.optional_size,
+        source.size_of_headers,
+        source.section_alignment,
+        source.file_alignment,
+    )
+    final_layout = (
+        final.pe_offset,
+        final.optional_offset,
+        final.optional_size,
+        final.size_of_headers,
+        final.section_alignment,
+        final.file_alignment,
+    )
+    if final_layout != source_layout:
+        raise ElectronNativeReceiptError("rcedit changed the core PE layout")
     source_names = [section.name for section in source.sections]
     final_names = [section.name for section in final.sections]
     if source_names != final_names or source_names.count(".rsrc") != 1 or source_names.count(".reloc") != 1:
@@ -987,9 +1086,10 @@ def _windows_root_transformation(
     final_rsrc = _section(final, ".rsrc")
     source_reloc = _section(source, ".reloc")
     final_reloc = _section(final, ".reloc")
+    source_leaves = _resource_leaves(source)
+    final_leaves = _resource_leaves(final, require_exact_extent=True)
     if (
         final_rsrc.virtual_address != source_rsrc.virtual_address
-        or final_rsrc.raw_size != source_rsrc.raw_size
         or final_rsrc.raw_pointer != source_rsrc.raw_pointer
         or final_rsrc.reloc_pointer != source_rsrc.reloc_pointer
         or final_rsrc.line_pointer != source_rsrc.line_pointer
@@ -998,10 +1098,25 @@ def _windows_root_transformation(
         or final_rsrc.characteristics != source_rsrc.characteristics
     ):
         raise ElectronNativeReceiptError("rcedit changed non-resource .rsrc layout fields")
+    expected_rsrc_raw_size = _expected_resedit_rsrc_raw_size(
+        source_raw_size=source_rsrc.raw_size,
+        final_virtual_size=final_rsrc.virtual_size,
+        file_alignment=final.file_alignment,
+        source_leaves=source_leaves,
+        final_leaves=final_leaves,
+    )
+    if final_rsrc.raw_size != expected_rsrc_raw_size:
+        raise ElectronNativeReceiptError(
+            "rcedit .rsrc raw allocation is not determined by generated resources"
+        )
+    raw_growth = final_rsrc.raw_size - source_rsrc.raw_size
+    if len(final_normalized) != len(source_normalized) + raw_growth:
+        raise ElectronNativeReceiptError(
+            "rcedit executable byte growth is not the exact .rsrc raw growth"
+        )
     if (
         final_reloc.virtual_size != source_reloc.virtual_size
         or final_reloc.raw_size != source_reloc.raw_size
-        or final_reloc.raw_pointer != source_reloc.raw_pointer
         or final_reloc.reloc_pointer != source_reloc.reloc_pointer
         or final_reloc.line_pointer != source_reloc.line_pointer
         or final_reloc.relocation_count != source_reloc.relocation_count
@@ -1009,9 +1124,22 @@ def _windows_root_transformation(
         or final_reloc.characteristics != source_reloc.characteristics
     ):
         raise ElectronNativeReceiptError("rcedit changed non-address .reloc layout fields")
-    if final_reloc.virtual_address != _align(
-        final_rsrc.virtual_address + final_rsrc.virtual_size,
-        final.section_alignment,
+    if final_reloc.raw_pointer != source_reloc.raw_pointer + raw_growth:
+        raise ElectronNativeReceiptError(
+            "rcedit relocation raw address is not determined by .rsrc growth"
+        )
+    source_virtual_span = _align(source_rsrc.virtual_size, source.section_alignment)
+    final_virtual_span = _align(final_rsrc.virtual_size, final.section_alignment)
+    expected_reloc_virtual_address = (
+        source_reloc.virtual_address + final_virtual_span - source_virtual_span
+    )
+    if (
+        final_reloc.virtual_address != expected_reloc_virtual_address
+        or final_reloc.virtual_address
+        != _align(
+            final_rsrc.virtual_address + final_rsrc.virtual_size,
+            final.section_alignment,
+        )
     ):
         raise ElectronNativeReceiptError("rcedit .reloc address is not determined by final .rsrc")
     expected_image_size = _align(
@@ -1025,40 +1153,38 @@ def _windows_root_transformation(
     if final.directories[5] != (final_reloc.virtual_address, source.directories[5][1]):
         raise ElectronNativeReceiptError("rcedit relocation directory is not the exact shifted source directory")
 
-    allowed_header_offsets = {
+    derived_header_offsets = {
         final.optional_offset + 56,
         final.directory_offset + 2 * 8 + 4,
         final.directory_offset + 5 * 8,
         final_rsrc.header_offset + 8,
+        final_rsrc.header_offset + 16,
         final_reloc.header_offset + 12,
+        final_reloc.header_offset + 20,
     }
-    allowed_bytes = {offset + delta for offset in allowed_header_offsets for delta in range(4)}
-    for index, (left, right) in enumerate(
-        zip(source.raw[: source.size_of_headers], final.raw[: final.size_of_headers])
-    ):
-        if left != right and index not in allowed_bytes:
-            raise ElectronNativeReceiptError(f"rcedit changed forbidden PE header byte {index}")
-    for source_section, final_section in zip(source.sections, final.sections):
-        source_bytes = source.raw[
-            source_section.raw_pointer : source_section.raw_pointer + source_section.raw_size
+    reconstructed = bytearray(source.raw[: source_rsrc.raw_pointer])
+    reconstructed.extend(
+        final.raw[
+            final_rsrc.raw_pointer : final_rsrc.raw_pointer + final_rsrc.raw_size
         ]
-        final_bytes = final.raw[
-            final_section.raw_pointer : final_section.raw_pointer + final_section.raw_size
-        ]
-        if source_section.name != ".rsrc" and source_bytes != final_bytes:
-            raise ElectronNativeReceiptError(
-                f"rcedit changed forbidden PE section bytes: {source_section.name}"
-            )
-        if source_section.name not in {".rsrc", ".reloc"} and source_section != final_section:
-            raise ElectronNativeReceiptError(
-                f"rcedit changed forbidden PE section fields: {source_section.name}"
-            )
+    )
+    reconstructed.extend(
+        source.raw[source_rsrc.raw_pointer + source_rsrc.raw_size :]
+    )
+    for offset in derived_header_offsets:
+        reconstructed[offset : offset + 4] = final.raw[offset : offset + 4]
+    if bytes(reconstructed) != final.raw:
+        raise ElectronNativeReceiptError(
+            "rcedit changed bytes outside the exact resource rewrite"
+        )
     resource_profile = _validate_windows_resources(
         source,
         final,
         icon_raw,
         configuration,
         app_root,
+        source_leaves=source_leaves,
+        final_leaves=final_leaves,
     )
     source_imports = {
         "imports": _imports(source, 1, delay=False),

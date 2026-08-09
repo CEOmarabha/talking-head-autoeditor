@@ -691,6 +691,32 @@ class MacFFmpegReceiptTests(unittest.TestCase):
             ):
                 self._generate(fixture)
 
+    def test_authenticated_arm64_libvmaf_linkedit_preallocation_is_exactly_bounded(self):
+        relative = "Contents/Resources/lib/libvmaf.3.dylib"
+        authenticated_vm_size = 81_920
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][relative]
+            self._add_to_linkedit_vmsize(
+                source,
+                authenticated_vm_size - self._linkedit_vmsize(source),
+            )
+            self._generate(fixture)
+
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][relative]
+            hostile_vm_size = authenticated_vm_size + 16 * 1024
+            self._add_to_linkedit_vmsize(
+                source,
+                hostile_vm_size - self._linkedit_vmsize(source),
+            )
+            with self.assertRaisesRegex(
+                receipt.MacFFmpegReceiptError,
+                "noncanonical signed __LINKEDIT extent",
+            ):
+                self._generate(fixture)
+
     def test_hostile_svt_substitution_fails_normalized_bottle_gate(self):
         with tempfile.TemporaryDirectory() as td:
             fixture = self._fixture(Path(td))

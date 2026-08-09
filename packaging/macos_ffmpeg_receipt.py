@@ -119,6 +119,11 @@ ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
     "libswresample.6.3.102.dylib": 32_768,
     "libswscale.9.5.102.dylib": 32_768,
 })
+# Exact allocation in the authenticated libvmaf 3.2.0 arm64_sequoia bottle
+# whose archive SHA-256 is pinned as dbd548d2ba16092e9c88b81cd91d7cbd1ecec84b9bb31e9c196fe3f6658ee6b3.
+ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
+    "libvmaf.3.dylib": 81_920,
+})
 PACKAGING_DYLIB_TIMESTAMP = 0
 PLATFORMS = {
     "arm64": "mac-arm64",
@@ -1085,6 +1090,10 @@ def _canonical_signed_linkedit_command(
         authenticated_vm_size = (
             ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
         )
+        if authenticated_vm_size is None:
+            authenticated_vm_size = (
+                ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
+            )
         if authenticated_vm_size is not None:
             allowed_vm_sizes.add(authenticated_vm_size)
     if (
