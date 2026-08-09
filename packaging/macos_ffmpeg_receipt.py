@@ -119,6 +119,20 @@ ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
     "libswresample.6.3.102.dylib": 32_768,
     "libswscale.9.5.102.dylib": 32_768,
 })
+# Exact __LINKEDIT allocations in the authenticated x64 Sonoma bottle for the
+# pinned FFmpeg 8.1.2_1 formula. The bottle SHA-256 is
+# fcc13fae2031e5adaa193bc1accb03e8127b9503d41ac29c07e3758e7a88ba88.
+X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
+    "ffmpeg": 49_152,
+    "ffprobe": 32_768,
+    "libavcodec.62.28.102.dylib": 98_304,
+    "libavdevice.62.3.102.dylib": 16_384,
+    "libavfilter.11.14.102.dylib": 65_536,
+    "libavformat.62.12.102.dylib": 81_920,
+    "libavutil.60.26.102.dylib": 49_152,
+    "libswresample.6.3.102.dylib": 16_384,
+    "libswscale.9.5.102.dylib": 16_384,
+})
 # Exact allocation in the authenticated libvmaf 3.2.0 arm64_sequoia bottle
 # whose archive SHA-256 is pinned as dbd548d2ba16092e9c88b81cd91d7cbd1ecec84b9bb31e9c196fe3f6658ee6b3.
 ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
@@ -1086,6 +1100,7 @@ def _canonical_signed_linkedit_command(
         rounded_file_size,
         rounded_file_size + page_bytes,
     }
+    authenticated_vm_size = None
     if macho.header[1] == CPU_TYPES["arm64"]:
         authenticated_vm_size = (
             ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
@@ -1094,8 +1109,12 @@ def _canonical_signed_linkedit_command(
             authenticated_vm_size = (
                 ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
             )
-        if authenticated_vm_size is not None:
-            allowed_vm_sizes.add(authenticated_vm_size)
+    elif macho.header[1] == CPU_TYPES["x64"]:
+        authenticated_vm_size = (
+            X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
+        )
+    if authenticated_vm_size is not None:
+        allowed_vm_sizes.add(authenticated_vm_size)
     if (
         file_size <= 0
         or file_offset > signature_offset
