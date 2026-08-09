@@ -27,10 +27,10 @@ CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
 RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v4"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "098d357f204882a1d8780b907f19ea8abd11903ae3dd60994720cfaf5e4796c6"
+    "ab5d7e52dc3f93b88531a27a1cc711edec0cb649abce9544d977f513e0422fb3"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "76078308f75ef781ea401af8470927d4306c5161f03f40fa865aecbffc2001d9"
+    "cb67837fcadf4ed68922d475195e4255c3e1a5918b10b5c06ce9736bc481e37f"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -191,17 +191,17 @@ EXPECTED_LINK_EVIDENCE_CONTRACT = {
     "programs": ["ffmpeg", "ffprobe"],
 }
 EXPECTED_LINK_EVIDENCE_ARTIFACT = {
-    "archive_bytes": 527332259,
+    "archive_bytes": 531504031,
     "archive_sha256": (
-        "e89dc5a20dc9b69aaa65c389f6accc39afccf0199820c1a1a57350e67ab9fe28"
+        "61c9c141f2defbb5dd33c30d3c24ff9cacf673afd623d3c849281dd67b386002"
     ),
-    "artifact_id": 9024578626,
+    "artifact_id": 9029845841,
     "name": (
         "windows-ffmpeg-evidence-"
-        "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c"
+        "fdb7d3b582ccddf6e39684dfefda08630f7005d7"
     ),
-    "repository_commit": "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c",
-    "workflow_run_id": 31267037435,
+    "repository_commit": "fdb7d3b582ccddf6e39684dfefda08630f7005d7",
+    "workflow_run_id": 31285765635,
 }
 LINK_EVIDENCE_FILES = {
     "ffmpeg": {
