@@ -692,23 +692,60 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                 self._generate(fixture)
 
     def test_authenticated_x64_ffmpeg_linkedit_preallocation_is_exactly_bounded(self):
-        relative = "Contents/Resources/bin/ffprobe"
-        authenticated_vm_size = (
-            receipt.X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES["ffprobe"]
+        cases = (
+            ("Contents/Resources/bin/ffprobe", 32_768),
+            ("Contents/Resources/bin/ffmpeg", 81_920),
+            ("Contents/Resources/bin/ffprobe", 49_152),
+            (
+                "Contents/Resources/lib/libavcodec.62.28.102.dylib",
+                212_992,
+            ),
+            (
+                "Contents/Resources/lib/libavdevice.62.3.102.dylib",
+                49_152,
+            ),
+            (
+                "Contents/Resources/lib/libavfilter.11.14.102.dylib",
+                114_688,
+            ),
+            (
+                "Contents/Resources/lib/libavformat.62.12.102.dylib",
+                114_688,
+            ),
+            (
+                "Contents/Resources/lib/libavutil.60.26.102.dylib",
+                81_920,
+            ),
+            (
+                "Contents/Resources/lib/libswresample.6.3.102.dylib",
+                32_768,
+            ),
+            (
+                "Contents/Resources/lib/libswscale.9.5.102.dylib",
+                49_152,
+            ),
         )
-        with tempfile.TemporaryDirectory() as td:
-            fixture = self._fixture(Path(td), "x64")
-            source = fixture["sources"][relative]
-            self._add_to_linkedit_vmsize(
-                source,
-                authenticated_vm_size - self._linkedit_vmsize(source),
-            )
-            self._generate(fixture, "x64")
+        for relative, authenticated_vm_size in cases:
+            with (
+                self.subTest(
+                    relative=relative,
+                    authenticated_vm_size=authenticated_vm_size,
+                ),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                fixture = self._fixture(Path(td), "x64")
+                source = fixture["sources"][relative]
+                self._add_to_linkedit_vmsize(
+                    source,
+                    authenticated_vm_size - self._linkedit_vmsize(source),
+                )
+                self._generate(fixture, "x64")
 
         with tempfile.TemporaryDirectory() as td:
             fixture = self._fixture(Path(td), "x64")
+            relative = "Contents/Resources/bin/ffmpeg"
             source = fixture["sources"][relative]
-            hostile_vm_size = authenticated_vm_size + 4 * 1024
+            hostile_vm_size = 81_920 + 4 * 1024
             self._add_to_linkedit_vmsize(
                 source,
                 hostile_vm_size - self._linkedit_vmsize(source),

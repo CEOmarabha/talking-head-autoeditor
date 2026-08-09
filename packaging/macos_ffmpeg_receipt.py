@@ -119,19 +119,20 @@ ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
     "libswresample.6.3.102.dylib": 32_768,
     "libswscale.9.5.102.dylib": 32_768,
 })
-# Exact __LINKEDIT allocations in the authenticated x64 Sonoma bottle for the
-# pinned FFmpeg 8.1.2_1 formula. The bottle SHA-256 is
+# Exact unsigned bottle and bundled Intel __LINKEDIT allocations derived from
+# the authenticated x64 Sonoma FFmpeg 8.1.2_1 bottle plus the production
+# install-name rewrite and ad-hoc signing sequence. The bottle SHA-256 is
 # fcc13fae2031e5adaa193bc1accb03e8127b9503d41ac29c07e3758e7a88ba88.
 X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
-    "ffmpeg": 49_152,
-    "ffprobe": 32_768,
-    "libavcodec.62.28.102.dylib": 98_304,
-    "libavdevice.62.3.102.dylib": 16_384,
-    "libavfilter.11.14.102.dylib": 65_536,
-    "libavformat.62.12.102.dylib": 81_920,
-    "libavutil.60.26.102.dylib": 49_152,
-    "libswresample.6.3.102.dylib": 16_384,
-    "libswscale.9.5.102.dylib": 16_384,
+    "ffmpeg": frozenset({49_152, 81_920}),
+    "ffprobe": frozenset({32_768, 49_152}),
+    "libavcodec.62.28.102.dylib": frozenset({98_304, 212_992}),
+    "libavdevice.62.3.102.dylib": frozenset({16_384, 49_152}),
+    "libavfilter.11.14.102.dylib": frozenset({65_536, 114_688}),
+    "libavformat.62.12.102.dylib": frozenset({81_920, 114_688}),
+    "libavutil.60.26.102.dylib": frozenset({49_152, 81_920}),
+    "libswresample.6.3.102.dylib": frozenset({16_384, 32_768}),
+    "libswscale.9.5.102.dylib": frozenset({16_384, 49_152}),
 })
 # Exact allocation in the authenticated libvmaf 3.2.0 arm64_sequoia bottle
 # whose archive SHA-256 is pinned as dbd548d2ba16092e9c88b81cd91d7cbd1ecec84b9bb31e9c196fe3f6658ee6b3.
@@ -1100,7 +1101,7 @@ def _canonical_signed_linkedit_command(
         rounded_file_size,
         rounded_file_size + page_bytes,
     }
-    authenticated_vm_size = None
+    authenticated_vm_sizes = frozenset()
     if macho.header[1] == CPU_TYPES["arm64"]:
         authenticated_vm_size = (
             ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
@@ -1109,12 +1110,15 @@ def _canonical_signed_linkedit_command(
             authenticated_vm_size = (
                 ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
             )
+        if authenticated_vm_size is not None:
+            authenticated_vm_sizes = frozenset({authenticated_vm_size})
     elif macho.header[1] == CPU_TYPES["x64"]:
-        authenticated_vm_size = (
-            X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
+        authenticated_vm_sizes = (
+            X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(
+                binary.name, frozenset()
+            )
         )
-    if authenticated_vm_size is not None:
-        allowed_vm_sizes.add(authenticated_vm_size)
+    allowed_vm_sizes.update(authenticated_vm_sizes)
     if (
         file_size <= 0
         or file_offset > signature_offset
