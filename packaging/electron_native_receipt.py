@@ -952,6 +952,98 @@ def _asar_header_sha256(raw: bytes) -> str:
     return _sha256(header)
 
 
+def _packed_asar_paths(app_root: Path) -> tuple[str, ...]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    try:
+        for directory, directory_names, file_names in os.walk(
+            app_root, topdown=True, followlinks=False
+        ):
+            directory_names.sort()
+            file_names.sort()
+            base = Path(directory)
+            for name in file_names:
+                if not name.casefold().endswith(".asar"):
+                    continue
+                relative = (base / name).relative_to(app_root).as_posix()
+                relative = _safe_relative(relative)
+                folded = relative.casefold()
+                if folded in seen:
+                    raise ElectronNativeReceiptError(
+                        f"packed Electron ASAR path collides by case: {relative}"
+                    )
+                seen.add(folded)
+                paths.append(relative)
+    except ElectronNativeReceiptError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ElectronNativeReceiptError(
+            f"cannot enumerate packed Electron ASAR files: {exc}"
+        ) from exc
+    return tuple(sorted(paths, key=str.casefold))
+
+
+def _validate_asar_integrity(
+    integrity: object, app_root: Path
+) -> list[dict[str, Any]]:
+    if not isinstance(integrity, list) or not integrity:
+        raise ElectronNativeReceiptError("Electron ASAR integrity resource must be nonempty")
+    entries: dict[str, dict[str, str]] = {}
+    for entry in integrity:
+        if not isinstance(entry, dict) or set(entry) != {"alg", "file", "value"}:
+            raise ElectronNativeReceiptError("Electron ASAR integrity entry has wrong fields")
+        raw_path = entry.get("file")
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path.startswith("resources\\")
+            or "/" in raw_path
+            or raw_path.endswith("\\")
+            or "\\\\" in raw_path
+        ):
+            raise ElectronNativeReceiptError("Electron ASAR integrity path is not canonical")
+        relative = _safe_relative(raw_path.replace("\\", "/"))
+        if not relative.casefold().endswith(".asar"):
+            raise ElectronNativeReceiptError("Electron ASAR integrity path is not an ASAR")
+        folded = relative.casefold()
+        if folded in entries:
+            raise ElectronNativeReceiptError("Electron ASAR integrity has duplicate paths")
+        if entry.get("alg") != "SHA256":
+            raise ElectronNativeReceiptError("Electron ASAR integrity algorithm drifted")
+        entries[folded] = {
+            "file": relative,
+            "value": _require_sha(entry.get("value"), "Electron ASAR header"),
+        }
+
+    packed_paths = _packed_asar_paths(app_root)
+    if {path.casefold() for path in packed_paths} != set(entries):
+        raise ElectronNativeReceiptError(
+            "Electron ASAR integrity inventory does not match packed ASAR files"
+        )
+    profiles: list[dict[str, Any]] = []
+    for relative in packed_paths:
+        expected = entries[relative.casefold()]
+        if expected["file"] != relative:
+            raise ElectronNativeReceiptError("Electron ASAR integrity path case drifted")
+        asar = _read_regular(
+            app_root / PurePosixPath(relative),
+            f"final Electron ASAR {relative}",
+        )
+        header_sha256 = _asar_header_sha256(asar.raw)
+        if expected["value"] != header_sha256:
+            raise ElectronNativeReceiptError(
+                f"Electron ASAR integrity does not bind {relative}"
+            )
+        profiles.append(
+            {
+                "bytes": len(asar.raw),
+                "header_sha256": header_sha256,
+                "path": relative,
+                "sha256": asar.sha256,
+            }
+        )
+    return profiles
+
+
 def _validate_windows_resources(
     source: _PeImage,
     final: _PeImage,
@@ -1043,23 +1135,18 @@ def _validate_windows_resources(
     if integrity_leaf.codepage != 1200:
         raise ElectronNativeReceiptError("Electron ASAR integrity codepage drifted")
     integrity = _decode_json(integrity_leaf.data, "Electron ASAR integrity resource")
-    if not isinstance(integrity, list) or len(integrity) != 1:
-        raise ElectronNativeReceiptError("Electron ASAR integrity resource must contain one entry")
-    entry = integrity[0]
-    if not isinstance(entry, dict) or set(entry) != {"alg", "file", "value"}:
-        raise ElectronNativeReceiptError("Electron ASAR integrity entry has wrong fields")
-    asar = _read_regular(app_root / "resources" / "app.asar", "final Electron app.asar")
-    asar_header_sha256 = _asar_header_sha256(asar.raw)
-    if entry != {
-        "alg": "SHA256",
-        "file": "resources\\app.asar",
-        "value": asar_header_sha256,
-    }:
-        raise ElectronNativeReceiptError("Electron ASAR integrity does not bind final app.asar")
+    asar_profiles = _validate_asar_integrity(integrity, app_root)
+    primary = next(
+        (profile for profile in asar_profiles if profile["path"] == "resources/app.asar"),
+        None,
+    )
+    if primary is None:
+        raise ElectronNativeReceiptError("packed Electron app.asar is missing")
     return {
-        "asar_bytes": len(asar.raw),
-        "asar_header_sha256": asar_header_sha256,
-        "asar_sha256": asar.sha256,
+        "asar_bytes": primary["bytes"],
+        "asar_header_sha256": primary["header_sha256"],
+        "asar_sha256": primary["sha256"],
+        "asars": asar_profiles,
         "icon_image_sha256": icon_hashes,
         "resource_paths": [list(path) for path in sorted(final_leaves, key=lambda p: tuple(str(x) for x in p))],
         "version_strings": strings,

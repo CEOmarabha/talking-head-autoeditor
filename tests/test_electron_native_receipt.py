@@ -354,6 +354,10 @@ class ElectronNativeReceiptTests(unittest.TestCase):
                 receipt,
                 "_asar_header_sha256",
                 return_value=integrity_sha,
+            ), mock.patch.object(
+                receipt,
+                "_packed_asar_paths",
+                return_value=("resources/app.asar",),
             ):
                 return receipt._validate_windows_resources(
                     None,
@@ -372,6 +376,49 @@ class ElectronNativeReceiptTests(unittest.TestCase):
             "VERSIONINFO field drifted: CompanyName",
         ):
             validate(drifted)
+
+    def test_windows_asar_integrity_binds_every_packed_asar(self):
+        header_one = b'{"files":{"one":{}}}'
+        header_two = b'{"files":{"two":{}}}'
+
+        def asar(header: bytes) -> bytes:
+            return (
+                struct.pack("<IIII", 4, len(header) + 8, len(header) + 4, len(header))
+                + header
+                + b"payload"
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = root / "resources" / "app.asar"
+            second = root / "resources" / "creative-runtime" / "vendor.asar"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(asar(header_one))
+            second.write_bytes(asar(header_two))
+            integrity = [
+                {
+                    "alg": "SHA256",
+                    "file": "resources\\app.asar",
+                    "value": hashlib.sha256(header_one).hexdigest(),
+                },
+                {
+                    "alg": "SHA256",
+                    "file": "resources\\creative-runtime\\vendor.asar",
+                    "value": hashlib.sha256(header_two).hexdigest(),
+                },
+            ]
+            profiles = receipt._validate_asar_integrity(integrity, root)
+            self.assertEqual(
+                [profile["path"] for profile in profiles],
+                ["resources/app.asar", "resources/creative-runtime/vendor.asar"],
+            )
+            integrity.pop()
+            with self.assertRaisesRegex(
+                receipt.ElectronNativeReceiptError,
+                "inventory does not match",
+            ):
+                receipt._validate_asar_integrity(integrity, root)
 
     def test_resedit_growth_shifts_only_the_terminal_relocation_section(self):
         source_leaves = {
