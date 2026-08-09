@@ -1006,7 +1006,10 @@ def _validate_windows_resources(
     quad, strings = _decode_version(version_leaf.data)
     expected_quad = tuple(configuration["version_quad"])
     expected_strings = {
-        "CompanyName": "Omar Marabha",
+        # electron-builder 26.15.3 reads author.name, while this package uses
+        # the accepted string author form. rcedit therefore retains the pinned
+        # Electron executable's CompanyName instead of rewriting that field.
+        "CompanyName": "GitHub, Inc.",
         "FileDescription": PRODUCT_NAME,
         "FileVersion": configuration["version"],
         "InternalName": PRODUCT_NAME,
@@ -1016,8 +1019,26 @@ def _validate_windows_resources(
         "ProductVersion": ".".join(map(str, expected_quad)),
         "SquirrelAwareVersion": "1",
     }
-    if quad != expected_quad or strings != expected_strings:
-        raise ElectronNativeReceiptError("configured product or version resources drifted")
+    if quad != expected_quad:
+        raise ElectronNativeReceiptError(
+            f"configured VERSIONINFO fixed version quad drifted: "
+            f"expected {expected_quad}, got {quad}"
+        )
+    missing_fields = sorted(set(expected_strings) - set(strings))
+    if missing_fields:
+        raise ElectronNativeReceiptError(
+            f"configured VERSIONINFO field missing: {missing_fields[0]}"
+        )
+    unexpected_fields = sorted(set(strings) - set(expected_strings))
+    if unexpected_fields:
+        raise ElectronNativeReceiptError(
+            f"configured VERSIONINFO field unexpected: {unexpected_fields[0]}"
+        )
+    for field, expected in expected_strings.items():
+        if strings[field] != expected:
+            raise ElectronNativeReceiptError(
+                f"configured VERSIONINFO field drifted: {field}"
+            )
     integrity_leaf = final_leaves[("INTEGRITY", "ELECTRONASAR", 1033)]
     if integrity_leaf.codepage != 1200:
         raise ElectronNativeReceiptError("Electron ASAR integrity codepage drifted")

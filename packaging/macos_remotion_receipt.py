@@ -5,9 +5,9 @@ The contract authenticates the exact npm lock entry and pinned npm tarball for
 ``@remotion/compositor-darwin-{arm64,x64}@4.0.507``.  It then compares the
 whole installed package in the final ``.app`` against that source.  Data files
 must remain byte-identical.  Mach-O files may differ only by their embedded
-code signature: both source and final bytes are copied to a private temporary
-directory and normalized with ``/usr/bin/codesign --remove-signature`` before
-comparison.  Architecture, Mach-O kind, and UUID must also match.
+code signature: each signed input must pass exact ``/usr/bin/codesign`` strict
+verification, then its terminal signature geometry is normalized in memory.
+Architecture, Mach-O kind, UUID, and every other pre-signature byte must match.
 
 Directory-descriptor traversal and no-follow opens make missing, extra,
 symlinked, hard-linked, case-drifted, or concurrently replaced package files
@@ -133,12 +133,15 @@ class MachMetadata:
     architecture: str
     kind: str
     macho_uuid: str | None
+    command_count: int
+    command_bytes: int
     has_code_signature: bool
     linkedit_vm_address: int
     linkedit_vm_size: int
     linkedit_file_offset: int
     linkedit_file_size: int
     linkedit_vmsize_offset: int
+    code_signature_command_offset: int | None
     code_signature_offset: int | None
     code_signature_size: int | None
 
@@ -631,7 +634,7 @@ def _parse_macho(
     cursor = 32
     command_end = 32 + command_bytes
     uuids: list[str] = []
-    code_signatures: list[tuple[int, int]] = []
+    code_signatures: list[tuple[int, int, int]] = []
     linkedit_segments: list[tuple[int, int, int, int, int]] = []
     for _ in range(command_count):
         if cursor + 8 > command_end:
@@ -677,7 +680,7 @@ def _parse_macho(
                 raise MacRemotionReceiptError(
                     f"invalid Mach-O code-signature bounds: {label}"
                 )
-            code_signatures.append((data_offset, data_size))
+            code_signatures.append((cursor, data_offset, data_size))
         cursor += command_size
     if (
         cursor != command_end
@@ -712,8 +715,15 @@ def _parse_macho(
         )
     signature_offset: int | None = None
     signature_size: int | None = None
+    signature_command_offset: int | None = None
     if code_signatures:
-        signature_offset, signature_size = code_signatures[0]
+        signature_command_offset, signature_offset, signature_size = (
+            code_signatures[0]
+        )
+        if signature_command_offset + 16 != command_end:
+            raise MacRemotionReceiptError(
+                f"Mach-O LC_CODE_SIGNATURE is not the terminal load command: {label}"
+            )
         signed_vmsizes = {_round_up(file_size, 16 * 1024)}
         if allow_exact_vmsize:
             signed_vmsizes.update({file_size, _round_up(file_size, 4 * 1024)})
@@ -742,15 +752,132 @@ def _parse_macho(
         architecture=architecture,
         kind=kind,
         macho_uuid=uuids[0] if uuids else None,
+        command_count=command_count,
+        command_bytes=command_bytes,
         has_code_signature=bool(code_signatures),
         linkedit_vm_address=vm_address,
         linkedit_vm_size=vm_size,
         linkedit_file_offset=file_offset,
         linkedit_file_size=file_size,
         linkedit_vmsize_offset=vmsize_offset,
+        code_signature_command_offset=signature_command_offset,
         code_signature_offset=signature_offset,
         code_signature_size=signature_size,
     )
+
+
+def _canonicalize_signed_macho(
+    raw: bytes,
+    metadata: MachMetadata,
+    label: str,
+    expected_linkedit_vmsize: int | None = None,
+    expected_normalized_bytes: int | None = None,
+    *,
+    require_uuid: bool = True,
+    general_codesign_layout: bool = False,
+) -> bytes:
+    signature_command_offset = metadata.code_signature_command_offset
+    signature_offset = metadata.code_signature_offset
+    signature_size = metadata.code_signature_size
+    if (
+        signature_command_offset is None
+        or signature_offset is None
+        or signature_size is None
+        or metadata.command_count <= 1
+        or metadata.command_bytes < 16
+        or signature_command_offset + 16 != 32 + metadata.command_bytes
+        or signature_offset + signature_size != len(raw)
+    ):
+        raise MacRemotionReceiptError(
+            f"signed Mach-O lacks exact terminal signature geometry: {label}"
+        )
+
+    canonical_end = signature_offset
+    if expected_normalized_bytes is not None:
+        if (
+            type(expected_normalized_bytes) is not int
+            or expected_normalized_bytes <= metadata.linkedit_file_offset
+            or expected_normalized_bytes > signature_offset
+            or _round_up(expected_normalized_bytes, 16) != signature_offset
+        ):
+            raise MacRemotionReceiptError(
+                f"pinned unsigned Mach-O extent does not bind the signature: {label}"
+            )
+        if any(raw[expected_normalized_bytes:signature_offset]):
+            raise MacRemotionReceiptError(
+                f"non-zero code-signature alignment padding is forbidden: {label}"
+            )
+        canonical_end = expected_normalized_bytes
+
+    canonical_linkedit_size = canonical_end - metadata.linkedit_file_offset
+    canonical_sizes = {
+        _round_up(canonical_linkedit_size, 4 * 1024),
+        _round_up(canonical_linkedit_size, 16 * 1024),
+    }
+    if general_codesign_layout:
+        canonical_sizes.add(canonical_linkedit_size)
+    target_vmsize = expected_linkedit_vmsize
+    if target_vmsize is None:
+        if general_codesign_layout:
+            target_vmsize = canonical_linkedit_size
+        else:
+            target_vmsize = (
+                _round_up(canonical_linkedit_size, 16 * 1024)
+                if metadata.architecture == "arm64"
+                else min(canonical_sizes)
+            )
+    if target_vmsize not in canonical_sizes:
+        raise MacRemotionReceiptError(
+            f"source __LINKEDIT vmsize is not canonical for {label}"
+        )
+
+    endian = MACHO_MAGICS[raw[:4]]
+    normalized_buffer = bytearray(raw[:canonical_end])
+    struct.pack_into(
+        f"{endian}II",
+        normalized_buffer,
+        16,
+        metadata.command_count - 1,
+        metadata.command_bytes - 16,
+    )
+    normalized_buffer[
+        signature_command_offset:signature_command_offset + 16
+    ] = b"\0" * 16
+    struct.pack_into(
+        f"{endian}Q",
+        normalized_buffer,
+        metadata.linkedit_vmsize_offset,
+        target_vmsize,
+    )
+    struct.pack_into(
+        f"{endian}Q",
+        normalized_buffer,
+        metadata.linkedit_vmsize_offset + 16,
+        canonical_linkedit_size,
+    )
+    normalized = bytes(normalized_buffer)
+    normalized_metadata = _parse_macho(
+        normalized,
+        f"normalized {label}",
+        require_uuid=require_uuid,
+        allow_exact_vmsize=general_codesign_layout,
+    )
+    if (
+        normalized_metadata.architecture != metadata.architecture
+        or normalized_metadata.kind != metadata.kind
+        or normalized_metadata.macho_uuid != metadata.macho_uuid
+        or normalized_metadata.command_count != metadata.command_count - 1
+        or normalized_metadata.command_bytes != metadata.command_bytes - 16
+        or normalized_metadata.has_code_signature
+        or normalized_metadata.linkedit_vm_address != metadata.linkedit_vm_address
+        or normalized_metadata.linkedit_vm_size != target_vmsize
+        or normalized_metadata.linkedit_file_offset != metadata.linkedit_file_offset
+        or normalized_metadata.linkedit_file_size != canonical_linkedit_size
+    ):
+        raise MacRemotionReceiptError(
+            f"code-signature normalization changed Mach-O identity: {label}"
+        )
+    return normalized
 
 
 def _normalize_macho_bytes(
@@ -758,10 +885,15 @@ def _normalize_macho_bytes(
     label: str,
     expected_linkedit_vmsize: int | None = None,
     *,
+    expected_normalized_bytes: int | None = None,
     max_bytes: int = MAX_MEMBER_BYTES,
     require_uuid: bool = True,
     general_codesign_layout: bool = False,
 ) -> bytes:
+    if len(raw) <= 0 or len(raw) > max_bytes:
+        raise MacRemotionReceiptError(
+            f"invalid byte count for Mach-O normalization: {label}"
+        )
     metadata = _parse_macho(
         raw,
         label,
@@ -840,103 +972,21 @@ def _normalize_macho_bytes(
                 raise MacRemotionReceiptError(
                     f"strict codesign verification failed for {label}: {detail}"
                 )
-            completed = subprocess.run(
-                [CODESIGN_PATH, "--remove-signature", str(temporary)],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
-            )
         except MacRemotionReceiptError:
             raise
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise MacRemotionReceiptError(
-                f"cannot normalize Mach-O code signature for {label}: {exc}"
+                f"cannot verify Mach-O code signature for {label}: {exc}"
             ) from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()
-            raise MacRemotionReceiptError(
-                f"codesign signature normalization failed for {label}: {detail}"
-            )
-        stripped, _, _ = _read_regular_path(
-            temporary,
-            f"normalized Mach-O temporary file {label}",
-            max_bytes=max_bytes,
-        )
-    stripped_metadata = _parse_macho(
-        stripped,
-        f"signature-stripped {label}",
-        allow_stripped_signed_vmsize=True,
+    return _canonicalize_signed_macho(
+        raw,
+        metadata,
+        label,
+        expected_linkedit_vmsize,
+        expected_normalized_bytes,
         require_uuid=require_uuid,
-        allow_exact_vmsize=general_codesign_layout,
+        general_codesign_layout=general_codesign_layout,
     )
-    signature_offset = metadata.code_signature_offset
-    if signature_offset is None:
-        raise MacRemotionReceiptError(
-            f"signed Mach-O lost its signature boundary: {label}"
-        )
-    if (
-        len(stripped) > signature_offset
-        or _round_up(len(stripped), 16) != signature_offset
-        or any(raw[len(stripped):signature_offset])
-        or stripped_metadata.has_code_signature
-        or stripped_metadata.linkedit_vm_address != metadata.linkedit_vm_address
-        or stripped_metadata.linkedit_vm_size != metadata.linkedit_vm_size
-        or stripped_metadata.linkedit_file_offset != metadata.linkedit_file_offset
-        or stripped_metadata.linkedit_file_size
-        != len(stripped) - metadata.linkedit_file_offset
-        or stripped_metadata.linkedit_file_offset
-        + stripped_metadata.linkedit_file_size != len(stripped)
-    ):
-        raise MacRemotionReceiptError(
-            f"signature removal did not bind to the former signature offset: {label}"
-        )
-    canonical_sizes = {
-        _round_up(stripped_metadata.linkedit_file_size, 4 * 1024),
-        _round_up(stripped_metadata.linkedit_file_size, 16 * 1024),
-    }
-    if general_codesign_layout:
-        canonical_sizes.add(stripped_metadata.linkedit_file_size)
-    target_vmsize = expected_linkedit_vmsize
-    if target_vmsize is None:
-        if general_codesign_layout:
-            target_vmsize = stripped_metadata.linkedit_file_size
-        else:
-            target_vmsize = (
-                _round_up(stripped_metadata.linkedit_file_size, 16 * 1024)
-                if metadata.architecture == "arm64"
-                else min(canonical_sizes)
-            )
-    if target_vmsize not in canonical_sizes:
-        raise MacRemotionReceiptError(
-            f"source __LINKEDIT vmsize is not canonical for {label}"
-        )
-    normalized_buffer = bytearray(stripped)
-    struct.pack_into(
-        f"{MACHO_MAGICS[stripped[:4]]}Q",
-        normalized_buffer,
-        stripped_metadata.linkedit_vmsize_offset,
-        target_vmsize,
-    )
-    normalized = bytes(normalized_buffer)
-    normalized_metadata = _parse_macho(
-        normalized,
-        f"normalized {label}",
-        require_uuid=require_uuid,
-        allow_exact_vmsize=general_codesign_layout,
-    )
-    if (
-        normalized_metadata.architecture != metadata.architecture
-        or normalized_metadata.kind != metadata.kind
-        or normalized_metadata.macho_uuid != metadata.macho_uuid
-        or normalized_metadata.has_code_signature
-        or normalized_metadata.linkedit_vm_size != target_vmsize
-    ):
-        raise MacRemotionReceiptError(
-            f"code-signature normalization changed Mach-O identity: {label}"
-        )
-    return normalized
 
 
 def _validate_file_mode(path: str, mode: int, label: str) -> None:
@@ -973,7 +1023,13 @@ def _observe_bytes(path: str, raw: bytes, mode: int, arch: str) -> FileObservati
     expected_vmsize = (
         pin.normalized_linkedit_vmsize if pin is not None else None
     )
-    normalized = _normalize_macho_bytes(raw, path, expected_vmsize)
+    expected_normalized_bytes = pin.normalized_bytes if pin is not None else None
+    normalized = _normalize_macho_bytes(
+        raw,
+        path,
+        expected_vmsize,
+        expected_normalized_bytes=expected_normalized_bytes,
+    )
     normalized_metadata = _parse_macho(normalized, f"normalized {path}")
     return FileObservation(
         path=path,

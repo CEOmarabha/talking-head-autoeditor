@@ -303,6 +303,76 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(receipt.ElectronNativeReceiptError, "unowned nonzero"):
             receipt._resource_leaves(hostile)
 
+    def test_windows_version_info_matches_real_builder_26_dictionary(self):
+        actual_strings = {
+            "CompanyName": "GitHub, Inc.",
+            "FileDescription": "AutoEditor Helper",
+            "FileVersion": "0.1.0",
+            "InternalName": "AutoEditor Helper",
+            "LegalCopyright": "Copyright © 2026 Omar Marabha (@CEOmarabha)",
+            "OriginalFilename": "",
+            "ProductName": "AutoEditor Helper",
+            "ProductVersion": "0.1.0.0",
+            "SquirrelAwareVersion": "1",
+        }
+        integrity_sha = "a" * 64
+        final_leaves = {
+            (3, 1, 1033): receipt._ResourceLeaf((3, 1, 1033), 0, b"icon"),
+            (14, 1, 1033): receipt._ResourceLeaf((14, 1, 1033), 0, b"group"),
+            (16, 1, 1033): receipt._ResourceLeaf((16, 1, 1033), 1200, b"version"),
+            ("INTEGRITY", "ELECTRONASAR", 1033): receipt._ResourceLeaf(
+                ("INTEGRITY", "ELECTRONASAR", 1033),
+                1200,
+                receipt.canonical_json_bytes(
+                    [
+                        {
+                            "alg": "SHA256",
+                            "file": "resources\\app.asar",
+                            "value": integrity_sha,
+                        }
+                    ]
+                ),
+            ),
+        }
+        configuration = {"version": "0.1.0", "version_quad": [0, 1, 0, 0]}
+        asar = receipt._FileData(b"asar", 0o644, hashlib.sha256(b"asar").hexdigest())
+
+        def validate(strings: dict[str, str]) -> dict:
+            with mock.patch.object(
+                receipt,
+                "_icon_payloads",
+                return_value=([b"icon"], b"group"),
+            ), mock.patch.object(
+                receipt,
+                "_decode_version",
+                return_value=((0, 1, 0, 0), strings),
+            ), mock.patch.object(
+                receipt,
+                "_read_regular",
+                return_value=asar,
+            ), mock.patch.object(
+                receipt,
+                "_asar_header_sha256",
+                return_value=integrity_sha,
+            ):
+                return receipt._validate_windows_resources(
+                    None,
+                    None,
+                    b"fixture-icon",
+                    configuration,
+                    Path("."),
+                    source_leaves={},
+                    final_leaves=final_leaves,
+                )
+
+        self.assertEqual(validate(actual_strings)["version_strings"], actual_strings)
+        drifted = dict(actual_strings, CompanyName="Omar Marabha")
+        with self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "VERSIONINFO field drifted: CompanyName",
+        ):
+            validate(drifted)
+
     def test_resedit_growth_shifts_only_the_terminal_relocation_section(self):
         source_leaves = {
             (24, 1, 1033): receipt._ResourceLeaf((24, 1, 1033), 0, b"manifest")

@@ -70,6 +70,59 @@ class MacRemotionReceiptTests(unittest.TestCase):
         )
         return header + commands + payload
 
+    @staticmethod
+    def _signed_macho_with_alignment_padding() -> tuple[bytes, bytes, int]:
+        """Return a signed image and a stripped image retaining 8 zero bytes."""
+        cpu = receipt.CPU_TYPES["arm64"]
+        identifier = uuid.UUID(int=1).bytes
+        uuid_command = struct.pack("<II16s", receipt.LC_UUID, 24, identifier)
+        payload = b"P" * 40
+        file_offset = 32 + 24 + 72 + 16
+        signature_offset = file_offset + len(payload) + 8
+        signature = b"S" * 32
+        segment = struct.pack(
+            "<II16sQQQQIIII",
+            receipt.LC_SEGMENT_64,
+            72,
+            b"__LINKEDIT".ljust(16, b"\0"),
+            0x100000000,
+            16 * 1024,
+            file_offset,
+            len(payload) + 8 + len(signature),
+            1,
+            1,
+            0,
+            0,
+        )
+        code_signature = struct.pack(
+            "<IIII",
+            receipt.LC_CODE_SIGNATURE,
+            16,
+            signature_offset,
+            len(signature),
+        )
+        commands = uuid_command + segment + code_signature
+        header = struct.pack(
+            "<IIIIIIII",
+            0xFEEDFACF,
+            cpu,
+            0,
+            receipt.MH_EXECUTE,
+            3,
+            len(commands),
+            0,
+            0,
+        )
+        raw = header + commands + payload + b"\0" * 8 + signature
+
+        stripped = bytearray(raw[:signature_offset])
+        struct.pack_into("<II", stripped, 16, 2, len(commands) - 16)
+        struct.pack_into(
+            "<Q", stripped, 32 + 24 + 48, len(stripped) - file_offset
+        )
+        stripped[32 + 24 + 72:32 + len(commands)] = b"\0" * 16
+        return raw, bytes(stripped), file_offset + len(payload)
+
     @classmethod
     def _source_files(cls, arch: str = "arm64") -> dict[str, bytes]:
         files: dict[str, bytes] = {}
@@ -477,6 +530,69 @@ class MacRemotionReceiptTests(unittest.TestCase):
             receipt._normalize_macho_bytes(
                 source + b"appended", "appended bytes", current
             )
+
+    def test_codesign_retained_zero_padding_uses_the_pinned_unsigned_extent(self) -> None:
+        raw, _, expected_bytes = self._signed_macho_with_alignment_padding()
+        metadata = receipt._parse_macho(raw, "signed fixture")
+        canonical = receipt._canonicalize_signed_macho(
+            raw,
+            metadata,
+            "signed fixture",
+            16 * 1024,
+            expected_bytes,
+        )
+        self.assertEqual(len(canonical), expected_bytes)
+        normalized = receipt._parse_macho(canonical, "canonical fixture")
+        self.assertEqual(
+            normalized.linkedit_file_size,
+            expected_bytes - normalized.linkedit_file_offset,
+        )
+
+    def test_codesign_nonzero_alignment_padding_is_never_masked(self) -> None:
+        raw, _, expected_bytes = self._signed_macho_with_alignment_padding()
+        hostile = bytearray(raw)
+        hostile[expected_bytes] = 1
+        metadata = receipt._parse_macho(bytes(hostile), "hostile signed fixture")
+        with self.assertRaisesRegex(
+            receipt.MacRemotionReceiptError,
+            "non-zero code-signature alignment padding",
+        ):
+            receipt._canonicalize_signed_macho(
+                bytes(hostile),
+                metadata,
+                "hostile signed fixture",
+                16 * 1024,
+                expected_bytes,
+            )
+
+    def test_in_memory_signature_normalization_preserves_non_signature_drift(self) -> None:
+        raw, _, expected_bytes = self._signed_macho_with_alignment_padding()
+        metadata = receipt._parse_macho(raw, "signed fixture")
+        canonical = receipt._canonicalize_signed_macho(
+            raw, metadata, "signed fixture", 16 * 1024, expected_bytes
+        )
+        hostile = bytearray(raw)
+        hostile[metadata.linkedit_file_offset] ^= 1
+        hostile_metadata = receipt._parse_macho(
+            bytes(hostile), "hostile signed fixture"
+        )
+        hostile_canonical = receipt._canonicalize_signed_macho(
+            bytes(hostile),
+            hostile_metadata,
+            "hostile signed fixture",
+            16 * 1024,
+            expected_bytes,
+        )
+        self.assertNotEqual(hostile_canonical, canonical)
+
+    def test_nonterminal_code_signature_command_is_rejected(self) -> None:
+        raw, _, _ = self._signed_macho_with_alignment_padding()
+        hostile = raw[:56] + raw[128:144] + raw[56:128] + raw[144:]
+        with self.assertRaisesRegex(
+            receipt.MacRemotionReceiptError,
+            "LC_CODE_SIGNATURE is not the terminal load command",
+        ):
+            receipt._parse_macho(hostile, "nonterminal signature")
 
     def test_receipt_canonicality_manifest_binding_and_authentication(self) -> None:
         with self._fixture() as fixture:
