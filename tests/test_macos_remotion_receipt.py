@@ -585,14 +585,150 @@ class MacRemotionReceiptTests(unittest.TestCase):
         )
         self.assertNotEqual(hostile_canonical, canonical)
 
-    def test_nonterminal_code_signature_command_is_rejected(self) -> None:
+    def test_nonterminal_code_signature_command_is_rejected_for_remotion(self) -> None:
         raw, _, _ = self._signed_macho_with_alignment_padding()
         hostile = raw[:56] + raw[128:144] + raw[56:128] + raw[144:]
+        metadata = receipt._parse_macho(hostile, "nonterminal signature")
         with self.assertRaisesRegex(
             receipt.MacRemotionReceiptError,
             "LC_CODE_SIGNATURE is not the terminal load command",
         ):
-            receipt._parse_macho(hostile, "nonterminal signature")
+            receipt._canonicalize_signed_macho(
+                hostile,
+                metadata,
+                "nonterminal signature",
+                16 * 1024,
+                len(hostile) - 40,
+            )
+
+    def test_generic_nonterminal_code_signature_is_removed_in_place(self) -> None:
+        terminal, _, _ = self._signed_macho_with_alignment_padding()
+        nonterminal = (
+            terminal[:56] + terminal[128:144] + terminal[56:128] + terminal[144:]
+        )
+        terminal_metadata = receipt._parse_macho(terminal, "terminal signature")
+        nonterminal_metadata = receipt._parse_macho(
+            nonterminal, "generic nonterminal signature"
+        )
+        terminal_canonical = receipt._canonicalize_signed_macho(
+            terminal,
+            terminal_metadata,
+            "terminal signature",
+            general_codesign_layout=True,
+        )
+        nonterminal_canonical = receipt._canonicalize_signed_macho(
+            nonterminal,
+            nonterminal_metadata,
+            "generic nonterminal signature",
+            general_codesign_layout=True,
+        )
+        self.assertEqual(nonterminal_canonical, terminal_canonical)
+        old_command_end = 32 + nonterminal_metadata.command_bytes
+        self.assertEqual(
+            nonterminal_canonical[old_command_end:],
+            nonterminal[old_command_end:len(nonterminal_canonical)],
+        )
+        self.assertEqual(
+            receipt._parse_macho(
+                nonterminal_canonical,
+                "canonical generic nonterminal signature",
+                allow_exact_vmsize=True,
+            ).linkedit_file_offset,
+            nonterminal_metadata.linkedit_file_offset,
+        )
+        self.assertEqual(
+            nonterminal_canonical[old_command_end - 16:old_command_end],
+            b"\0" * 16,
+        )
+
+        hostile = bytearray(nonterminal)
+        hostile[56 + 16 + 68] ^= 1
+        hostile_metadata = receipt._parse_macho(
+            bytes(hostile), "generic command drift"
+        )
+        hostile_canonical = receipt._canonicalize_signed_macho(
+            bytes(hostile),
+            hostile_metadata,
+            "generic command drift",
+            general_codesign_layout=True,
+        )
+        self.assertNotEqual(hostile_canonical, terminal_canonical)
+
+    def test_real_generic_nonterminal_signature_is_normalized_when_available(self) -> None:
+        candidates = sorted(Path("/private/tmp").glob(
+            "autoeditor-normalizer-proof.*/stage/*/_internal/**/"
+            "libbrotlidec.1.2.0.dylib"
+        ))
+        if not candidates:
+            self.skipTest("audited nonterminal signed dylib is not present")
+        raw = candidates[0].read_bytes()
+        metadata = receipt._parse_macho(
+            raw,
+            "real generic nonterminal signature",
+            require_uuid=False,
+            allow_exact_vmsize=True,
+        )
+        self.assertLess(
+            metadata.code_signature_command_offset + 16,
+            32 + metadata.command_bytes,
+        )
+        normalized = receipt._normalize_macho_bytes(
+            raw,
+            "real generic nonterminal signature",
+            max_bytes=receipt.MAX_PACKAGE_BYTES,
+            require_uuid=False,
+            general_codesign_layout=True,
+        )
+        normalized_metadata = receipt._parse_macho(
+            normalized,
+            "normalized real generic nonterminal signature",
+            require_uuid=False,
+            allow_exact_vmsize=True,
+        )
+        self.assertFalse(normalized_metadata.has_code_signature)
+        self.assertEqual(
+            normalized_metadata.command_count,
+            metadata.command_count - 1,
+        )
+        self.assertEqual(
+            normalized_metadata.command_bytes,
+            metadata.command_bytes - 16,
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="autoeditor-generic-nonterminal-", dir="/private/tmp"
+        ) as temporary:
+            resigned_receipts = []
+            for index, identifier in enumerate((
+                "com.marabha.autoeditor.nonterminal.one",
+                "com.marabha.autoeditor.nonterminal.two",
+            )):
+                resigned = Path(temporary) / f"libbrotlidec-{index}.dylib"
+                shutil.copy2(candidates[0], resigned)
+                completed = subprocess.run(
+                    [
+                        receipt.CODESIGN_PATH,
+                        "--force",
+                        "--sign",
+                        "-",
+                        "--identifier",
+                        identifier,
+                        "--timestamp=none",
+                        str(resigned),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                resigned_receipts.append(receipt._normalize_macho_bytes(
+                    resigned.read_bytes(),
+                    f"resigned real generic nonterminal signature {index}",
+                    max_bytes=receipt.MAX_PACKAGE_BYTES,
+                    require_uuid=False,
+                    general_codesign_layout=True,
+                ))
+            self.assertEqual(resigned_receipts, [normalized, normalized])
 
     def test_receipt_canonicality_manifest_binding_and_authentication(self) -> None:
         with self._fixture() as fixture:
