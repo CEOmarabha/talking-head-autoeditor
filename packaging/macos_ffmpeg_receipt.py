@@ -134,6 +134,22 @@ X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
     "libswresample.6.3.102.dylib": frozenset({16_384, 32_768}),
     "libswscale.9.5.102.dylib": frozenset({16_384, 49_152}),
 })
+# Exact unsigned bottle and bundled Intel allocations for the remaining
+# shipped FFmpeg dependency graph. Every source bottle digest is independently
+# pinned by macos-ffmpeg-formulae-x64.txt before these values are consulted.
+X64_DEPENDENCY_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
+    "libSvtAv1Enc.4.2.0.dylib": frozenset({466_944, 491_520}),
+    "libcrypto.3.dylib": frozenset({905_216, 966_656}),
+    "libdav1d.7.dylib": frozenset({774_144, 819_200}),
+    "libmp3lame.0.dylib": frozenset({36_864, 65_536}),
+    "libmpg123.0.dylib": frozenset({28_672, 49_152}),
+    "libopus.0.dylib": frozenset({28_672, 49_152}),
+    "libssl.3.dylib": frozenset({208_896, 245_760}),
+    "libvmaf.3.dylib": frozenset({49_152, 81_920}),
+    "libvpx.12.dylib": frozenset({212_992, 262_144}),
+    "libx264.165.dylib": frozenset({16_384, 49_152}),
+    "libx265.216.dylib": frozenset({2_326_528, 2_490_368}),
+})
 # Exact allocation in the authenticated libvmaf 3.2.0 arm64_sequoia bottle
 # whose archive SHA-256 is pinned as dbd548d2ba16092e9c88b81cd91d7cbd1ecec84b9bb31e9c196fe3f6658ee6b3.
 ARM64_LIBVMAF_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
@@ -1113,10 +1129,13 @@ def _canonical_signed_linkedit_command(
         if authenticated_vm_size is not None:
             authenticated_vm_sizes = frozenset({authenticated_vm_size})
     elif macho.header[1] == CPU_TYPES["x64"]:
-        authenticated_vm_sizes = (
+        authenticated_vm_sizes = frozenset().union(
             X64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(
                 binary.name, frozenset()
-            )
+            ),
+            X64_DEPENDENCY_BOTTLE_LINKEDIT_VM_BYTES.get(
+                binary.name, frozenset()
+            ),
         )
     allowed_vm_sizes.update(authenticated_vm_sizes)
     if (

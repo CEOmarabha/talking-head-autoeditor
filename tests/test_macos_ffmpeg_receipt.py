@@ -691,7 +691,7 @@ class MacFFmpegReceiptTests(unittest.TestCase):
             ):
                 self._generate(fixture)
 
-    def test_authenticated_x64_ffmpeg_linkedit_preallocation_is_exactly_bounded(self):
+    def test_authenticated_x64_linkedit_preallocation_is_exactly_bounded(self):
         cases = (
             ("Contents/Resources/bin/ffprobe", 32_768),
             ("Contents/Resources/bin/ffmpeg", 81_920),
@@ -724,6 +724,20 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                 "Contents/Resources/lib/libswscale.9.5.102.dylib",
                 49_152,
             ),
+            (
+                "Contents/Resources/lib/libSvtAv1Enc.4.2.0.dylib",
+                491_520,
+            ),
+            ("Contents/Resources/lib/libcrypto.3.dylib", 966_656),
+            ("Contents/Resources/lib/libdav1d.7.dylib", 819_200),
+            ("Contents/Resources/lib/libmp3lame.0.dylib", 65_536),
+            ("Contents/Resources/lib/libmpg123.0.dylib", 49_152),
+            ("Contents/Resources/lib/libopus.0.dylib", 49_152),
+            ("Contents/Resources/lib/libssl.3.dylib", 245_760),
+            ("Contents/Resources/lib/libvmaf.3.dylib", 81_920),
+            ("Contents/Resources/lib/libvpx.12.dylib", 262_144),
+            ("Contents/Resources/lib/libx264.165.dylib", 49_152),
+            ("Contents/Resources/lib/libx265.216.dylib", 2_490_368),
         )
         for relative, authenticated_vm_size in cases:
             with (
