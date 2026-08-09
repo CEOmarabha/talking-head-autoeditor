@@ -585,6 +585,63 @@ class ElectronNativeReceiptTests(unittest.TestCase):
         hostile_canonical, _ = receipt._macho_canonical(hostile, "mac-arm64", "hostile")
         self.assertNotEqual(source_canonical, hostile_canonical)
 
+    def test_authenticated_unsigned_x64_archive_matches_only_its_signed_form(self):
+        final = bytearray(
+            self._macho(signature_bytes=0x80, linkedit_vmsize=0x8000)
+        )
+        struct.pack_into("<I", final, 4, 0x01000007)
+        signature_command = 32 + 72 + 72
+        signature_offset, _ = struct.unpack_from(
+            "<II", final, signature_command + 8
+        )
+        source = bytearray(final[:signature_offset])
+        struct.pack_into("<II", source, 16, 2, 72 + 72)
+        source[signature_command : signature_command + 16] = b"\0" * 16
+        linkedit_command = 32 + 72
+        struct.pack_into("<Q", source, linkedit_command + 32, 0x1000)
+        struct.pack_into("<Q", source, linkedit_command + 48, 0x40)
+
+        canonical, details = receipt._mac_transformation(
+            bytes(source),
+            bytes(final),
+            "mac-x64",
+            "Electron.app/Contents/MacOS/Electron",
+            "Contents/MacOS/AutoEditor",
+        )
+        self.assertEqual(len(canonical), signature_offset)
+        self.assertEqual(
+            details["source_macho"]["archive_signature"],
+            "absent-authenticated-by-archive-sha256",
+        )
+
+        hostile = bytearray(final)
+        hostile[0x1000] ^= 1
+        with self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "outside signature allocation",
+        ):
+            receipt._mac_transformation(
+                bytes(source),
+                bytes(hostile),
+                "mac-x64",
+                "Electron.app/Contents/MacOS/Electron",
+                "Contents/MacOS/AutoEditor",
+            )
+
+        hostile_source = bytearray(source)
+        hostile_source[signature_command] = 1
+        with self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "zero command slot",
+        ):
+            receipt._mac_transformation(
+                bytes(hostile_source),
+                bytes(final),
+                "mac-x64",
+                "Electron.app/Contents/MacOS/Electron",
+                "Contents/MacOS/AutoEditor",
+            )
+
     def test_authenticated_receipt_rejects_mapping_and_digest_drift(self):
         payload = self._receipt_payload()
         with tempfile.TemporaryDirectory() as td:

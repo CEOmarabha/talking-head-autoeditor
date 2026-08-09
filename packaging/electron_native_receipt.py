@@ -1485,6 +1485,119 @@ def _macho_canonical(raw: bytes, target: str, label: str) -> tuple[bytes, dict[s
     return bytes(canonical), profile
 
 
+def _unsigned_archive_macho_canonical(
+    raw: bytes,
+    target: str,
+    label: str,
+) -> tuple[bytes, dict[str, Any]]:
+    """Canonicalize the authenticated unsigned Intel archive as codesign does."""
+    if target != "mac-x64" or len(raw) < 32 or raw[:4] != b"\xcf\xfa\xed\xfe":
+        raise ElectronNativeReceiptError(
+            f"{label} is not the expected unsigned Intel Mach-O"
+        )
+    (
+        cpu_type,
+        _cpu_subtype,
+        _file_type,
+        command_count,
+        command_bytes,
+        _flags,
+        _reserved,
+    ) = struct.unpack_from("<IIIIIII", raw, 4)
+    if (
+        cpu_type != 0x01000007
+        or command_count <= 0
+        or command_count > 4096
+        or command_bytes < command_count * 8
+    ):
+        raise ElectronNativeReceiptError(
+            f"{label} has invalid unsigned Mach-O header semantics"
+        )
+    command_end = 32 + command_bytes
+    if command_end + 16 > len(raw) or any(raw[command_end : command_end + 16]):
+        raise ElectronNativeReceiptError(
+            f"{label} lacks the exact zero command slot used by codesign"
+        )
+    cursor = 32
+    linkedit_offset = None
+    linkedit = None
+    for _ in range(command_count):
+        command, size = struct.unpack_from("<II", raw, cursor)
+        if size < 8 or size % 8 or cursor + size > command_end:
+            raise ElectronNativeReceiptError(
+                f"{label} has invalid unsigned Mach-O command bounds"
+            )
+        if command == 0x1D:
+            raise ElectronNativeReceiptError(
+                f"{label} unexpectedly contains LC_CODE_SIGNATURE"
+            )
+        if command == 0x19:
+            if size < 72:
+                raise ElectronNativeReceiptError(
+                    f"{label} has truncated unsigned LC_SEGMENT_64"
+                )
+            name = raw[cursor + 8 : cursor + 24].split(b"\0", 1)[0]
+            if name == b"__LINKEDIT":
+                if linkedit is not None:
+                    raise ElectronNativeReceiptError(
+                        f"{label} has duplicate unsigned __LINKEDIT segments"
+                    )
+                _vmaddr, vmsize, fileoff, filesize = struct.unpack_from(
+                    "<QQQQ", raw, cursor + 24
+                )
+                linkedit_offset = cursor
+                linkedit = (vmsize, fileoff, filesize)
+        cursor += size
+    if cursor != command_end or linkedit is None or linkedit_offset is None:
+        raise ElectronNativeReceiptError(
+            f"{label} lacks the unsigned __LINKEDIT segment"
+        )
+    vmsize, fileoff, filesize = linkedit
+    page_size = 0x1000
+    if (
+        filesize <= 0
+        or fileoff + filesize != len(raw)
+        or vmsize % page_size
+        or vmsize < _align(filesize, page_size)
+    ):
+        raise ElectronNativeReceiptError(
+            f"{label} has noncanonical unsigned __LINKEDIT geometry"
+        )
+
+    signature_offset = _align(len(raw), 16)
+    synthetic = bytearray(raw)
+    synthetic.extend(b"\0" * (signature_offset - len(synthetic)))
+    synthetic.extend(b"\0" * 16)
+    struct.pack_into(
+        "<II", synthetic, 16, command_count + 1, command_bytes + 16
+    )
+    struct.pack_into(
+        "<IIII",
+        synthetic,
+        command_end,
+        0x1D,
+        16,
+        signature_offset,
+        16,
+    )
+    signed_linkedit_bytes = signature_offset + 16 - fileoff
+    struct.pack_into(
+        "<Q",
+        synthetic,
+        linkedit_offset + 32,
+        _align(signed_linkedit_bytes, page_size),
+    )
+    struct.pack_into(
+        "<Q", synthetic, linkedit_offset + 48, signed_linkedit_bytes
+    )
+    canonical, profile = _macho_canonical(
+        bytes(synthetic), target, label
+    )
+    profile["archive_signature"] = "absent-authenticated-by-archive-sha256"
+    profile["archive_unsigned_bytes"] = len(raw)
+    return canonical, profile
+
+
 def _mac_transformation(
     source_raw: bytes,
     final_raw: bytes,
@@ -1492,8 +1605,24 @@ def _mac_transformation(
     source_name: str,
     final_name: str,
 ) -> tuple[bytes, dict[str, Any]]:
-    _codesign_verify_standalone(source_raw, f"archive {source_name}")
-    source_canonical, source_profile = _macho_canonical(source_raw, target, f"archive {source_name}")
+    if target == "mac-x64":
+        source_canonical, source_profile = (
+            _unsigned_archive_macho_canonical(
+                source_raw, target, f"archive {source_name}"
+            )
+        )
+        transformation = (
+            "authenticated-unsigned-archive-plus-codesign-allocation-"
+            "and-terminal-linkedit-page-rounding"
+        )
+    else:
+        _codesign_verify_standalone(source_raw, f"archive {source_name}")
+        source_canonical, source_profile = _macho_canonical(
+            source_raw, target, f"archive {source_name}"
+        )
+        transformation = (
+            "codesign-allocation-plus-terminal-linkedit-page-rounding"
+        )
     final_canonical, final_profile = _macho_canonical(final_raw, target, f"final {final_name}")
     if source_canonical != final_canonical:
         raise ElectronNativeReceiptError(
@@ -1502,7 +1631,7 @@ def _mac_transformation(
     return final_canonical, {
         "final_macho": final_profile,
         "source_macho": source_profile,
-        "transformation": "codesign-allocation-plus-terminal-linkedit-page-rounding",
+        "transformation": transformation,
     }
 
 
