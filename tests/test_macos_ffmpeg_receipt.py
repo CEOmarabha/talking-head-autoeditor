@@ -275,6 +275,25 @@ class MacFFmpegReceiptTests(unittest.TestCase):
             )
         path.write_bytes(raw)
 
+    @staticmethod
+    def _linkedit_vmsize(path: Path) -> int:
+        raw = path.read_bytes()
+        command_count = struct.unpack_from("<I", raw, 16)[0]
+        cursor = 32
+        values = []
+        for _ in range(command_count):
+            command, command_size = struct.unpack_from("<II", raw, cursor)
+            if command == receipt.LC_SEGMENT_64:
+                segment = raw[cursor + 8:cursor + 24].split(b"\0", 1)[0]
+                if segment == b"__LINKEDIT":
+                    values.append(struct.unpack_from("<Q", raw, cursor + 32)[0])
+            cursor += command_size
+        if len(values) != 1:
+            raise AssertionError(
+                f"expected one __LINKEDIT command, found {len(values)}"
+            )
+        return values[0]
+
     def _fixture(
         self,
         root: Path,
@@ -623,6 +642,54 @@ class MacFFmpegReceiptTests(unittest.TestCase):
                     "noncanonical signed __LINKEDIT extent",
                 ):
                     self._generate(fixture, arch)
+
+    def test_authenticated_arm64_ffmpeg_linkedit_preallocation_is_exactly_bounded(self):
+        relative = "Contents/Resources/lib/libavfilter.11.14.102.dylib"
+        authenticated_vm_size = (
+            receipt.ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES[
+                "libavfilter.11.14.102.dylib"
+            ]
+        )
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][relative]
+            self._add_to_linkedit_vmsize(
+                source,
+                authenticated_vm_size - self._linkedit_vmsize(source),
+            )
+            self._generate(fixture)
+
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][relative]
+            hostile_vm_size = authenticated_vm_size + 16 * 1024
+            self._add_to_linkedit_vmsize(
+                source,
+                hostile_vm_size - self._linkedit_vmsize(source),
+            )
+            with self.assertRaisesRegex(
+                receipt.MacFFmpegReceiptError,
+                "noncanonical signed __LINKEDIT extent",
+            ):
+                self._generate(fixture)
+
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(Path(td))
+            source = fixture["sources"][relative]
+            self._replace_signature_payload(
+                source,
+                "arm64",
+                b"oversized-signature" + b"x" * authenticated_vm_size,
+            )
+            self._add_to_linkedit_vmsize(
+                source,
+                authenticated_vm_size - self._linkedit_vmsize(source),
+            )
+            with self.assertRaisesRegex(
+                receipt.MacFFmpegReceiptError,
+                "noncanonical signed __LINKEDIT extent",
+            ):
+                self._generate(fixture)
 
     def test_hostile_svt_substitution_fails_normalized_bottle_gate(self):
         with tempfile.TemporaryDirectory() as td:

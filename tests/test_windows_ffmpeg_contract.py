@@ -619,6 +619,14 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "not digest-pinned"):
                 verifier.load_capabilities(path)
 
+            changed = copy.deepcopy(self.capability_value)
+            changed["build"]["configure_args"].remove("--enable-protocol=fd")
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "configure_args missing: --enable-protocol=fd",
+            ):
+                verifier._validate_capabilities(changed)
+
     def test_source_cache_rejects_missing_extra_and_changed_files(self):
         content = b"pinned source\n"
         lock_value = {
@@ -906,7 +914,7 @@ class WindowsFFmpegContractTests(unittest.TestCase):
         with self.assertRaisesRegex(verifier.WindowsFFmpegError, "inventory is empty"):
             verifier._named_inventory(output, 3, "filter")
 
-    def test_inventory_rejects_any_protocol_beyond_file_and_pipe(self):
+    def test_inventory_rejects_missing_or_extra_protocols(self):
         capabilities = verifier.load_capabilities(CAPABILITIES)
         required = self.capability_value["required"]
         inventory = {
@@ -917,12 +925,49 @@ class WindowsFFmpegContractTests(unittest.TestCase):
             "input_devices": required["input_devices"],
             "muxers": required["muxers"],
             "output_devices": required["output_devices"],
-            "protocols": {"input": ["file", "http", "pipe"], "output": ["file", "pipe"]},
+            "protocols": {
+                "input": ["fd", "file", "http", "pipe"],
+                "output": ["fd", "file", "pipe"],
+            },
         }
-        with self.assertRaisesRegex(verifier.WindowsFFmpegError, "exactly file and pipe"):
+        with self.assertRaisesRegex(
+            verifier.WindowsFFmpegError,
+            "exactly fd, file, and pipe",
+        ):
             verifier.verify_inventory(
                 inventory, self.capability_value["build"]["configure_args"], capabilities
             )
+        for direction in ("input", "output"):
+            with self.subTest(direction=direction):
+                changed = copy.deepcopy(inventory)
+                changed["protocols"] = copy.deepcopy(required["protocols"])
+                changed["protocols"][direction].remove("fd")
+                with self.assertRaisesRegex(
+                    verifier.WindowsFFmpegError,
+                    "exactly fd, file, and pipe",
+                ):
+                    verifier.verify_inventory(
+                        changed,
+                        self.capability_value["build"]["configure_args"],
+                        capabilities,
+                    )
+
+    def test_fd_protocol_is_required_and_cannot_be_reintroduced_as_forbidden(self):
+        self.assertEqual(
+            self.capability_value["required"]["protocols"],
+            {
+                "input": ["fd", "file", "pipe"],
+                "output": ["fd", "file", "pipe"],
+            },
+        )
+        self.assertNotIn("fd", self.capability_value["forbidden"]["protocols"])
+        changed = copy.deepcopy(self.capability_value)
+        changed["forbidden"]["protocols"].insert(7, "fd")
+        with self.assertRaisesRegex(
+            verifier.WindowsFFmpegError,
+            "required protocol is also forbidden",
+        ):
+            verifier._validate_capabilities(changed)
 
     def test_inventory_rejects_buildconf_drift(self):
         capabilities = verifier.load_capabilities(CAPABILITIES)
@@ -1156,7 +1201,12 @@ import pathlib
 import sys
 
 arguments = sys.argv[1:]
-if "pcm_f32le" in arguments:
+if "-i" in arguments and arguments[arguments.index("-i") + 1] == "-":
+    data = sys.stdin.buffer.read()
+    if not data:
+        sys.exit(2)
+    pathlib.Path(arguments[-1]).write_bytes(data)
+elif "pcm_f32le" in arguments:
     pathlib.Path(arguments[-1]).write_bytes(b"\\0" * 8000)
 elif "libx264" in arguments:
     pathlib.Path(arguments[-1]).write_bytes(b"fixture mp4")
@@ -1182,6 +1232,21 @@ print(json.dumps({"streams": [
                 verifier.run_runtime_smoke(ffmpeg, ffprobe),
                 {"checks": verifier.RUNTIME_SMOKE_CHECKS, "status": "passed"},
             )
+            ffmpeg.write_text(
+                ffmpeg_script.replace(
+                    "pathlib.Path(arguments[-1]).write_bytes(data)",
+                    "pathlib.Path(arguments[-1]).write_bytes(data[:-2])",
+                ),
+                encoding="utf-8",
+            )
+            ffmpeg.chmod(0o755)
+            with self.assertRaisesRegex(
+                verifier.WindowsFFmpegError,
+                "literal stdin smoke output differs",
+            ):
+                verifier.run_runtime_smoke(ffmpeg, ffprobe)
+            ffmpeg.write_text(ffmpeg_script, encoding="utf-8")
+            ffmpeg.chmod(0o755)
             ffprobe.write_text("#!/usr/bin/env python3\nprint('{\"streams\": []}')\n", encoding="utf-8")
             ffprobe.chmod(0o755)
             with self.assertRaisesRegex(verifier.WindowsFFmpegError, "lacks H.264"):
@@ -1207,6 +1272,9 @@ print(json.dumps({"streams": [
         self.assertIn("--verbose", text)
         self.assertIn("--reproduce=/artifact/link-evidence/", text)
         self.assertIn("--threads=1", text)
+        self.assertIn("AUTOEDITOR_WINDOWS_FFMPEG_EVIDENCE_ONLY", text)
+        self.assertIn("--evidence-only", text)
+        self.assertIn("WINDOWS_FFMPEG_EVIDENCE_ONLY.txt", text)
         for archive in (
             "llvm-project-ca7933e47d3a3451d81e72ac174dcb5aa28b59d1.tar.gz",
             "mingw-w64-c28e9555bb8800c53449f42a465ad9a5676fce88.tar.gz",
@@ -1235,13 +1303,13 @@ print(json.dumps({"streams": [
             ROOT / ".github" / "workflows" / "windows-ffmpeg.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("windows-ffmpeg-accepted-${{ github.sha }}", workflow)
-        self.assertNotIn("windows-ffmpeg-evidence-${{ github.sha }}", workflow)
+        self.assertIn("windows-ffmpeg-evidence-${{ github.sha }}", workflow)
         self.assertIn("compare-receipts", workflow)
         self.assertIn("assert-promotable", workflow)
         self.assertEqual(workflow.count("--license-dir"), 2)
         self.assertEqual(workflow.count("--link-evidence-dir"), 2)
         self.assertEqual(workflow.count("--linkage-dir"), 2)
-        self.assertEqual(workflow.count("overwrite: true"), 3)
+        self.assertEqual(workflow.count("overwrite: true"), 5)
         self.assertIn("workflow_call:", workflow)
         self.assertNotIn("push:\n    branches:", workflow)
         self.assertIn("artifact_id: ${{ steps.accepted.outputs.artifact-id }}", workflow)
@@ -1254,6 +1322,40 @@ print(json.dumps({"streams": [
             workflow.index("compare-receipts"),
             workflow.index("Upload reproducible accepted Windows FFmpeg candidate"),
         )
+
+    def test_evidence_dispatch_cannot_run_receipt_or_accepted_artifact_jobs(self):
+        workflow = (
+            ROOT / ".github" / "workflows" / "windows-ffmpeg.yml"
+        ).read_text(encoding="utf-8")
+        strict_condition = (
+            "if: ${{ github.event_name != 'workflow_dispatch' || "
+            "inputs.evidence_only != true }}"
+        )
+        evidence_condition = (
+            "if: ${{ github.event_name == 'workflow_dispatch' && "
+            "inputs.evidence_only == true }}"
+        )
+        self.assertIn("evidence_only:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn("type: boolean", workflow)
+        self.assertEqual(workflow.count(strict_condition), 4)
+        self.assertEqual(workflow.count(evidence_condition), 3)
+        receipt = workflow.split("\n  receipt:\n", 1)[1].split(
+            "\n  compare:\n", 1
+        )[0]
+        compare = workflow.split("\n  compare:\n", 1)[1].split(
+            "\n  evidence:\n", 1
+        )[0]
+        evidence = workflow.split("\n  evidence:\n", 1)[1]
+        self.assertTrue(receipt.startswith(f"    {strict_condition}\n"))
+        self.assertTrue(compare.startswith(f"    {strict_condition}\n"))
+        self.assertTrue(evidence.startswith(f"    {evidence_condition}\n"))
+        self.assertIn("--evidence-only", workflow)
+        self.assertIn("WINDOWS_FFMPEG_EVIDENCE_ONLY.txt", evidence)
+        self.assertIn("diff --no-dereference --recursive --brief", evidence)
+        self.assertNotIn("windows-ffmpeg-accepted-", evidence)
+        self.assertNotIn("assert-promotable", evidence)
+        self.assertNotIn("create-receipt", evidence)
 
     def test_nasm_source_contract_binds_timestamp_only_patch(self):
         nasm = next(

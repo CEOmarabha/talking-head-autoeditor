@@ -113,7 +113,8 @@ the repository commit and tree, and canonical receipts for every regular file
 inside both LLD reproducer archives. It also binds each classified linkage
 receipt and the matching unstripped executable used to inspect PE imports.
 Runtime smoke checks exercise lavfi, float PCM output, wrapped-frame video to
-the null muxer, libx264 and AAC in MP4, and FFprobe stream inspection.
+the null muxer, an exact raw PCM round trip through literal standard input,
+libx264 and AAC in MP4, and FFprobe stream inspection.
 
 Recompute the receipt before accepting an artifact:
 
@@ -205,10 +206,11 @@ program-specific pins in the source lock.
 
 ## Required Runtime Contract
 
-The network protocol set is exactly `file` and `pipe` for input and output.
-HTTP, HTTPS, TCP, UDP, RTMP, and every other protocol fail the gate. The
-capability JSON records every required encoder, decoder, filter, demuxer, and
-muxer. A missing item fails receipt creation.
+The local I/O protocol set is exactly `fd`, `file`, and `pipe` for input and
+output. FFmpeg 8.1 translates a literal `-` input to `fd:` and a literal `-`
+output to `pipe:`. HTTP, HTTPS, TCP, UDP, RTMP, and every other protocol fail
+the gate. The capability JSON records every required encoder, decoder, filter,
+demuxer, and muxer. A missing item fails receipt creation.
 
 The executable license expression is `GPL-2.0-or-later` because libx264 is
 enabled. The source bundle uses the repository's deterministic source-bundle

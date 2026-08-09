@@ -105,6 +105,20 @@ MACHO_PAGE_BYTES = {
     CPU_TYPES["arm64"]: 16 * 1024,
     CPU_TYPES["x64"]: 4 * 1024,
 }
+# Exact __LINKEDIT allocations in the authenticated arm64_sequoia bottle for
+# the pinned FFmpeg 8.1.2_1 formula. Homebrew's pour-time ad-hoc signer can
+# shrink the terminal signature without shrinking these original allocations.
+ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES = MappingProxyType({
+    "ffmpeg": 81_920,
+    "ffprobe": 49_152,
+    "libavcodec.62.28.102.dylib": 196_608,
+    "libavdevice.62.3.102.dylib": 49_152,
+    "libavfilter.11.14.102.dylib": 114_688,
+    "libavformat.62.12.102.dylib": 114_688,
+    "libavutil.60.26.102.dylib": 81_920,
+    "libswresample.6.3.102.dylib": 32_768,
+    "libswscale.9.5.102.dylib": 32_768,
+})
 PACKAGING_DYLIB_TIMESTAMP = 0
 PLATFORMS = {
     "arm64": "mac-arm64",
@@ -1063,14 +1077,22 @@ def _canonical_signed_linkedit_command(
             f"unsupported signed Mach-O page size: {binary}"
         )
     rounded_file_size = _round_up(file_size, page_bytes)
+    allowed_vm_sizes = {
+        rounded_file_size,
+        rounded_file_size + page_bytes,
+    }
+    if macho.header[1] == CPU_TYPES["arm64"]:
+        authenticated_vm_size = (
+            ARM64_FFMPEG_BOTTLE_LINKEDIT_VM_BYTES.get(binary.name)
+        )
+        if authenticated_vm_size is not None:
+            allowed_vm_sizes.add(authenticated_vm_size)
     if (
         file_size <= 0
         or file_offset > signature_offset
         or signature_offset + signature_size != file_offset + file_size
-        or vm_size not in {
-            rounded_file_size,
-            rounded_file_size + page_bytes,
-        }
+        or vm_size < rounded_file_size
+        or vm_size not in allowed_vm_sizes
     ):
         raise MacFFmpegReceiptError(
             f"noncanonical signed __LINKEDIT extent: {binary}"

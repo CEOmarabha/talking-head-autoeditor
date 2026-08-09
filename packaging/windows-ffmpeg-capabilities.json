@@ -27,6 +27,7 @@
       "--disable-autodetect",
       "--disable-network",
       "--disable-protocols",
+      "--enable-protocol=fd",
       "--enable-protocol=file",
       "--enable-protocol=pipe",
       "--disable-doc",
@@ -122,7 +123,6 @@
       "concatf",
       "crypto",
       "data",
-      "fd",
       "ftp",
       "gopher",
       "gophers",
@@ -254,10 +254,12 @@
     ],
     "protocols": {
       "input": [
+        "fd",
         "file",
         "pipe"
       ],
       "output": [
+        "fd",
         "file",
         "pipe"
       ]

@@ -13,6 +13,12 @@ on:
         description: GitHub artifact SHA-256 digest
         value: ${{ jobs.compare.outputs.artifact_digest }}
   workflow_dispatch:
+    inputs:
+      evidence_only:
+        description: Build two unpromotable evidence bundles for an explicit closure repin
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -55,14 +61,25 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Build from pinned source without container networking
+      - name: Build strict candidate from pinned source without container networking
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence_only != true }}
         env:
           OUTPUT_DIR: ${{ runner.temp }}/windows-ffmpeg
         run: |
           packaging/build_windows_ffmpeg.sh \
             --output-dir "$OUTPUT_DIR" \
             --repository-commit "$GITHUB_SHA"
-      - name: Upload clean build
+      - name: Build unpromotable evidence from pinned source without container networking
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence_only == true }}
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/windows-ffmpeg
+        run: |
+          packaging/build_windows_ffmpeg.sh \
+            --evidence-only \
+            --output-dir "$OUTPUT_DIR" \
+            --repository-commit "$GITHUB_SHA"
+      - name: Upload strict clean build
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence_only != true }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: windows-ffmpeg-${{ matrix.build_id }}
@@ -71,8 +88,19 @@ jobs:
           retention-days: 7
           compression-level: 0
           overwrite: true
+      - name: Upload unpromotable evidence input
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence_only == true }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ffmpeg-evidence-input-${{ matrix.build_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-ffmpeg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
 
   receipt:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence_only != true }}
     needs: build
     strategy:
       fail-fast: false
@@ -129,6 +157,7 @@ jobs:
           overwrite: true
 
   compare:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.evidence_only != true }}
     needs: receipt
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -200,6 +229,61 @@ jobs:
         with:
           name: windows-ffmpeg-accepted-${{ github.sha }}
           path: ${{ runner.temp }}/accepted
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
+
+  evidence:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.evidence_only == true }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Download first unpromotable evidence input
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-evidence-input-one-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence-one
+      - name: Download second unpromotable evidence input
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-ffmpeg-evidence-input-two-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence-two
+      - name: Require deterministic raw and classified link evidence
+        run: |
+          for build in evidence-one evidence-two; do
+            marker="${RUNNER_TEMP}/${build}/WINDOWS_FFMPEG_EVIDENCE_ONLY.txt"
+            test -f "$marker"
+            grep -Fx "AutoEditor Windows FFmpeg evidence only" "$marker"
+            grep -Fx "repository_commit=${GITHUB_SHA}" "$marker"
+            grep -Fx "promotable=false" "$marker"
+            for program in ffmpeg ffprobe; do
+              python packaging/windows_ffmpeg_link_receipt.py verify \
+                --program "$program" \
+                --source-lock packaging/windows-ffmpeg-sources.lock.json \
+                --reproduce "${RUNNER_TEMP}/${build}/link-evidence/${program}-reproduce.tar" \
+                --lld-map "${RUNNER_TEMP}/${build}/link-evidence/${program}-lld.map" \
+                --verbose-log "${RUNNER_TEMP}/${build}/link-evidence/${program}-link.verbose.txt" \
+                --unstripped-executable "${RUNNER_TEMP}/${build}/linkage/${program}_g.exe" \
+                --receipt "${RUNNER_TEMP}/${build}/linkage/${program}-linkage-receipt.json"
+            done
+          done
+          diff --no-dereference --recursive --brief \
+            "${RUNNER_TEMP}/evidence-one" \
+            "${RUNNER_TEMP}/evidence-two"
+      - name: Upload deterministic unpromotable Windows FFmpeg evidence
+        id: evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-ffmpeg-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence-one
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

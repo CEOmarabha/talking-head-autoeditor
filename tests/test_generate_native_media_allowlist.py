@@ -363,6 +363,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                     "ffprobe-mp4",
                     "lavfi-input",
                     "libx264-aac-mp4",
+                    "literal-stdin-s16le",
                     "wrapped-avframe-null-video",
                 ],
                 "status": "passed",
