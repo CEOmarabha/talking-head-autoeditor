@@ -41,10 +41,6 @@ jobs:
             target_os: mac
             arch: arm64
             electron_target: mac
-          - os: macos-15-intel
-            target_os: mac
-            arch: x64
-            electron_target: mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
 
@@ -1510,8 +1506,6 @@ jobs:
         include:
           - os: macos-15
             arch: arm64
-          - os: macos-15-intel
-            arch: x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     permissions:

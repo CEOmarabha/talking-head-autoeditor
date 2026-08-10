@@ -21,4 +21,17 @@ const { stopProcessTree } = require('../lib/process-tree');
   await stopProcessTree({ pid: 55, kill: (value) => { signal = value; } },
     'darwin', fakeSpawn);
   assert.strictEqual(signal, 'SIGTERM');
+
+  const originalKill = process.kill;
+  const groupSignals = [];
+  process.kill = (pid, value) => { groupSignals.push({ pid, value }); };
+  try {
+    await stopProcessTree({
+      pid: 77, __autoeditorProcessGroup: true,
+      kill: () => { throw new Error('group process must not use child.kill'); },
+    }, 'darwin', fakeSpawn);
+  } finally {
+    process.kill = originalKill;
+  }
+  assert.deepStrictEqual(groupSignals, [{ pid: -77, value: 'SIGTERM' }]);
 })();

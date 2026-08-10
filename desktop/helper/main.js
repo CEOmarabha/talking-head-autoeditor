@@ -1,19 +1,48 @@
-/** AutoEditor Helper: one-window shell around the frozen render daemon. */
-const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
+/** AutoEditor: one-window local editor around the frozen render daemon. */
+'use strict';
+
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } =
+  require('electron');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
-const { decodeSetupCode } = require('./lib/setup-code');
 const {
-  PROVIDER_LINKS, normalizeProviderSetup, validateProviderKeys,
-} = require('./lib/provider-setup');
+  normalizeApplyRequest,
+  normalizeChatRequest,
+  normalizeLocalRequest,
+  normalizeLocalSettings,
+  normalizeOutputDir,
+  normalizeResultPath,
+  normalizeVideoPaths,
+  parseEngineEvent,
+} = require('./lib/local-render');
 
 let win = null;
-let daemon = null;
+let activeRender = null;
+let activeChat = null;
+let actionSequence = 0;
+const returnedOutputs = new Map();
+const returnedProposals = new Set();
+const selectedVideos = new Set();
+const selectedOutputDirs = new Set();
 const PACKAGED = app.isPackaged;
 const RES = PACKAGED ? process.resourcesPath : path.join(__dirname, '../..');
 const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
+const MAX_ENCRYPTED_SETTINGS_BYTES = 128 * 1024;
+const MAX_LOG_LINE = 20000;
+const MAX_LINE_BUFFER = 2 * 1024 * 1024;
+const LOCAL_EVENTS = new Set([
+  'local-progress', 'local-result', 'local-chat', 'local-error',
+]);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.webm']);
+const PROVIDER_LINKS = Object.freeze({
+  deepseekApi: 'https://platform.deepseek.com/api_keys',
+  pexelsApi: 'https://www.pexels.com/api/',
+  pixabayApi: 'https://pixabay.com/api/docs/',
+  elevenApiKeys: 'https://elevenlabs.io/app/settings/api-keys',
+  remotionDashboard: 'https://remotion.pro/dashboard',
+});
 
 function exe(name) {
   return process.platform === 'win32' ? `${name}.exe` : name;
@@ -54,46 +83,107 @@ function runtimePaths() {
   };
 }
 
-function setupFile() {
+function settingsFile() {
+  return path.join(app.getPath('userData'), 'local-settings.enc');
+}
+
+function legacySetupFile() {
   return path.join(app.getPath('userData'), 'helper-setup.enc');
 }
 
-async function saveSetup(input) {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Your OS keystore is unavailable, so setup cannot be saved safely');
-  }
-  const supplied = normalizeProviderSetup(input);
-  const connection = decodeSetupCode(supplied.setupCode);
-  await validateProviderKeys(supplied);
-  const setup = {
-    ...connection,
-    pexelsKey: supplied.pexelsKey,
-    pixabayKey: supplied.pixabayKey,
-    elevenKey: supplied.elevenKey,
-    pexelsMode: supplied.pexelsMode,
-    pixabayMode: supplied.pixabayMode,
-    elevenMode: supplied.elevenMode,
-    remotionMode: supplied.remotionMode,
-    remotionKey: supplied.remotionKey,
-  };
-  const ready = preflight();
-  if (!ready.ok) {
-    throw new Error('A built-in editing component is missing or this computer has less than 20 GB free');
-  }
-  creativeProbe(setup);
-  const sealed = safeStorage.encryptString(JSON.stringify(setup));
-  fs.mkdirSync(path.dirname(setupFile()), { recursive: true });
-  fs.writeFileSync(setupFile(), sealed, { mode: 0o600 });
-  return setup;
-}
-
-function loadSetup() {
+function readEncryptedObject(file) {
   try {
-    if (!fs.existsSync(setupFile()) || !safeStorage.isEncryptionAvailable()) {
+    if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file)) {
       return null;
     }
-    return JSON.parse(safeStorage.decryptString(fs.readFileSync(setupFile())));
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size < 1 ||
+        stat.size > MAX_ENCRYPTED_SETTINGS_BYTES) return null;
+    const plain = safeStorage.decryptString(fs.readFileSync(file));
+    if (Buffer.byteLength(plain, 'utf8') > MAX_ENCRYPTED_SETTINGS_BYTES) {
+      return null;
+    }
+    const value = JSON.parse(plain);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value;
   } catch (_) { return null; }
+}
+
+function writeSettings(settings) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so API keys cannot be saved safely');
+  }
+  const normalized = normalizeLocalSettings(settings);
+  const sealed = safeStorage.encryptString(JSON.stringify(normalized));
+  const file = settingsFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, sealed, { mode: 0o600 });
+  return normalized;
+}
+
+function legacyKey(legacy, names) {
+  for (const name of names) {
+    const value = legacy[name];
+    if (typeof value === 'string' && value.length <= 8192) return value;
+  }
+  return '';
+}
+
+function migrateLegacySettings() {
+  const legacy = readEncryptedObject(legacySetupFile());
+  if (!legacy) return {};
+  const candidate = {
+    deepseekApiKey: legacyKey(legacy, ['deepseekApiKey', 'deepseekKey']),
+    pexelsApiKey: legacyKey(legacy, ['pexelsApiKey', 'pexelsKey']),
+    pixabayApiKey: legacyKey(legacy, ['pixabayApiKey', 'pixabayKey']),
+    elevenLabsApiKey: legacyKey(legacy, ['elevenLabsApiKey', 'elevenKey']),
+    remotionKey: legacyKey(legacy, ['remotionKey']),
+  };
+  let migrated;
+  try { migrated = normalizeLocalSettings(candidate); }
+  catch (_) { return {}; }
+  const hasValue = Object.values(migrated).some(Boolean);
+  if (!hasValue) return {};
+  try { return writeSettings(migrated); }
+  catch (_) { return {}; }
+}
+
+function loadSettings() {
+  const stored = readEncryptedObject(settingsFile());
+  if (stored) {
+    try { return normalizeLocalSettings(stored); }
+    catch (_) { return {}; }
+  }
+  return migrateLegacySettings();
+}
+
+function settingsPatch(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Settings must be an object');
+  }
+  const patched = { ...input };
+  if (!Object.prototype.hasOwnProperty.call(patched, 'remotionKey') &&
+      Object.prototype.hasOwnProperty.call(patched, 'remotionLicenseKey')) {
+    patched.remotionKey = patched.remotionLicenseKey;
+  }
+  delete patched.remotionLicenseKey;
+  return normalizeLocalSettings(patched);
+}
+
+function settingsPresence(settings) {
+  return {
+    deepseekApiKey: !!settings.deepseekApiKey,
+    pexelsApiKey: !!settings.pexelsApiKey,
+    pixabayApiKey: !!settings.pixabayApiKey,
+    elevenLabsApiKey: !!settings.elevenLabsApiKey,
+    remotionKey: !!settings.remotionKey,
+  };
+}
+
+function saveSettings(input) {
+  const merged = { ...loadSettings(), ...settingsPatch(input) };
+  const settings = writeSettings(merged);
+  return { ok: true, settings: settingsPresence(settings) };
 }
 
 function commandOutput(command, args) {
@@ -123,8 +213,8 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
       fs.existsSync(path.join(p.remotionProject, 'src', 'index.ts')),
     browser: fs.existsSync(p.browser),
     // Artifact smoke and screenshot capture are noninteractive. On macOS an
-    // ad-hoc acceptance build can block on its first Keychain lookup. Real
-    // setup still checks safeStorage here and again immediately before save.
+    // ad-hoc acceptance build can block on its first Keychain lookup. Saving
+    // settings and starting any local action still require the OS keystore.
     keystore: checkKeystore ? safeStorage.isEncryptionAvailable() : true,
     disk: !checkDisk,
     codecs: false,
@@ -148,16 +238,20 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
   return { ok: Object.values(checks).every(Boolean), checks };
 }
 
-function daemonEnv(setup) {
+function daemonEnv(settings) {
   const p = runtimePaths();
   const env = { ...process.env };
   for (const key of ['DEEPSEEK_API_KEY', 'KEY_WRAP_SECRET', 'ADMIN_TOKEN',
-    'WORKER_TOKEN', 'PEXELS_API_KEY', 'PIXABAY_API_KEY', 'ELEVENLABS_API_KEY',
-    'REMOTION_LICENSE_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
-    'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_HOME_CHANNEL']) delete env[key];
+    'WORKER_TOKEN', 'AUTOEDITOR_WEB_API', 'PEXELS_API_KEY', 'PIXABAY_API_KEY',
+    'ELEVENLABS_API_KEY', 'REMOTION_LICENSE_KEY', 'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+    'TELEGRAM_HOME_CHANNEL']) delete env[key];
   Object.assign(env, {
-    AUTOEDITOR_WEB_API: setup.site,
-    WORKER_TOKEN: setup.token,
+    DEEPSEEK_API_KEY: settings.deepseekApiKey || '',
+    PEXELS_API_KEY: settings.pexelsApiKey || '',
+    PIXABAY_API_KEY: settings.pixabayApiKey || '',
+    ELEVENLABS_API_KEY: settings.elevenLabsApiKey || '',
+    REMOTION_LICENSE_KEY: settings.remotionKey || '',
     AUTOEDITOR_ENGINE: p.engine,
     AUTOEDITOR_INSTALL_ROOT: p.root,
     AUTOEDITOR_FFMPEG: p.ffmpeg,
@@ -176,10 +270,6 @@ function daemonEnv(setup) {
     HYPERFRAMES_FFMPEG_PATH: p.ffmpeg,
     HYPERFRAMES_FFPROBE_PATH: p.ffprobe,
     HYPERFRAMES_NO_UPDATE_CHECK: '1',
-    PEXELS_API_KEY: setup.pexelsMode === 'connect' ? setup.pexelsKey : '',
-    PIXABAY_API_KEY: setup.pixabayMode === 'connect' ? setup.pixabayKey : '',
-    ELEVENLABS_API_KEY: setup.elevenMode === 'connect' ? setup.elevenKey : '',
-    REMOTION_LICENSE_KEY: setup.remotionKey || '',
     AUTOEDITOR_REQUIRE_HYPERFRAMES: '1',
     AUTOEDITOR_REQUIRE_REMOTION: '1',
     SSL_CERT_FILE: p.caBundle,
@@ -187,6 +277,7 @@ function daemonEnv(setup) {
     HF_HUB_OFFLINE: '1',
     TRANSFORMERS_OFFLINE: '1',
     AUTOEDITOR_PACKAGED: '1',
+    AUTOEDITOR_PROGRESS_JSON: '1',
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
     WORK_DIR: path.join(app.getPath('userData'), 'work'),
@@ -194,108 +285,360 @@ function daemonEnv(setup) {
   return env;
 }
 
-function creativeProbe(setup) {
-  const p = runtimePaths();
-  const child = spawnSync(p.daemon, [], {
-    env: { ...daemonEnv(setup), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
-    windowsHide: true, encoding: 'utf8', timeout: 360000,
-  });
-  const output = `${child.stdout || ''}\n${child.stderr || ''}`;
-  if (child.status !== 0 || !output.includes('helper-creative-smoke')) {
-    throw new Error('The built-in HyperFrames or Remotion render check failed. ' +
-      'Restart the app and try again. If it repeats, send the Activity text to Omar');
-  }
-  return true;
-}
-
 function send(channel, value) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, value);
 }
 
-function startDaemon() {
-  if (daemon) return { ok: true, running: true };
-  const setup = loadSetup();
-  if (!setup) throw new Error('Paste your Setup code first');
-  const ready = preflight();
-  if (!ready.ok) throw new Error('The built-in startup check failed');
-  const p = runtimePaths();
-  daemon = spawn(p.daemon, [], {
-    env: daemonEnv(setup), windowsHide: true, cwd: p.root,
-  });
-  daemon.stdout.on('data', (data) => send('helper-log', data.toString()));
-  daemon.stderr.on('data', (data) => send('helper-log', data.toString()));
-  daemon.on('error', (err) => send('helper-state', {
-    running: false, error: `Helper could not start: ${err.message}`,
-  }));
-  daemon.on('close', (code) => {
-    daemon = null;
-    send('helper-state', { running: false, error: code ? `Helper stopped (${code})` : '' });
-  });
-  send('helper-state', { running: true });
-  return { ok: true, running: true };
+function redact(line, settings) {
+  let clean = String(line || '');
+  for (const value of Object.values(settings)) {
+    if (typeof value === 'string' && value.length >= 4) {
+      clean = clean.split(value).join('[redacted]');
+    }
+  }
+  return clean.slice(0, MAX_LOG_LINE);
 }
 
-async function stopDaemon() {
-  const current = daemon;
-  daemon = null;
-  await stopProcessTree(current);
-  send('helper-state', { running: false });
-  return { ok: true, running: false };
+function lineReader(onLine) {
+  let buffer = '';
+  return {
+    push(chunk) {
+      buffer += chunk.toString('utf8');
+      if (buffer.length > MAX_LINE_BUFFER && !buffer.includes('\n')) {
+        onLine(buffer.slice(0, MAX_LOG_LINE));
+        buffer = '';
+      }
+      let index;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index).replace(/\r$/, '');
+        buffer = buffer.slice(index + 1);
+        if (line) onLine(line);
+      }
+    },
+    flush() {
+      const line = buffer.replace(/\r$/, '');
+      buffer = '';
+      if (line) onLine(line);
+    },
+  };
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function realFile(file) {
+  return fs.realpathSync.native(normalizeResultPath(file));
+}
+
+function isInside(directory, file) {
+  const root = fs.realpathSync.native(directory);
+  const relative = path.relative(root, file);
+  return relative !== '' && relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function rememberOutput(raw, outputDir) {
+  try {
+    const real = realFile(raw);
+    if (!isInside(outputDir, real)) return false;
+    returnedOutputs.set(real, raw);
+    return true;
+  } catch (_) { return false; }
+}
+
+function rememberResult(event, outputDir) {
+  if (typeof event.output === 'string') rememberOutput(event.output, outputDir);
+  if (event.outputs && typeof event.outputs === 'object' &&
+      !Array.isArray(event.outputs)) {
+    for (const value of Object.values(event.outputs)) {
+      if (typeof value === 'string') rememberOutput(value, outputDir);
+    }
+  }
+}
+
+function rememberProposal(event) {
+  if (event.canApply !== true || !event.proposal ||
+      typeof event.proposal !== 'object' || Array.isArray(event.proposal) ||
+      !Array.isArray(event.proposal.operations) ||
+      event.proposal.operations.length < 1) return;
+  try {
+    const encoded = stableJson(event.proposal);
+    if (encoded.length <= 100000) returnedProposals.add(encoded);
+  } catch (_) { /* malformed daemon output is not applicable */ }
+}
+
+function proposalWasReturned(proposal) {
+  if (!returnedProposals.has(stableJson(proposal))) {
+    throw new Error('That edit proposal is no longer available. Ask DeepSeek again');
+  }
+  return true;
+}
+
+function processLocalEvent(event, action) {
+  if (!LOCAL_EVENTS.has(event.event)) return false;
+  if (action.canceled) return true;
+  if (event.event === 'local-result' && action.kind === 'render') {
+    rememberResult(event, action.outputDir);
+    action.terminal = true;
+  } else if (event.event === 'local-chat' && action.kind === 'chat') {
+    rememberProposal(event);
+    action.terminal = true;
+  } else if (event.event === 'local-error') {
+    action.terminal = true;
+  }
+  send('helper-render', event);
+  return true;
+}
+
+function localProcess(mode, payload, kind, settings) {
+  const p = runtimePaths();
+  const action = {
+    id: ++actionSequence,
+    kind,
+    outputDir: kind === 'render' ? payload.outputDir : '',
+    proc: null,
+    terminal: false,
+    canceled: false,
+  };
+  const child = spawn(p.daemon, [mode], {
+    env: daemonEnv(settings), windowsHide: true, cwd: p.root,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
+  child.__autoeditorProcessGroup = process.platform !== 'win32';
+  action.proc = child;
+  if (kind === 'render') activeRender = action;
+  else activeChat = action;
+
+  const onLine = (line) => {
+    const event = parseEngineEvent(line);
+    if (event && processLocalEvent(event, action)) return;
+    if (!event) send('helper-log', redact(line, settings));
+  };
+  const stdout = lineReader(onLine);
+  const stderr = lineReader(onLine);
+  child.stdout.on('data', (chunk) => stdout.push(chunk));
+  child.stderr.on('data', (chunk) => stderr.push(chunk));
+  child.stdin.on('error', () => { /* child error/close owns the visible result */ });
+  child.on('error', (error) => {
+    if (!action.terminal && !action.canceled) {
+      action.terminal = true;
+      send('helper-render', {
+        event: 'local-error', error: `AutoEditor could not start: ${error.message}`,
+      });
+    }
+  });
+  child.on('close', (code) => {
+    stdout.flush();
+    stderr.flush();
+    if (kind === 'render' && activeRender === action) activeRender = null;
+    if (kind === 'chat' && activeChat === action) activeChat = null;
+    if (!action.terminal && !action.canceled) {
+      send('helper-render', {
+        event: 'local-error',
+        error: code === 0
+          ? 'AutoEditor ended without returning a result'
+          : `AutoEditor stopped before finishing (${code})`,
+      });
+    }
+    send('helper-state', {
+      running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
+    });
+  });
+  child.stdin.end(`${JSON.stringify(payload)}\n`);
+  send('helper-state', {
+    running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
+  });
+  return action;
+}
+
+function requireReady() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so AutoEditor cannot safely load API keys');
+  }
+  const ready = preflight();
+  if (!ready.ok) {
+    throw new Error('A built-in editing component is missing or this computer has less than 20 GB free');
+  }
+  return loadSettings();
+}
+
+function requireDialogSelection(request) {
+  for (const input of request.inputs) {
+    const real = fs.realpathSync.native(input);
+    if (!selectedVideos.has(real)) {
+      throw new Error('Choose every input video with the Select videos button');
+    }
+  }
+  const output = fs.realpathSync.native(request.outputDir);
+  if (!selectedOutputDirs.has(output)) {
+    throw new Error('Choose the output folder with the Choose button');
+  }
+}
+
+function translateVideoPaths(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
+      !Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) return raw;
+  if (['inputs', 'videos', 'clips'].some((key) =>
+    Object.prototype.hasOwnProperty.call(raw, key))) {
+    throw new Error('Video inputs were supplied more than once');
+  }
+  const translated = { ...raw, videos: raw.videoPaths };
+  delete translated.videoPaths;
+  return translated;
+}
+
+function renderLocal(raw) {
+  if (activeRender) throw new Error('An edit is already rendering');
+  const request = normalizeLocalRequest(translateVideoPaths(raw));
+  requireDialogSelection(request);
+  const settings = requireReady();
+  localProcess('--local-render', request, 'render', settings);
+  return { ok: true };
+}
+
+function chatLocal(raw) {
+  if (activeChat) throw new Error('DeepSeek is already answering');
+  const request = normalizeChatRequest(raw);
+  if (raw && Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) {
+    normalizeVideoPaths(raw.videoPaths);
+  }
+  if (raw && raw.resultPath) {
+    const real = realFile(raw.resultPath);
+    if (!returnedOutputs.has(real)) {
+      throw new Error('That result is not from this AutoEditor session');
+    }
+  }
+  const settings = requireReady();
+  if (!settings.deepseekApiKey) {
+    throw new Error('Add your DeepSeek API key before opening the edit chat');
+  }
+  localProcess('--local-chat', request, 'chat', settings);
+  return { ok: true };
+}
+
+function applyLocal(raw) {
+  if (activeRender) throw new Error('An edit is already rendering');
+  const request = normalizeApplyRequest(
+    translateVideoPaths(raw), proposalWasReturned);
+  requireDialogSelection(request);
+  const settings = requireReady();
+  localProcess('--local-render', request, 'render', settings);
+  return { ok: true };
+}
+
+async function cancelLocal() {
+  const action = activeRender;
+  if (!action) return { ok: true, canceled: false };
+  action.canceled = true;
+  activeRender = null;
+  await stopProcessTree(action.proc);
+  send('helper-render', {
+    event: 'local-progress', stage: 'canceled', line: 'Edit canceled',
+  });
+  send('helper-state', { running: false, rendering: false,
+    chatting: !!activeChat });
+  return { ok: true, canceled: true };
+}
+
+async function pickVideos() {
+  const result = await dialog.showOpenDialog(win, {
+    title: 'Choose videos to edit',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm'] }],
+  });
+  if (result.canceled) return [];
+  const videos = normalizeVideoPaths(result.filePaths);
+  for (const video of videos) {
+    if (!VIDEO_EXTENSIONS.has(path.extname(video).toLowerCase())) {
+      throw new Error('Choose MP4, MOV, M4V, MKV, or WebM video files');
+    }
+    selectedVideos.add(fs.realpathSync.native(video));
+  }
+  return videos;
+}
+
+async function pickOutput() {
+  const result = await dialog.showOpenDialog(win, {
+    title: 'Choose where to save the finished video',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled) return '';
+  const output = normalizeOutputDir(result.filePaths[0]);
+  selectedOutputDirs.add(fs.realpathSync.native(output));
+  return output;
+}
+
+function openResult(raw) {
+  if (typeof raw !== 'string') throw new Error('Result path must be a string');
+  const real = realFile(raw);
+  if (!returnedOutputs.has(real)) {
+    throw new Error('That result is not from this AutoEditor session');
+  }
+  shell.showItemInFolder(real);
+  return { ok: true };
 }
 
 function setupIpc() {
   ipcMain.handle('helper:state', () => {
     const screenshotMode = !!process.env.AUTOEDITOR_SCREENSHOT_PATH;
-    const setup = screenshotMode ? null : loadSetup();
+    const settings = screenshotMode ? {} : loadSettings();
     return {
-      configured: !!setup, running: !!daemon,
-      preflight: preflight({ checkKeystore: !screenshotMode }),
-      capabilities: setup ? {
-        pexels: setup.pexelsMode === 'connect',
-        pixabay: setup.pixabayMode === 'connect',
-        elevenlabs: setup.elevenMode === 'connect',
+      configured: true,
+      running: !!activeRender,
+      rendering: !!activeRender,
+      chatting: !!activeChat,
+      settings: settingsPresence(settings),
+      capabilities: {
+        deepseek: !!settings.deepseekApiKey,
+        pexels: !!settings.pexelsApiKey,
+        pixabay: !!settings.pixabayApiKey,
+        elevenlabs: !!settings.elevenLabsApiKey,
         remotion: true,
         hyperframes: true,
-      } : null,
+      },
+      preflight: preflight({ checkKeystore: !screenshotMode }),
+      version: app.getVersion(),
+      platform: process.platform,
     };
   });
-  ipcMain.handle('helper:save', async (_event, input) => {
-    await saveSetup(input);
-    return { ok: true, preflight: preflight() };
-  });
-  ipcMain.handle('helper:start', () => startDaemon());
-  ipcMain.handle('helper:stop', () => stopDaemon());
-  ipcMain.handle('helper:reset', async () => {
-    await stopDaemon();
-    try { fs.unlinkSync(setupFile()); } catch (_) { /* already clear */ }
-    return { ok: true };
-  });
+  ipcMain.handle('helper:pick-videos', () => pickVideos());
+  ipcMain.handle('helper:pick-output', () => pickOutput());
+  ipcMain.handle('helper:save-settings', (_event, input) => saveSettings(input));
+  ipcMain.handle('helper:render-local', (_event, input) => renderLocal(input));
+  ipcMain.handle('helper:cancel-local', () => cancelLocal());
+  ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));
+  ipcMain.handle('helper:apply-local', (_event, input) => applyLocal(input));
+  ipcMain.handle('helper:open-result', (_event, resultPath) => openResult(resultPath));
   ipcMain.handle('helper:notices', () => shell.openPath(runtimePaths().notices));
   ipcMain.handle('helper:open', (_event, key) => {
-    const url = PROVIDER_LINKS[key];
-    if (!url) throw new Error('That help link is not allowed');
-    return shell.openExternal(url);
+    if (typeof key !== 'string' || !PROVIDER_LINKS[key]) {
+      throw new Error('That help link is not allowed');
+    }
+    return shell.openExternal(PROVIDER_LINKS[key]);
   });
 }
 
 function smokeTest() {
-  const setup = {
-    site: 'https://smoke.invalid', token: 'smoke-token-12345678',
-    pexelsMode: 'skip', pexelsKey: '', pixabayMode: 'skip', pixabayKey: '',
-    elevenMode: 'skip', elevenKey: '',
-    remotionMode: 'free', remotionKey: 'free-license',
+  const settings = {
+    deepseekApiKey: '', pexelsApiKey: '', pixabayApiKey: '',
+    elevenLabsApiKey: '', remotionKey: 'free-license',
   };
   const p = runtimePaths();
   const child = spawnSync(p.daemon, [], {
-    env: { ...daemonEnv(setup), AUTOEDITOR_HELPER_SMOKE_TEST: '1' },
+    env: { ...daemonEnv(settings), AUTOEDITOR_HELPER_SMOKE_TEST: '1' },
     windowsHide: true, encoding: 'utf8', timeout: 30000,
   });
   const creative = spawnSync(p.daemon, [], {
-    env: { ...daemonEnv(setup), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
+    env: { ...daemonEnv(settings), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
     windowsHide: true, encoding: 'utf8', timeout: 360000,
   });
   // Artifact smoke validates the installed runtime on small hosted runners.
-  // Interactive setup and every real daemon start retain the 20 GiB gate.
+  // Interactive actions retain the 20 GiB gate.
   const checks = preflight({ checkKeystore: false, checkDisk: false });
   const result = {
     packaged: PACKAGED,
@@ -312,9 +655,9 @@ function smokeTest() {
 function createWindow() {
   const capturePath = process.env.AUTOEDITOR_SCREENSHOT_PATH || '';
   win = new BrowserWindow({
-    width: 720, height: capturePath ? 1200 : 650,
-    minWidth: 620, minHeight: 560, show: !capturePath,
-    title: 'AutoEditor Helper', backgroundColor: '#0b0d10',
+    width: 900, height: capturePath ? 1200 : 760,
+    minWidth: 700, minHeight: 620, show: !capturePath,
+    title: 'AutoEditor', backgroundColor: '#0b0d10',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -324,18 +667,9 @@ function createWindow() {
   if (capturePath) {
     win.webContents.once('did-finish-load', async () => {
       await new Promise((resolve) => setTimeout(resolve, 800));
-      if (process.env.AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS === '1') {
-        await win.webContents.executeJavaScript(`
-          for (const name of ['pexels-mode', 'pixabay-mode', 'eleven-mode']) {
-            const choice = document.querySelector('input[name="' + name + '"][value="skip"]');
-            choice.checked = true;
-            choice.dispatchEvent(new Event('change', {bubbles: true}));
-          }
-        `);
-      }
       const height = await win.webContents.executeJavaScript(
         'Math.min(4000, document.documentElement.scrollHeight)');
-      win.setContentSize(720, Math.max(1200, height));
+      win.setContentSize(900, Math.max(1200, height));
       const shot = await win.webContents.capturePage();
       fs.writeFileSync(capturePath, shot.toPNG());
       app.exit(0);
@@ -352,7 +686,10 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on('before-quit', () => { if (daemon) stopProcessTree(daemon); });
+app.on('before-quit', () => {
+  if (activeRender) stopProcessTree(activeRender.proc);
+  if (activeChat) stopProcessTree(activeChat.proc);
+});
 app.on('window-all-closed', () => app.quit());
 
 module.exports = { runtimePaths };

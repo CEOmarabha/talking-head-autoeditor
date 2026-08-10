@@ -113,9 +113,13 @@ for (const spec of [engineSpec, helperDaemonSpec]) {
   assert.match(spec, /excludes=\[[^\]]*"av"/s);
 }
 assert.ok(helperMain.includes('AUTOEDITOR_CREATIVE_SMOKE_TEST'));
-assert.ok(helperMain.includes('validateProviderKeys'));
+assert.ok(helperMain.includes('spawn(p.daemon, [mode]'));
+assert.ok(helperMain.includes("localProcess('--local-render'"));
+assert.ok(helperMain.includes("DEEPSEEK_API_KEY: settings.deepseekApiKey || ''"));
+assert.ok(!helperMain.includes('AUTOEDITOR_WEB_API:'));
+assert.ok(!helperMain.includes('WORKER_TOKEN:'));
 assert.ok(helperWorkflow.includes('windows-2022'));
-assert.ok(helperWorkflow.includes('macos-15-intel'));
+assert.ok(!helperWorkflow.includes('macos-15-intel'));
 assert.ok(helperWorkflow.includes('Render real HyperFrames and Remotion probes'));
 assert.ok(helperWorkflow.includes('STAGE=$(realpath "$STAGE")'));
 assert.ok(helperWorkflow.includes(
@@ -1027,18 +1031,12 @@ assert.ok(helperPublishAt > helperVerifyAt);
 assert.ok(helperPointerAt > helperPublishAt);
 
 // Every Helper artifact executes its installed or mounted frozen engine and
-// proves that the normal Electron renderer can paint a real PNG. Screenshot
-// setup skips only provider accounts that may be absent in CI. Remotion stays
-// required and is never skipped.
-const screenshotSkipBlock = jobSlice(
-  helperMain,
-  "\n      if (process.env.AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS === '1') {",
-  '\n      const height =');
-assert.ok(screenshotSkipBlock.includes(
-  "['pexels-mode', 'pixabay-mode', 'eleven-mode']"));
-assert.ok(!/remotion/i.test(screenshotSkipBlock));
+// proves that the normal local-only Electron renderer can paint a real PNG.
+// The screenshot does not need provider accounts because the local editor
+// opens without a website connection or setup code.
 assert.ok(helperMain.includes(
   "const capturePath = process.env.AUTOEDITOR_SCREENSHOT_PATH || ''"));
+assert.ok(!helperMain.includes('AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS'));
 assert.ok(helperMain.includes(
   "win.loadFile(path.join(__dirname, 'renderer', 'index.html'))"));
 
