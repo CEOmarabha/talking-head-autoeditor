@@ -58,8 +58,13 @@
         </div>
       </div>
 
-      <label for="script">Spoken script <span class="optional">Optional</span></label>
-      <textarea id="script" rows="6" placeholder="Paste the script spoken in the footage, or leave it blank and AutoEditor will transcribe the video."></textarea>
+      <label for="edit-request">What do you want done to this video?</label>
+      <textarea id="edit-request" rows="5" maxlength="4000" placeholder="Example: Make this a fast, premium reel. Remove dead space, add clean captions, use relevant B-roll, and keep the pacing natural."></textarea>
+
+      <div class="script-field">
+        <label for="script">Spoken script <span class="optional">Optional</span></label>
+        <textarea id="script" rows="3" placeholder="Paste what is spoken, or leave this blank and AutoEditor will transcribe it."></textarea>
+      </div>
 
       <div class="local-note">
         <strong>Your files stay yours.</strong>
@@ -103,13 +108,13 @@
     <section id="chat-section" class="card chat-card hidden" aria-labelledby="chat-title">
       <div class="section-heading chat-heading">
         <div>
-          <h2 id="chat-title">Refine with DeepSeek</h2>
-          <p>Ask for changes in plain language. Nothing changes until you approve the proposal.</p>
+          <h2 id="chat-title">Your edit with DeepSeek</h2>
+          <p>Keep replying here until the video feels right. Later changes wait for your approval.</p>
         </div>
       </div>
 
       <div id="chat-transcript" class="chat-transcript" aria-live="polite">
-        <p id="chat-empty" class="chat-empty">Ask DeepSeek what you want to improve in this edit.</p>
+        <p id="chat-empty" class="chat-empty">Your request and finished edit will appear here.</p>
       </div>
       <label for="chat-prompt">What should change?</label>
       <textarea id="chat-prompt" rows="3" placeholder="Make the opening faster, use fewer stock clips, and tighten the captions."></textarea>

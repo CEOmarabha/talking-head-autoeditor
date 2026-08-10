@@ -169,6 +169,15 @@ select {
 }
 
 textarea { resize: vertical; }
+.script-field {
+  margin-top: 13px;
+  padding: 13px 15px 15px;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+}
+.script-field label { margin-top: 0; }
+.script-field textarea { min-height: 76px; }
 input[readonly] { color: #bdb9b1; }
 input::placeholder, textarea::placeholder { color: #74726d; opacity: 1; }
 

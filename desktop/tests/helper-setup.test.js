@@ -42,14 +42,17 @@ for (const api of [
 }
 
 assert.ok(helperHtml.includes('Rendering and file saving stay on this computer.'));
-assert.ok(helperHtml.includes('Refine with DeepSeek'));
+assert.ok(helperHtml.includes('What do you want done to this video?'));
+assert.ok(helperHtml.includes('Your edit with DeepSeek'));
 assert.ok(helperHtml.includes('DeepSeek API key'));
+assert.ok(helperHtml.indexOf('id="edit-request"') < helperHtml.indexOf('id="script"'));
 assert.ok(!/setup code/i.test(helperHtml));
 assert.ok(!/AutoEditor website/i.test(helperHtml));
 assert.ok(!/Start Helper/i.test(helperHtml));
-assert.ok(helperRenderer.includes('window.helper.renderLocal'));
 assert.ok(helperRenderer.includes('window.helper.chatLocal'));
 assert.ok(helperRenderer.includes('window.helper.applyLocal'));
+assert.ok(helperRenderer.includes('app.initialPlanning = true'));
+assert.ok(helperRenderer.includes('DeepSeek planned the edit. Rendering it on this computer...'));
 assert.ok(helperRenderer.includes('history: app.chat.slice(0, -1).slice(-12)'));
 
 assert.ok(daemonEntry.includes('def local_render()'));

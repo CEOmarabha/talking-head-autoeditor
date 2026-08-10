@@ -7,6 +7,7 @@ const app = {
   transcript: '',
   rendering: false,
   chatting: false,
+  initialPlanning: false,
   chat: [],
   proposal: null,
 };
@@ -154,6 +155,13 @@ function showResult(path) {
   $('result-path').title = path;
   $('result-section').classList.remove('hidden');
   $('chat-section').classList.remove('hidden');
+  app.chat.push({
+    role: 'assistant',
+    content: `Your edited video is ready: ${fileName(path)}. Tell me what you want changed next.`,
+  });
+  renderChat();
+  $('ask-deepseek').disabled = false;
+  $('chat-status').textContent = '';
   setProgress(100, 'Finished and saved on this computer.');
   setRendering(false);
   setStatus('Complete', 'complete');
@@ -169,6 +177,11 @@ function handleRenderEvent(event = {}) {
     const message = event.error || 'The action could not finish.';
     if (app.chatting) {
       app.chatting = false;
+      if (app.initialPlanning) {
+        app.initialPlanning = false;
+        setRendering(false, 'DeepSeek could not prepare the edit.');
+        $('render-error').textContent = message;
+      }
       $('chat-error').textContent = message;
       $('ask-deepseek').disabled = false;
       $('chat-status').textContent = '';
@@ -181,16 +194,40 @@ function handleRenderEvent(event = {}) {
   }
   if (event.event === 'local-chat') {
     app.chatting = false;
+    const wasInitialPlan = app.initialPlanning;
     if (typeof event.message === 'string' && event.message.trim()) {
       app.chat.push({ role: 'assistant', content: event.message.trim() });
       renderChat();
     }
     const operations = event.proposal?.operations;
-    showProposal(event.canApply === true && Array.isArray(operations) && operations.length
-      ? event.proposal
-      : null);
-    $('ask-deepseek').disabled = false;
-    $('chat-status').textContent = '';
+    const applicable = event.canApply === true
+      && Array.isArray(operations) && operations.length > 0;
+    if (wasInitialPlan) {
+      app.initialPlanning = false;
+      if (!applicable) {
+        setRendering(false, 'DeepSeek needs a clearer editing request.');
+        $('render-error').textContent = 'DeepSeek could not turn that request into a safe edit. Reword it and click Render video again.';
+      } else {
+        showProposal(null);
+        setProgress(0, 'DeepSeek planned the edit. Rendering it on this computer...');
+        setRendering(true);
+        const request = renderRequest();
+        window.helper.applyLocal({
+          ...request,
+          proposal: event.proposal,
+        }).then((result) => {
+          handleRenderEvent(result || { status: 'started' });
+        }).catch((error) => {
+          handleRenderEvent({ event: 'local-error', error: asError(error) });
+        });
+      }
+    } else {
+      showProposal(applicable ? event.proposal : null);
+    }
+    $('ask-deepseek').disabled = wasInitialPlan && applicable;
+    $('chat-status').textContent = wasInitialPlan && applicable
+      ? 'Rendering your first edit...'
+      : '';
     return;
   }
   if (event.event === 'local-result') {
@@ -235,7 +272,7 @@ function renderChat() {
     const empty = document.createElement('p');
     empty.id = 'chat-empty';
     empty.className = 'chat-empty';
-    empty.textContent = 'Ask DeepSeek what you want to improve in this edit.';
+    empty.textContent = 'Your request and finished edit will appear here.';
     $('chat-transcript').appendChild(empty);
     return;
   }
@@ -305,6 +342,7 @@ $('select-output').addEventListener('click', async () => {
 
 $('render').addEventListener('click', async () => {
   $('render-error').textContent = '';
+  const instruction = $('edit-request').value.trim();
   if (!app.videos.length) {
     $('render-error').textContent = 'Select at least one video.';
     return;
@@ -313,20 +351,40 @@ $('render').addEventListener('click', async () => {
     $('render-error').textContent = 'Choose an output folder.';
     return;
   }
+  if (!instruction) {
+    $('render-error').textContent = 'Tell AutoEditor what you want done to the video.';
+    $('edit-request').focus();
+    return;
+  }
 
   app.proposal = null;
+  app.initialPlanning = true;
+  app.chatting = true;
+  app.chat = [{ role: 'user', content: instruction }];
+  app.resultPath = '';
   $('proposal').classList.add('hidden');
   $('result-section').classList.add('hidden');
+  $('chat-section').classList.remove('hidden');
   $('progress-section').classList.remove('hidden');
   $('log').textContent = '';
-  setProgress(0, 'Preparing your edit on this computer...');
+  $('chat-error').textContent = '';
+  $('ask-deepseek').disabled = true;
+  $('chat-status').textContent = 'DeepSeek is planning your edit...';
+  renderChat();
+  setProgress(0, 'DeepSeek is planning the edit you requested...');
   setRendering(true);
+  $('cancel').classList.add('hidden');
 
   try {
-    const result = await window.helper.renderLocal(renderRequest());
+    const result = await window.helper.chatLocal({
+      text: instruction,
+      history: [],
+      projectType: $('project-type').value,
+      transcript: $('script').value.trim(),
+    });
     handleRenderEvent(result || { status: 'started' });
   } catch (error) {
-    handleRenderEvent({ status: 'error', error: asError(error) });
+    handleRenderEvent({ event: 'local-error', error: asError(error) });
   }
 });
 
