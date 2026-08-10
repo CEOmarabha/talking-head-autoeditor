@@ -334,10 +334,23 @@ class ElectronNativeReceiptTests(unittest.TestCase):
                 ),
             ),
         }
-        configuration = {"version": "0.1.0", "version_quad": [0, 1, 0, 0]}
         asar = receipt._FileData(b"asar", 0o644, hashlib.sha256(b"asar").hexdigest())
 
-        def validate(strings: dict[str, str]) -> dict:
+        def validate(
+            strings: dict[str, str],
+            *,
+            version: str = "0.1.0",
+            file_quad: tuple[int, ...] = (0, 1, 0, 0),
+            product_quad: tuple[int, ...] = (0, 1, 0, 0),
+        ) -> dict:
+            configuration = {
+                "version": version,
+                "version_quad": [
+                    int(part)
+                    for part in version.split("-")[0].split(".")[:3]
+                ]
+                + [0],
+            }
             with mock.patch.object(
                 receipt,
                 "_icon_payloads",
@@ -345,7 +358,7 @@ class ElectronNativeReceiptTests(unittest.TestCase):
             ), mock.patch.object(
                 receipt,
                 "_decode_version",
-                return_value=((0, 1, 0, 0), strings),
+                return_value=(file_quad, product_quad, strings),
             ), mock.patch.object(
                 receipt,
                 "_read_regular",
@@ -370,6 +383,34 @@ class ElectronNativeReceiptTests(unittest.TestCase):
                 )
 
         self.assertEqual(validate(actual_strings)["version_strings"], actual_strings)
+        beta_strings = dict(
+            actual_strings,
+            FileVersion="0.2.0-beta.1",
+            ProductVersion="0.2.0.0",
+        )
+        self.assertEqual(
+            receipt._resedit_file_version_quad("0.2.0-beta.1"),
+            (0, 2, 0, 1),
+        )
+        self.assertEqual(
+            validate(
+                beta_strings,
+                version="0.2.0-beta.1",
+                file_quad=(0, 2, 0, 1),
+                product_quad=(0, 2, 0, 0),
+            )["version_strings"],
+            beta_strings,
+        )
+        with self.assertRaisesRegex(
+            receipt.ElectronNativeReceiptError,
+            "fixed file version quad drifted",
+        ):
+            validate(
+                beta_strings,
+                version="0.2.0-beta.1",
+                file_quad=(0, 2, 0, 0),
+                product_quad=(0, 2, 0, 0),
+            )
         drifted = dict(actual_strings, CompanyName="Omar Marabha")
         with self.assertRaisesRegex(
             receipt.ElectronNativeReceiptError,

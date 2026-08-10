@@ -880,7 +880,18 @@ def _version_node(raw: bytes, start: int, limit: int) -> tuple[dict[str, Any], i
     return {"key": key, "type": value_type, "value": value, "children": children}, end
 
 
-def _decode_version(raw: bytes) -> tuple[tuple[int, ...], dict[str, str]]:
+def _resedit_file_version_quad(version: str) -> tuple[int, int, int, int]:
+    """Reproduce resedit 1.7.2's numeric parsing of the FileVersion string."""
+    values: list[int] = []
+    for token in version.split(".")[:4]:
+        value = int(token) if re.fullmatch(r"[0-9]+", token) else 0
+        values.append(min(value, 65535))
+    return tuple((values + [0, 0, 0, 0])[:4])  # type: ignore[return-value]
+
+
+def _decode_version(
+    raw: bytes,
+) -> tuple[tuple[int, ...], tuple[int, ...], dict[str, str]]:
     root, end = _version_node(raw, 0, len(raw))
     if end != len(raw) or root["key"] != "VS_VERSION_INFO" or root["type"] != 0 or len(root["value"]) != 52:
         raise ElectronNativeReceiptError("invalid root VERSIONINFO record")
@@ -899,7 +910,7 @@ def _decode_version(raw: bytes) -> tuple[tuple[int, ...], dict[str, str]]:
         fixed[5] >> 16,
         fixed[5] & 0xFFFF,
     )
-    if quad != product_quad or fixed[6:] != (0x3F, 0, 0x40004, 1, 0, 0, 0):
+    if fixed[6:] != (0x3F, 0, 0x40004, 1, 0, 0, 0):
         raise ElectronNativeReceiptError("unexpected VS_FIXEDFILEINFO semantics")
     if len(root["children"]) != 2:
         raise ElectronNativeReceiptError("VERSIONINFO must contain StringFileInfo and VarFileInfo")
@@ -925,7 +936,7 @@ def _decode_version(raw: bytes) -> tuple[tuple[int, ...], dict[str, str]]:
     translation = var_file["children"][0]
     if translation["key"] != "Translation" or translation["value"] != struct.pack("<HH", 1033, 1200) or translation["children"]:
         raise ElectronNativeReceiptError("VERSIONINFO translation drifted")
-    return quad, strings
+    return quad, product_quad, strings
 
 
 def _asar_header_sha256(raw: bytes) -> str:
@@ -1095,8 +1106,9 @@ def _validate_windows_resources(
     version_leaf = final_leaves[(16, 1, 1033)]
     if version_leaf.codepage != 1200:
         raise ElectronNativeReceiptError("VERSIONINFO codepage drifted")
-    quad, strings = _decode_version(version_leaf.data)
-    expected_quad = tuple(configuration["version_quad"])
+    file_quad, product_quad, strings = _decode_version(version_leaf.data)
+    expected_file_quad = _resedit_file_version_quad(configuration["version"])
+    expected_product_quad = tuple(configuration["version_quad"])
     expected_strings = {
         # electron-builder 26.15.3 reads author.name, while this package uses
         # the accepted string author form. rcedit therefore retains the pinned
@@ -1108,13 +1120,18 @@ def _validate_windows_resources(
         "LegalCopyright": COPYRIGHT,
         "OriginalFilename": "",
         "ProductName": PRODUCT_NAME,
-        "ProductVersion": ".".join(map(str, expected_quad)),
+        "ProductVersion": ".".join(map(str, expected_product_quad)),
         "SquirrelAwareVersion": "1",
     }
-    if quad != expected_quad:
+    if file_quad != expected_file_quad:
         raise ElectronNativeReceiptError(
-            f"configured VERSIONINFO fixed version quad drifted: "
-            f"expected {expected_quad}, got {quad}"
+            f"configured VERSIONINFO fixed file version quad drifted: "
+            f"expected {expected_file_quad}, got {file_quad}"
+        )
+    if product_quad != expected_product_quad:
+        raise ElectronNativeReceiptError(
+            f"configured VERSIONINFO fixed product version quad drifted: "
+            f"expected {expected_product_quad}, got {product_quad}"
         )
     missing_fields = sorted(set(expected_strings) - set(strings))
     if missing_fields:
