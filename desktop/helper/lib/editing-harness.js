@@ -24,9 +24,11 @@ HARNESS BEHAVIOR
 - Be a direct video strategist and editing collaborator. The user may chat
   before attaching footage. Ask only useful questions about audience, platform,
   goal, source footage, duration, brand, claims, and spoken content.
-- A local attachment means a file was selected. You have not seen its pixels.
-  Use the user's description or supplied script until local transcription and
-  analysis run. Never pretend to have watched an unprocessed attachment.
+- A local attachment means a file was selected. You have not seen its pixels
+  until a local media report is supplied. Before that, use the user's
+  description or script and never pretend to have watched it. When a report is
+  present, use its transcript, timing, technical probe, and sampled-frame
+  observations. Do not ask the user to repeat facts the report already gives.
 - Give strategy, hooks, shot lists, posting ideas, visual direction, critiques,
   or research freely. Only expose a render operation when it exactly matches
   the executable operation contract. Never imply an unsupported action ran.
@@ -325,6 +327,62 @@ async function deepSeekJson(prompt, apiKey, emit) {
   }
 }
 
+function mediaEvidenceForPrompt(report) {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return 'null';
+  const sourceVideos = Array.isArray(report.videos) ? report.videos.slice(0, 20) : [];
+  const count = Math.max(1, sourceVideos.length);
+  const transcriptLimit = Math.max(1200, Math.floor(32000 / count));
+  const visualLimit = Math.max(400, Math.floor(12000 / count));
+  const wordLimit = Math.max(5, Math.floor(160 / count));
+  const videos = sourceVideos.map((video) => {
+    const signals = video?.signals && typeof video.signals === 'object'
+      ? video.signals : {};
+    return {
+      file: cleanText(video?.file, 240),
+      technical: video?.technical || {},
+      signals: {
+        analyzedSeconds: signals.analyzedSeconds,
+        meanVolumeDb: signals.meanVolumeDb,
+        maxVolumeDb: signals.maxVolumeDb,
+        audibleCoveragePercent: signals.audibleCoveragePercent,
+        detectedSceneChanges: signals.detectedSceneChanges,
+        sceneChangeTimes: Array.isArray(signals.sceneChangeTimes)
+          ? signals.sceneChangeTimes.slice(0, 12) : [],
+        silenceSegments: Array.isArray(signals.silenceSegments)
+          ? signals.silenceSegments.slice(0, 12) : [],
+      },
+      visualSummary: cleanText(video?.visualSummary, visualLimit),
+      transcript: cleanText(video?.transcript, transcriptLimit),
+      timedWords: Array.isArray(video?.timedWords)
+        ? video.timedWords.slice(0, wordLimit).map((word) => ({
+          word: cleanText(word?.word, 120),
+          start: Number(word?.start || 0),
+          end: Number(word?.end || 0),
+        })) : [],
+      localOnly: video?.localOnly === true,
+    };
+  });
+  const compact = {
+    schema: cleanText(report.schema, 120),
+    analyzedAt: cleanText(report.analyzedAt, 80),
+    originalVideosUploaded: report.originalVideosUploaded === false ? false : undefined,
+    error: cleanText(report.error, 1000),
+    videos,
+  };
+  let encoded = JSON.stringify(compact);
+  if (encoded.length > 80000) {
+    compact.videos = videos.map((video) => ({
+      ...video,
+      transcript: video.transcript.slice(0, 1000),
+      visualSummary: video.visualSummary.slice(0, 500),
+      timedWords: [],
+      signals: { ...video.signals, sceneChangeTimes: [], silenceSegments: [] },
+    }));
+    encoded = JSON.stringify(compact);
+  }
+  return encoded;
+}
+
 async function runEditingChat(request, apiKey, emit) {
   const sources = request.research && RESEARCH_INTENT.test(request.text)
     ? await research(request.text, emit) : [];
@@ -335,12 +393,24 @@ async function runEditingChat(request, apiKey, emit) {
     : `Current request: ${request.text}`;
   const operationContract = Object.fromEntries(Object.entries(EDIT_OPERATIONS)
     .map(([name, spec]) => [name, { [spec.key]: spec.values }]));
+  const mediaEvidence = mediaEvidenceForPrompt(request.mediaAnalysis);
   const prompt = `${EDITING_CONTEXT}
 
 Today is ${new Date().toISOString().slice(0, 10)}. The user has attached
 ${request.videoCount} local video file(s). Project type: ${request.projectType}.
 Spoken script or transcript excerpt:
 ${request.transcript.slice(0, 1200) || '[not supplied yet]'}
+
+Private local media report:
+${mediaEvidence}
+
+The report was produced behind the scenes on the user's computer. The original
+video was not uploaded to DeepSeek. Treat exact probe facts and Whisper timing
+as measurements. Treat the small local vision model's sampled-frame summary as
+an observation that can be incomplete. If the report contains the topic,
+speech, duration, framing, visible subjects, actions, text, or setting, answer
+from it instead of asking what the attached footage contains. Ask only for a
+genuinely missing creative preference.
 
 ${current}
 
@@ -382,6 +452,7 @@ module.exports = {
   EDITING_CONTEXT,
   EDIT_OPERATIONS,
   RESEARCH_INTENT,
+  mediaEvidenceForPrompt,
   validateProposal,
   runEditingChat,
 };

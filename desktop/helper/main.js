@@ -1,13 +1,14 @@
 /** AutoEditor: one-window local editor around the frozen render daemon. */
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } =
+const { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } =
   require('electron');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
 const { runEditingChat } = require('./lib/editing-harness');
+const { analyzeMedia } = require('./lib/media-analysis');
 const {
   normalizeApplyRequest,
   normalizeChatRequest,
@@ -25,6 +26,8 @@ let win = null;
 let activeRender = null;
 let activeChat = null;
 let actionSequence = 0;
+let visionSequence = 0;
+const pendingVision = new Map();
 const returnedOutputs = new Map();
 const returnedProposals = new Set();
 const returnedResearchSources = new Set();
@@ -36,6 +39,8 @@ const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 const MAX_ENCRYPTED_SETTINGS_BYTES = 128 * 1024;
 const MAX_LOG_LINE = 20000;
 const MAX_LINE_BUFFER = 2 * 1024 * 1024;
+const MAX_VISION_FRAME_BYTES = 1536 * 1024;
+const VISION_TIMEOUT_MS = 30 * 60 * 1000;
 const LOCAL_EVENTS = new Set([
   'local-progress', 'local-result', 'local-chat', 'local-error',
 ]);
@@ -47,6 +52,19 @@ const PROVIDER_LINKS = Object.freeze({
   elevenApiKeys: 'https://elevenlabs.io/app/settings/api-keys',
   remotionDashboard: 'https://remotion.pro/dashboard',
 });
+const VISION_RUNTIME_FILES = Object.freeze({
+  'ort-wasm-simd-threaded.asyncify.mjs': 'text/javascript; charset=utf-8',
+  'ort-wasm-simd-threaded.asyncify.wasm': 'application/wasm',
+  'ort-wasm-simd-threaded.mjs': 'text/javascript; charset=utf-8',
+  'ort-wasm-simd-threaded.wasm': 'application/wasm',
+});
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'autoeditor-vision',
+  privileges: {
+    standard: true, secure: true, supportFetchAPI: true, corsEnabled: true,
+  },
+}]);
 
 function exe(name) {
   return process.platform === 'win32' ? `${name}.exe` : name;
@@ -84,6 +102,7 @@ function runtimePaths() {
     browser: path.join(root, 'browser', ...browserParts()),
     hyperframesProject: path.join(root, 'creative', 'hyperframes-graphics'),
     remotionProject: path.join(root, 'creative', 'remotion-viz'),
+    visionDir: path.join(__dirname, 'vision'),
   };
 }
 
@@ -216,6 +235,9 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
     remotion: fs.existsSync(p.remotionCli) &&
       fs.existsSync(path.join(p.remotionProject, 'src', 'index.ts')),
     browser: fs.existsSync(p.browser),
+    localVision: fs.existsSync(path.join(p.visionDir, 'vision-worker.bundle.js')) &&
+      Object.keys(VISION_RUNTIME_FILES).every((file) =>
+        fs.existsSync(path.join(p.visionDir, file))),
     // Artifact smoke and screenshot capture are noninteractive. On macOS an
     // ad-hoc acceptance build can block on its first Keychain lookup. Saving
     // settings and starting any local action still require the OS keystore.
@@ -291,6 +313,128 @@ function daemonEnv(settings) {
 
 function send(channel, value) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, value);
+}
+
+function registerVisionProtocol() {
+  const root = runtimePaths().visionDir;
+  protocol.handle('autoeditor-vision', (request) => {
+    try {
+      const url = new URL(request.url);
+      const file = url.pathname.replace(/^\//, '');
+      const contentType = VISION_RUNTIME_FILES[file];
+      if (request.method !== 'GET' || url.hostname !== 'runtime' ||
+          url.search || !contentType || file.includes('/') || file.includes('\\')) {
+        return new Response('Not found', { status: 404 });
+      }
+      const target = path.join(root, file);
+      const stat = fs.statSync(target);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 32 * 1024 * 1024) {
+        return new Response('Not found', { status: 404 });
+      }
+      return new Response(fs.readFileSync(target), { headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Content-Type': contentType,
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+      } });
+    } catch (_) {
+      return new Response('Not found', { status: 404 });
+    }
+  });
+}
+
+function readVisionFrame(file) {
+  const handle = fs.openSync(file, 'r');
+  try {
+    const before = fs.fstatSync(handle);
+    if (!before.isFile() || before.size < 4 || before.size > MAX_VISION_FRAME_BYTES) {
+      throw new Error('a local vision frame had an invalid size');
+    }
+    const data = Buffer.alloc(before.size);
+    if (fs.readSync(handle, data, 0, before.size, 0) !== before.size) {
+      throw new Error('a local vision frame changed while it was read');
+    }
+    const after = fs.fstatSync(handle);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+        after.dev !== before.dev || after.ino !== before.ino) {
+      throw new Error('a local vision frame changed while it was read');
+    }
+    if (data[0] !== 0xff || data[1] !== 0xd8 ||
+        data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) {
+      throw new Error('a local vision frame was not a complete JPEG');
+    }
+    return `data:image/jpeg;base64,${data.toString('base64')}`;
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function requestVision(framePaths, action) {
+  if (!win || win.isDestroyed() || activeChat !== action || action.canceled) {
+    return Promise.reject(new Error('the local vision window is unavailable'));
+  }
+  if (!Array.isArray(framePaths) || framePaths.length < 1 || framePaths.length > 8) {
+    return Promise.reject(new Error('local vision requires between 1 and 8 frames'));
+  }
+  const images = framePaths.map(readVisionFrame);
+  const id = ++visionSequence;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingVision.delete(id);
+      reject(new Error('the local vision model exceeded 30 minutes'));
+    }, VISION_TIMEOUT_MS);
+    pendingVision.set(id, { action, resolve, reject, timer });
+    send('helper-vision-request', { id, images });
+  });
+}
+
+function rejectPendingVision(message) {
+  for (const pending of pendingVision.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+  pendingVision.clear();
+}
+
+function fromMainRenderer(event) {
+  return !!win && !win.isDestroyed() && event.sender === win.webContents &&
+    (!event.senderFrame || event.senderFrame === win.webContents.mainFrame);
+}
+
+function handleVisionProgress(event, value) {
+  if (!fromMainRenderer(event) || !value || typeof value !== 'object' ||
+      Array.isArray(value) || !Number.isSafeInteger(value.id)) return;
+  const pending = pendingVision.get(value.id);
+  if (!pending || activeChat !== pending.action || pending.action.canceled ||
+      typeof value.line !== 'string') return;
+  processLocalEvent({
+    event: 'local-progress', stage: 'media-analysis',
+    line: value.line.replace(/\0/g, '').trim().slice(0, 1000),
+  }, pending.action);
+}
+
+function handleVisionResult(event, value) {
+  if (!fromMainRenderer(event) || !value || typeof value !== 'object' ||
+      Array.isArray(value) || !Number.isSafeInteger(value.id)) return;
+  const pending = pendingVision.get(value.id);
+  if (!pending) return;
+  pendingVision.delete(value.id);
+  clearTimeout(pending.timer);
+  if (activeChat !== pending.action || pending.action.canceled) {
+    pending.reject(new Error('local vision was canceled'));
+    return;
+  }
+  if (value.status === 'complete' && typeof value.result === 'string') {
+    const result = value.result.replace(/\0/g, '').trim().slice(0, 5000);
+    if (result) {
+      pending.resolve(result);
+      return;
+    }
+  }
+  const detail = typeof value.error === 'string'
+    ? value.error.replace(/\0/g, '').trim().slice(0, 1000)
+    : 'the local vision model returned an invalid result';
+  pending.reject(new Error(detail || 'the local vision model stopped'));
 }
 
 function redact(line, settings) {
@@ -545,8 +689,10 @@ function renderLocal(raw) {
 function chatLocal(raw) {
   if (activeChat) throw new Error('DeepSeek is already answering');
   const request = normalizeChatRequest(raw);
+  let videoPaths = [];
   if (raw && Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) {
-    for (const video of normalizeVideoPaths(raw.videoPaths)) {
+    videoPaths = normalizeVideoPaths(raw.videoPaths);
+    for (const video of videoPaths) {
       if (!selectedVideos.has(fs.realpathSync.native(video))) {
         throw new Error('Attach every video with the picker or by dragging it into AutoEditor');
       }
@@ -570,11 +716,42 @@ function chatLocal(raw) {
   send('helper-state', {
     running: !!activeRender, rendering: !!activeRender, chatting: true,
   });
-  runEditingChat(request, settings.deepseekApiKey, (event) => {
+  (async () => {
+    let mediaAnalysis = null;
+    if (videoPaths.length) {
+      try {
+        mediaAnalysis = await analyzeMedia({
+          videoPaths,
+          runtime: runtimePaths(),
+          env: daemonEnv(settingsForLocalRender(settings)),
+          cacheRoot: path.join(app.getPath('userData'), 'media-analysis-cache'),
+          describeFrames: (frames) => requestVision(frames, action),
+          emit: (line) => processLocalEvent({
+            event: 'local-progress', stage: 'media-analysis', line,
+          }, action),
+          onChild: (child) => {
+            if (activeChat === action && !action.canceled) action.proc = child;
+          },
+        });
+      } catch (error) {
+        const detail = String(error?.message || error).slice(0, 1000);
+        processLocalEvent({
+          event: 'local-progress', stage: 'media-analysis',
+          line: `Local media analysis stopped safely: ${detail}`,
+        }, action);
+        mediaAnalysis = {
+          schema: 'autoeditor-local-media-analysis/v2',
+          videos: [], originalVideosUploaded: false, error: detail,
+        };
+      }
+    }
+    if (activeChat !== action || action.canceled) return;
+    action.proc = null;
+    const event = await runEditingChat(
+      { ...request, mediaAnalysis }, settings.deepseekApiKey,
+      (progress) => processLocalEvent(progress, action));
     processLocalEvent(event, action);
-  }).then((event) => {
-    processLocalEvent(event, action);
-  }).catch((error) => {
+  })().catch((error) => {
     processLocalEvent({
       event: 'local-error',
       error: `DeepSeek stopped safely: ${error.message || String(error)}`,
@@ -673,6 +850,8 @@ function openResult(raw) {
 }
 
 function setupIpc() {
+  ipcMain.on('helper:vision-progress', handleVisionProgress);
+  ipcMain.on('helper:vision-result', handleVisionResult);
   ipcMain.handle('helper:state', () => {
     const screenshotMode = !!process.env.AUTOEDITOR_SCREENSHOT_PATH;
     const settings = screenshotMode ? {} : loadSettings();
@@ -775,11 +954,13 @@ app.whenReady().then(() => {
     app.exit(smokeTest() ? 0 : 1);
     return;
   }
+  registerVisionProtocol();
   setupIpc();
   createWindow();
 });
 
 app.on('before-quit', () => {
+  rejectPendingVision('AutoEditor is closing');
   if (activeRender) stopProcessTree(activeRender.proc);
   if (activeChat?.proc) stopProcessTree(activeChat.proc);
 });

@@ -27,7 +27,8 @@ assert.ok(helperMain.includes('safeStorage.encryptString(JSON.stringify(normaliz
 assert.ok(helperMain.includes('safeStorage.decryptString'));
 assert.ok(helperMain.includes('spawn(p.daemon, [mode]'));
 assert.ok(helperMain.includes("localProcess('--local-render'"));
-assert.ok(helperMain.includes('runEditingChat(request'));
+assert.ok(helperMain.includes('runEditingChat('));
+assert.ok(helperMain.includes('await analyzeMedia({'));
 assert.ok(helperMain.includes('requireSecureSettings()'));
 assert.ok(helperMain.includes("child.stdin.end(`${JSON.stringify(payload)}\\n`)"));
 assert.ok(helperMain.includes('returnedProposals'));

@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "test": "node tests/clip-catalog.test.js && node tests/process-tree.test.js && node tests/helper-local-render.test.js && node tests/editing-harness.test.js && node tests/helper-setup.test.js && node tests/platform-contracts.test.js && node tests/r2-release-storage.test.js",
+    "test": "node tests/clip-catalog.test.js && node tests/process-tree.test.js && node tests/helper-local-render.test.js && node tests/media-analysis.test.js && node tests/editing-harness.test.js && node tests/helper-setup.test.js && node tests/platform-contracts.test.js && node tests/r2-release-storage.test.js",
     "dist": "electron-builder --config electron-builder.yml",
     "dist:mac": "electron-builder --config electron-builder.yml --mac",
     "dist:win": "electron-builder --config electron-builder.yml --win",

@@ -6,6 +6,7 @@ const {
   EDITING_CONTEXT,
   EDIT_OPERATIONS,
   RESEARCH_INTENT,
+  mediaEvidenceForPrompt,
   validateProposal,
 } = require('../helper/lib/editing-harness');
 
@@ -24,6 +25,25 @@ assert.deepStrictEqual(Object.keys(EDIT_OPERATIONS), [
 assert.ok(RESEARCH_INTENT.test('What is trending on Reddit and X this week?'));
 assert.ok(RESEARCH_INTENT.test('Research useful GitHub editing repos'));
 assert.ok(!RESEARCH_INTENT.test('Use short pacing and burned captions'));
+
+const mediaEvidence = mediaEvidenceForPrompt({
+  schema: 'autoeditor-local-media-analysis/v2',
+  originalVideosUploaded: false,
+  videos: Array.from({ length: 20 }, (_, index) => ({
+    file: `clip-${index}.mp4`,
+    technical: { durationSeconds: 10 + index },
+    signals: { detectedSceneChanges: 300, sceneChangeTimes: Array(200).fill(1.25) },
+    transcript: `transcript-${index} ${'word '.repeat(10000)}`,
+    timedWords: Array(5000).fill({ word: 'word', start: 1, end: 2 }),
+    visualSummary: `visible-${index} ${'frame '.repeat(2000)}`,
+    localOnly: true,
+  })),
+});
+assert.ok(mediaEvidence.length <= 80000);
+const parsedMediaEvidence = JSON.parse(mediaEvidence);
+assert.strictEqual(parsedMediaEvidence.originalVideosUploaded, false);
+assert.strictEqual(parsedMediaEvidence.videos.length, 20);
+assert.ok(parsedMediaEvidence.videos[19].visualSummary.includes('visible-19'));
 
 assert.deepStrictEqual(validateProposal({
   summary: 'Make it a vertical social edit.',

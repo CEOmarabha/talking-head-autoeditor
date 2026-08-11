@@ -26,9 +26,12 @@ contextBridge.exposeInMainWorld('helper', Object.freeze({
   openResult: (resultPath) => ipcRenderer.invoke('helper:open-result', resultPath),
   openResearchSource: (url) => ipcRenderer.invoke(
     'helper:open-research-source', url),
+  visionProgress: (value) => ipcRenderer.send('helper:vision-progress', value),
+  visionResult: (value) => ipcRenderer.send('helper:vision-result', value),
   notices: () => ipcRenderer.invoke('helper:notices'),
   open: (key) => ipcRenderer.invoke('helper:open', key),
   onState: (callback) => on('helper-state', callback),
   onLog: (callback) => on('helper-log', callback),
   onRender: (callback) => on('helper-render', callback),
+  onVisionRequest: (callback) => on('helper-vision-request', callback),
 }));

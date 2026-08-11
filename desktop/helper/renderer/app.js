@@ -11,6 +11,60 @@ const app = {
   proposal: null,
 };
 
+let visionWorker = null;
+let activeVisionId = null;
+
+function localVisionWorker() {
+  if (visionWorker) return visionWorker;
+  visionWorker = new Worker('../vision/vision-worker.bundle.js', {
+    name: 'autoeditor-local-vision',
+  });
+  visionWorker.addEventListener('message', (event) => {
+    const value = event.data;
+    if (!value || typeof value !== 'object' || value.id !== activeVisionId) return;
+    if (value.status === 'progress') {
+      window.helper.visionProgress({ id: value.id, line: value.line });
+      return;
+    }
+    activeVisionId = null;
+    window.helper.visionResult(value);
+  });
+  visionWorker.addEventListener('error', (event) => {
+    if (!activeVisionId) return;
+    const id = activeVisionId;
+    activeVisionId = null;
+    window.helper.visionResult({
+      id, status: 'error',
+      error: String(event.message || 'the local vision worker could not start').slice(0, 1000),
+    });
+    visionWorker.terminate();
+    visionWorker = null;
+  });
+  return visionWorker;
+}
+
+window.helper.onVisionRequest((request) => {
+  const id = request?.id;
+  const images = request?.images;
+  if (!Number.isSafeInteger(id) || id < 1 || !Array.isArray(images) ||
+      images.length < 1 || images.length > 8) return;
+  if (activeVisionId !== null) {
+    window.helper.visionResult({
+      id, status: 'error', error: 'the local vision model is already working',
+    });
+    return;
+  }
+  activeVisionId = id;
+  try {
+    localVisionWorker().postMessage({ id, images });
+  } catch (error) {
+    activeVisionId = null;
+    window.helper.visionResult({
+      id, status: 'error', error: asError(error).slice(0, 1000),
+    });
+  }
+});
+
 function asError(error) {
   return error?.message || String(error || 'Something went wrong.');
 }
