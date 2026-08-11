@@ -174,6 +174,11 @@ function normalizeLocalSettings(input) {
   return normalized;
 }
 
+function settingsForLocalRender(input) {
+  const normalized = normalizeLocalSettings(input);
+  return { ...normalized, deepseekApiKey: '' };
+}
+
 function normalizeHistory(raw) {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new TypeError('history must be an array');
@@ -204,6 +209,13 @@ function normalizeHistory(raw) {
 
 function normalizeChatRequest(input) {
   requirePlainObject(input, 'local chat request');
+  if (input.research !== undefined && typeof input.research !== 'boolean') {
+    throw new TypeError('research must be a boolean');
+  }
+  if (input.videoCount !== undefined && (!Number.isInteger(input.videoCount) ||
+      input.videoCount < 0 || input.videoCount > MAX_INPUTS)) {
+    throw new Error(`video count must be between 0 and ${MAX_INPUTS}`);
+  }
   return {
     text: normalizeString(input.text, 'chat text', MAX_CHAT_TEXT_CHARS,
       { nonempty: true }),
@@ -211,6 +223,8 @@ function normalizeChatRequest(input) {
     transcript: normalizeString(
       input.transcript, 'transcript', MAX_TRANSCRIPT_CHARS),
     history: normalizeHistory(input.history),
+    research: input.research === true,
+    videoCount: input.videoCount || 0,
   };
 }
 
@@ -339,6 +353,28 @@ function parseEngineEvent(line) {
   }
 }
 
+function engineProgress(line) {
+  if (typeof line !== 'string') return null;
+  const text = line.trim().toLowerCase();
+  const rules = [
+    [/transcribe-only|faster-whisper word-level transcript/, 8,
+      'Transcribing the video on this computer...'],
+    [/phase 1:/, 18, 'Preparing the footage...'],
+    [/phase 2|silence cut|word-guarded cut/, 30,
+      'Removing pauses and tightening the edit...'],
+    [/phase 3/, 42, 'Aligning speech and captions...'],
+    [/phase 4p:/, 55, 'Planning the visual edit...'],
+    [/phase 5\/6:/, 70, 'Adding visuals and graphics...'],
+    [/phase 6:/, 82, 'Building the final format...'],
+    [/phase 7:/, 90, 'Checking video and audio quality...'],
+    [/phase 8:/, 97, 'Saving the finished video...'],
+  ];
+  for (const [pattern, progress, message] of rules) {
+    if (pattern.test(text)) return { progress, message };
+  }
+  return null;
+}
+
 module.exports = {
   PROJECT_ARGS,
   normalizeVideoPaths,
@@ -348,6 +384,8 @@ module.exports = {
   normalizeChatRequest,
   normalizeApplyRequest,
   normalizeLocalSettings,
+  settingsForLocalRender,
   joinPlan,
   parseEngineEvent,
+  engineProgress,
 };

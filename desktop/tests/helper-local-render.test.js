@@ -12,8 +12,10 @@ const {
   normalizeChatRequest,
   normalizeApplyRequest,
   normalizeLocalSettings,
+  settingsForLocalRender,
   joinPlan,
   parseEngineEvent,
+  engineProgress,
 } = require('../helper/lib/local-render');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'autoeditor-local-render-'));
@@ -39,6 +41,18 @@ try {
   }
   assert.ok(Object.isFrozen(PROJECT_ARGS));
   assert.ok(Object.values(PROJECT_ARGS).every(Object.isFrozen));
+
+  const savedSettings = {
+    deepseekApiKey: 'deepseek-secret',
+    pexelsApiKey: 'pexels-secret',
+    pixabayApiKey: 'pixabay-secret',
+  };
+  assert.deepStrictEqual(settingsForLocalRender(savedSettings), {
+    deepseekApiKey: '',
+    pexelsApiKey: 'pexels-secret',
+    pixabayApiKey: 'pixabay-secret',
+  });
+  assert.strictEqual(savedSettings.deepseekApiKey, 'deepseek-secret');
 
   assert.deepStrictEqual(normalizeVideoPaths([first, second]),
     [path.resolve(first), path.resolve(second)]);
@@ -124,6 +138,8 @@ try {
       { role: 'user', content: 'Use the clean version.' },
       { role: 'assistant', content: 'I will keep the visual treatment clean.' },
     ],
+    research: true,
+    videoCount: 2,
     deepseekApiKey: 'must-not-leak',
   });
   assert.deepStrictEqual(chat, {
@@ -134,6 +150,8 @@ try {
       { role: 'user', content: 'Use the clean version.' },
       { role: 'assistant', content: 'I will keep the visual treatment clean.' },
     ],
+    research: true,
+    videoCount: 2,
   });
   assert.throws(() => normalizeChatRequest({
     text: '', projectType: 'short', transcript: '',
@@ -162,6 +180,13 @@ try {
       role: i % 2 ? 'assistant' : 'user', content: 'x'.repeat(1900),
     })),
   }), /12000/);
+  assert.throws(() => normalizeChatRequest({
+    text: 'research trends', projectType: 'short', transcript: '',
+    research: 'yes',
+  }), /research must be a boolean/);
+  assert.throws(() => normalizeChatRequest({
+    text: 'edit this', projectType: 'short', transcript: '', videoCount: 21,
+  }), /video count must be between 0 and 20/);
 
   const proposal = {
     operations: [{ op: 'set_caption_mode', mode: 'sidecar' }],
@@ -246,6 +271,17 @@ try {
   assert.deepStrictEqual(parseEngineEvent(
     '{"event":"result","path":"/tmp/result.mp4"}'),
   { event: 'result', path: '/tmp/result.mp4' });
+  assert.deepStrictEqual(engineProgress(
+    '[pse-edit 12:00:00] phase 4p: EDL via heuristic'), {
+    progress: 55,
+    message: 'Planning the visual edit...',
+  });
+  assert.deepStrictEqual(engineProgress(
+    '[pse-edit 12:00:01] phase 7: QA gate'), {
+    progress: 90,
+    message: 'Checking video and audio quality...',
+  });
+  assert.strictEqual(engineProgress('ordinary diagnostic line'), null);
   for (const line of [
     '', 'rendering', '[1,2,3]', 'null', '42', '{}',
     '{"event":""}', '{"event":3}', '{bad json}',

@@ -27,7 +27,8 @@ assert.ok(helperMain.includes('safeStorage.encryptString(JSON.stringify(normaliz
 assert.ok(helperMain.includes('safeStorage.decryptString'));
 assert.ok(helperMain.includes('spawn(p.daemon, [mode]'));
 assert.ok(helperMain.includes("localProcess('--local-render'"));
-assert.ok(helperMain.includes("localProcess('--local-chat'"));
+assert.ok(helperMain.includes('runEditingChat(request'));
+assert.ok(helperMain.includes('requireSecureSettings()'));
 assert.ok(helperMain.includes("child.stdin.end(`${JSON.stringify(payload)}\\n`)"));
 assert.ok(helperMain.includes('returnedProposals'));
 assert.ok(helperMain.includes('returnedOutputs'));
@@ -36,29 +37,44 @@ assert.ok(helperMain.includes('preflight({ checkKeystore: !screenshotMode })'));
 
 for (const api of [
   'pickVideos', 'pickOutput', 'saveSettings', 'renderLocal', 'cancelLocal',
-  'chatLocal', 'applyLocal', 'openResult', 'onRender',
+  'attachDroppedVideos', 'chatLocal', 'applyLocal', 'openResult',
+  'openResearchSource', 'onRender',
 ]) {
   assert.ok(helperPreload.includes(`${api}:`), api);
 }
 
 assert.ok(helperHtml.includes('Rendering and file saving stay on this computer.'));
-assert.ok(helperHtml.includes('What do you want done to this video?'));
-assert.ok(helperHtml.includes('Your edit with DeepSeek'));
+assert.ok(helperHtml.includes('Edit chat'));
+assert.ok(helperHtml.includes('Message DeepSeek'));
+assert.ok(helperHtml.includes('Drag footage here'));
+assert.ok(helperHtml.includes('Live edit console'));
+assert.ok(helperHtml.includes('Use current public research when relevant'));
 assert.ok(helperHtml.includes('DeepSeek API key'));
-assert.ok(helperHtml.indexOf('id="edit-request"') < helperHtml.indexOf('id="script"'));
+assert.ok(helperHtml.includes('Enter each key once.'));
+assert.ok(helperHtml.includes('A blank field keeps the saved key.'));
+assert.ok(!helperHtml.includes('id="edit-request"'));
 assert.ok(!/setup code/i.test(helperHtml));
 assert.ok(!/AutoEditor website/i.test(helperHtml));
 assert.ok(!/Start Helper/i.test(helperHtml));
 assert.ok(helperRenderer.includes('window.helper.chatLocal'));
 assert.ok(helperRenderer.includes('window.helper.applyLocal'));
-assert.ok(helperRenderer.includes('app.initialPlanning = true'));
-assert.ok(helperRenderer.includes('DeepSeek planned the edit. Rendering it on this computer...'));
-assert.ok(helperRenderer.includes('history: app.chat.slice(0, -1).slice(-12)'));
+assert.ok(helperRenderer.includes('window.helper.attachDroppedVideos'));
+assert.ok(helperRenderer.includes('video.controls = true'));
+assert.ok(helperRenderer.includes('function localFileUrl'));
+assert.ok(helperRenderer.includes('Saved securely and reused automatically'));
+assert.ok(helperMain.includes('settingsForLocalRender(settings)'));
+assert.ok(helperHtml.includes('Render these changes'));
+assert.ok(helperRenderer.includes("research: $('live-research').checked"));
+assert.ok(helperMain.includes('returnedResearchSources'));
+assert.ok(helperMain.includes("require('./lib/editing-harness')"));
 
 assert.ok(daemonEntry.includes('def local_render()'));
 assert.ok(daemonEntry.includes('def local_chat()'));
 assert.ok(daemonEntry.includes('revision_engine_args'));
-assert.ok(daemonEntry.includes('provider="deepseek"'));
+assert.ok(daemonEntry.includes('api.deepseek.com'));
+assert.ok(daemonEntry.includes('EDITOR_CAPABILITY_CONTEXT'));
+assert.ok(daemonEntry.includes('def _live_research'));
+assert.ok(daemonEntry.includes('def _deepseek_json_stream'));
 assert.ok(daemonEntry.includes('"--local-render", "--local-chat"'));
 
 console.log('helper local-only setup contract passed');

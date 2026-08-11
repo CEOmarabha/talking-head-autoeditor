@@ -7,7 +7,6 @@ const app = {
   transcript: '',
   rendering: false,
   chatting: false,
-  initialPlanning: false,
   chat: [],
   proposal: null,
 };
@@ -18,6 +17,13 @@ function asError(error) {
 
 function fileName(path) {
   return String(path || '').split(/[\\/]/).filter(Boolean).pop() || String(path || 'Video');
+}
+
+function localFileUrl(raw) {
+  const normalized = String(raw || '').replace(/\\/g, '/');
+  const encoded = normalized.split('/').map((part) =>
+    /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)).join('/');
+  return normalized.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`;
 }
 
 function normalizePaths(value) {
@@ -52,9 +58,11 @@ function setStatus(label, tone = '') {
 
 function renderVideos() {
   const hasVideos = app.videos.length > 0;
-  $('video-empty').classList.toggle('hidden', hasVideos);
   $('video-list-wrap').classList.toggle('hidden', !hasVideos);
-  $('video-count').textContent = `${app.videos.length} ${app.videos.length === 1 ? 'video' : 'videos'} selected`;
+  $('video-empty').textContent = hasVideos
+    ? `${app.videos.length} ${app.videos.length === 1 ? 'video attached' : 'videos attached'}`
+    : 'Drag footage here, or choose files from this computer.';
+  $('video-count').textContent = `${app.videos.length} ${app.videos.length === 1 ? 'video attached' : 'videos attached'}`;
   $('video-list').replaceChildren();
 
   app.videos.forEach((path, index) => {
@@ -63,7 +71,6 @@ function renderVideos() {
     const name = document.createElement('strong');
     const location = document.createElement('span');
     const remove = document.createElement('button');
-
     name.textContent = fileName(path);
     location.textContent = path;
     copy.append(name, location);
@@ -78,55 +85,60 @@ function renderVideos() {
     item.append(copy, remove);
     $('video-list').appendChild(item);
   });
+  renderChat();
 }
 
 function renderProviderStates(state) {
+  const inputIds = {
+    deepseek: 'deepseek-key', pexels: 'pexels-key', pixabay: 'pixabay-key',
+    eleven: 'eleven-key', remotion: 'remotion-key',
+  };
   ['deepseek', 'pexels', 'pixabay', 'eleven', 'remotion'].forEach((name) => {
     const saved = providerSaved(state, name)
       || (name === 'eleven' && providerSaved(state, 'elevenLabs'));
     const target = $(`${name}-saved`);
-    target.textContent = saved ? 'Saved on this computer' : '';
+    target.textContent = saved ? 'Saved securely and reused automatically' : '';
     target.classList.toggle('visible', saved);
+    const input = $(inputIds[name]);
+    if (!input.dataset.emptyPlaceholder) input.dataset.emptyPlaceholder = input.placeholder;
+    input.placeholder = saved
+      ? 'Saved. Paste a new key only if you want to replace it.'
+      : input.dataset.emptyPlaceholder;
   });
 }
 
 function renderState(state = {}) {
   const videos = normalizePaths(state.videos || state.videoPaths || state.selectedVideos || []);
-  if (videos.length) {
-    app.videos = videos;
-    renderVideos();
-  }
-
+  if (videos.length) app.videos = videos;
   const outputDir = normalizePath(state.outputDir || state.outputFolder || '');
   if (outputDir) {
     app.outputDir = outputDir;
     $('output-folder').value = outputDir;
   }
-
-  if (state.projectType && $(`project-type`)) $('project-type').value = state.projectType;
+  if (state.projectType) $('project-type').value = state.projectType;
   if (typeof state.script === 'string' && !$('script').value) $('script').value = state.script;
   renderProviderStates(state);
-
+  renderVideos();
   const resultPath = normalizePath(state.resultPath || state.latestResult || '');
   if (resultPath) showResult(resultPath);
-
   if (state.error) {
     setStatus('Needs attention', 'bad');
     $('render-error').textContent = state.error;
-  } else if (!app.rendering) {
+  } else if (!app.rendering && !app.chatting) {
     setStatus('Ready');
   }
 }
 
 function setRendering(value, message = '') {
   app.rendering = value;
-  $('render').disabled = value;
   $('select-videos').disabled = value;
   $('select-output').disabled = value;
+  $('apply-changes').disabled = value;
   $('cancel').classList.toggle('hidden', !value);
-  $('progress-section').classList.toggle('hidden', !value && !$('log').textContent.trim());
+  if (value) $('progress-section').classList.remove('hidden');
   if (message) $('progress-message').textContent = message;
-  setStatus(value ? 'Rendering' : 'Ready', value ? 'on' : '');
+  setStatus(value ? 'Rendering' : (app.chatting ? 'Thinking' : 'Ready'),
+    value ? 'on' : '');
 }
 
 function setProgress(value, message) {
@@ -143,26 +155,120 @@ function setProgress(value, message) {
 function appendLog(line) {
   const text = typeof line === 'string' ? line : line?.message || line?.line || '';
   if (!text) return;
+  $('progress-section').classList.remove('hidden');
+  const current = $('log').textContent === 'Ready. Every edit stage will appear here.'
+    ? '' : $('log').textContent;
   const suffix = text.endsWith('\n') ? '' : '\n';
-  $('log').textContent = ($('log').textContent + text + suffix).slice(-16000);
+  $('log').textContent = (current + text + suffix).slice(-24000);
   $('log').scrollTop = $('log').scrollHeight;
+}
+
+function mediaMessage(path, allowReveal) {
+  const wrap = document.createElement('div');
+  const video = document.createElement('video');
+  const footer = document.createElement('div');
+  const name = document.createElement('strong');
+  wrap.className = 'chat-media';
+  video.controls = true;
+  video.preload = 'metadata';
+  video.src = localFileUrl(path);
+  footer.className = 'chat-media-footer';
+  name.textContent = fileName(path);
+  footer.appendChild(name);
+  if (allowReveal) {
+    const reveal = document.createElement('button');
+    reveal.type = 'button';
+    reveal.textContent = 'Show in Finder';
+    reveal.addEventListener('click', () => window.helper.openResult(path));
+    footer.appendChild(reveal);
+  }
+  wrap.append(video, footer);
+  return wrap;
+}
+
+function sourceList(sources) {
+  if (!Array.isArray(sources) || !sources.length) return null;
+  const list = document.createElement('ol');
+  list.className = 'source-list';
+  sources.slice(0, 12).forEach((source, index) => {
+    if (!source || typeof source.url !== 'string') return;
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'source-button';
+    const date = source.date ? `, ${source.date}` : '';
+    button.textContent = `[${index + 1}] ${source.title || source.source || 'Research source'}${date}`;
+    button.addEventListener('click', async () => {
+      try { await window.helper.openResearchSource(source.url); }
+      catch (error) { $('chat-error').textContent = asError(error); }
+    });
+    item.appendChild(button);
+    list.appendChild(item);
+  });
+  return list.childElementCount ? list : null;
+}
+
+function renderChat() {
+  $('chat-transcript').replaceChildren();
+  if (!app.videos.length && !app.chat.length) {
+    const empty = document.createElement('p');
+    empty.id = 'chat-empty';
+    empty.className = 'chat-empty';
+    empty.textContent = 'Ask DeepSeek about a video idea, or attach footage and describe the edit you want.';
+    $('chat-transcript').appendChild(empty);
+    return;
+  }
+
+  app.videos.forEach((path) => {
+    const row = document.createElement('div');
+    const role = document.createElement('span');
+    row.className = 'chat-message user';
+    role.textContent = 'Attached from this computer';
+    row.append(role, mediaMessage(path, false));
+    $('chat-transcript').appendChild(row);
+  });
+
+  app.chat.forEach((message) => {
+    const row = document.createElement('div');
+    const role = document.createElement('span');
+    row.className = `chat-message ${message.role === 'user' ? 'user' : 'assistant'}`;
+    role.textContent = message.role === 'user' ? 'You' : 'DeepSeek';
+    row.appendChild(role);
+    if (message.content) {
+      const content = document.createElement('p');
+      content.textContent = message.content;
+      row.appendChild(content);
+    }
+    if (message.videoPath) row.appendChild(mediaMessage(message.videoPath, true));
+    const sources = sourceList(message.sources);
+    if (sources) row.appendChild(sources);
+    $('chat-transcript').appendChild(row);
+  });
+  $('chat-transcript').scrollTop = $('chat-transcript').scrollHeight;
+}
+
+function showProposal(proposal) {
+  app.proposal = proposal;
+  const summary = typeof proposal?.summary === 'string' && proposal.summary.trim()
+    ? proposal.summary.trim() : 'DeepSeek mapped your request to the local editor.';
+  $('proposal-text').textContent = summary;
+  $('proposal').classList.toggle('hidden', !proposal);
 }
 
 function showResult(path) {
   if (!path) return;
   app.resultPath = path;
-  $('result-path').textContent = path;
-  $('result-path').title = path;
-  $('result-section').classList.remove('hidden');
-  $('chat-section').classList.remove('hidden');
-  app.chat.push({
-    role: 'assistant',
-    content: `Your edited video is ready: ${fileName(path)}. Tell me what you want changed next.`,
-  });
+  if (!app.chat.some((message) => message.videoPath === path)) {
+    app.chat.push({
+      role: 'assistant',
+      content: 'Your edited video is ready. Reply directly below it with anything you want changed.',
+      videoPath: path,
+    });
+  }
   renderChat();
   $('ask-deepseek').disabled = false;
   $('chat-status').textContent = '';
-  setProgress(100, 'Finished and saved on this computer.');
+  setProgress(100, 'Finished, checked, and saved on this computer.');
   setRendering(false);
   setStatus('Complete', 'complete');
 }
@@ -172,62 +278,34 @@ function handleRenderEvent(event = {}) {
     appendLog(event);
     return;
   }
-
   if (event.event === 'local-error') {
     const message = event.error || 'The action could not finish.';
-    if (app.chatting) {
-      app.chatting = false;
-      if (app.initialPlanning) {
-        app.initialPlanning = false;
-        setRendering(false, 'DeepSeek could not prepare the edit.');
-        $('render-error').textContent = message;
-      }
-      $('chat-error').textContent = message;
-      $('ask-deepseek').disabled = false;
-      $('chat-status').textContent = '';
-    } else {
-      setRendering(false, 'Render stopped.');
-      setStatus('Needs attention', 'bad');
-      $('render-error').textContent = message;
-    }
+    appendLog(`ERROR: ${message}`);
+    app.chatting = false;
+    if (app.rendering) setRendering(false, 'Render stopped.');
+    $('chat-error').textContent = message;
+    $('render-error').textContent = message;
+    $('ask-deepseek').disabled = false;
+    $('chat-status').textContent = '';
+    setStatus('Needs attention', 'bad');
     return;
   }
   if (event.event === 'local-chat') {
     app.chatting = false;
-    const wasInitialPlan = app.initialPlanning;
     if (typeof event.message === 'string' && event.message.trim()) {
-      app.chat.push({ role: 'assistant', content: event.message.trim() });
-      renderChat();
+      app.chat.push({
+        role: 'assistant', content: event.message.trim(),
+        sources: Array.isArray(event.sources) ? event.sources : [],
+      });
     }
     const operations = event.proposal?.operations;
     const applicable = event.canApply === true
       && Array.isArray(operations) && operations.length > 0;
-    if (wasInitialPlan) {
-      app.initialPlanning = false;
-      if (!applicable) {
-        setRendering(false, 'DeepSeek needs a clearer editing request.');
-        $('render-error').textContent = 'DeepSeek could not turn that request into a safe edit. Reword it and click Render video again.';
-      } else {
-        showProposal(null);
-        setProgress(0, 'DeepSeek planned the edit. Rendering it on this computer...');
-        setRendering(true);
-        const request = renderRequest();
-        window.helper.applyLocal({
-          ...request,
-          proposal: event.proposal,
-        }).then((result) => {
-          handleRenderEvent(result || { status: 'started' });
-        }).catch((error) => {
-          handleRenderEvent({ event: 'local-error', error: asError(error) });
-        });
-      }
-    } else {
-      showProposal(applicable ? event.proposal : null);
-    }
-    $('ask-deepseek').disabled = wasInitialPlan && applicable;
-    $('chat-status').textContent = wasInitialPlan && applicable
-      ? 'Rendering your first edit...'
-      : '';
+    showProposal(applicable ? event.proposal : null);
+    renderChat();
+    $('ask-deepseek').disabled = false;
+    $('chat-status').textContent = '';
+    setStatus('Ready');
     return;
   }
   if (event.event === 'local-result') {
@@ -235,92 +313,74 @@ function handleRenderEvent(event = {}) {
     showResult(event.output || '');
     return;
   }
+  if (event.event === 'local-progress') {
+    appendLog(event.log || event.line || event.message || event.stage || 'Working...');
+    if (!app.rendering && event.message) $('chat-status').textContent = event.message;
+  }
   if (event.event === 'local-progress' && event.stage === 'canceled') {
     setRendering(false, 'Render canceled.');
     setStatus('Canceled');
     return;
   }
-
-  appendLog(event.log || event.message || event.line || event.stage || '');
   if (event.progress !== undefined || event.percent !== undefined) {
     setProgress(event.progress ?? event.percent, event.message);
   }
-
   const status = String(event.status || event.phase || '').toLowerCase();
   const path = normalizePath(event.resultPath || event.outputPath || event.path || '');
   if (path && ['complete', 'completed', 'done', 'success', 'finished'].includes(status)) {
     showResult(path);
-    return;
+  } else if (path && !status) {
+    showResult(path);
   }
-  if (path && !status) showResult(path);
-
-  if (['rendering', 'running', 'working', 'started', 'queued'].includes(status)) {
-    setRendering(true, event.message || 'Rendering your video on this computer...');
-  } else if (['cancelled', 'canceled'].includes(status)) {
-    setRendering(false, 'Render canceled.');
-    setStatus('Canceled');
-  } else if (['error', 'failed', 'failure'].includes(status)) {
-    setRendering(false, 'Render stopped.');
-    setStatus('Needs attention', 'bad');
-    $('render-error').textContent = event.error || event.message || 'The render could not finish. Try again.';
-  }
-}
-
-function renderChat() {
-  $('chat-transcript').replaceChildren();
-  if (!app.chat.length) {
-    const empty = document.createElement('p');
-    empty.id = 'chat-empty';
-    empty.className = 'chat-empty';
-    empty.textContent = 'Your request and finished edit will appear here.';
-    $('chat-transcript').appendChild(empty);
-    return;
-  }
-
-  app.chat.forEach((message) => {
-    const row = document.createElement('div');
-    const role = document.createElement('span');
-    const content = document.createElement('p');
-    row.className = `chat-message ${message.role === 'user' ? 'user' : 'assistant'}`;
-    role.textContent = message.role === 'user' ? 'You' : 'DeepSeek';
-    content.textContent = message.content;
-    row.append(role, content);
-    $('chat-transcript').appendChild(row);
-  });
-  $('chat-transcript').scrollTop = $('chat-transcript').scrollHeight;
-}
-
-function formatProposal(value) {
-  if (typeof value === 'string') return value;
-  try { return JSON.stringify(value, null, 2); }
-  catch { return String(value); }
-}
-
-function showProposal(proposal) {
-  app.proposal = proposal;
-  $('proposal-text').textContent = formatProposal(proposal);
-  $('proposal').classList.toggle('hidden', !proposal);
 }
 
 function renderRequest() {
   return {
-    videos: [...app.videos],
-    outputDir: app.outputDir,
-    projectType: $('project-type').value,
-    script: $('script').value.trim(),
+    videos: [...app.videos], outputDir: app.outputDir,
+    projectType: $('project-type').value, script: $('script').value.trim(),
   };
 }
 
-$('select-videos').addEventListener('click', async () => {
+async function addPickedVideos(promise) {
   $('render-error').textContent = '';
   try {
-    const picked = normalizePaths(await window.helper.pickVideos());
+    const picked = normalizePaths(await promise);
     app.videos = [...new Set([...app.videos, ...picked])];
     renderVideos();
   } catch (error) {
     $('render-error').textContent = asError(error);
   }
+}
+
+$('select-videos').addEventListener('click', () =>
+  addPickedVideos(window.helper.pickVideos()));
+$('drop-zone').addEventListener('keydown', (event) => {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target === $('drop-zone')) {
+    event.preventDefault();
+    $('select-videos').click();
+  }
 });
+for (const name of ['dragenter', 'dragover']) {
+  $('drop-zone').addEventListener(name, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    $('drop-zone').classList.add('dragging');
+  });
+}
+for (const name of ['dragleave', 'drop']) {
+  $('drop-zone').addEventListener(name, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    $('drop-zone').classList.remove('dragging');
+  });
+}
+$('drop-zone').addEventListener('drop', (event) => {
+  if (event.dataTransfer?.files?.length) {
+    addPickedVideos(window.helper.attachDroppedVideos(event.dataTransfer.files));
+  }
+});
+window.addEventListener('dragover', (event) => event.preventDefault());
+window.addEventListener('drop', (event) => event.preventDefault());
 
 $('clear-videos').addEventListener('click', () => {
   app.videos = [];
@@ -340,51 +400,78 @@ $('select-output').addEventListener('click', async () => {
   }
 });
 
-$('render').addEventListener('click', async () => {
+$('ask-deepseek').addEventListener('click', async () => {
+  const text = $('chat-prompt').value.trim();
+  if (!text || app.chatting) return;
+  $('chat-error').textContent = '';
+  $('ask-deepseek').disabled = true;
+  $('chat-status').textContent = 'DeepSeek is reading the editing context...';
+  app.chatting = true;
+  app.chat.push({ role: 'user', content: text });
+  $('chat-prompt').value = '';
+  renderChat();
+  appendLog(`Chat: ${app.videos.length} attached video(s); preparing DeepSeek V4 context.`);
+  setStatus('Thinking', 'on');
+  try {
+    await window.helper.chatLocal({
+      text,
+      history: app.chat.slice(0, -1).filter((message) => message.content)
+        .slice(-12).map(({ role, content }) => ({ role, content })),
+      projectType: $('project-type').value,
+      transcript: app.transcript || $('script').value.trim(),
+      videoCount: app.videos.length,
+      videoPaths: [...app.videos],
+      resultPath: app.resultPath || undefined,
+      research: $('live-research').checked,
+    });
+  } catch (error) {
+    app.chatting = false;
+    appendLog(`ERROR: ${asError(error)}`);
+    $('chat-error').textContent = asError(error);
+    $('ask-deepseek').disabled = false;
+    $('chat-status').textContent = '';
+    setStatus('Needs attention', 'bad');
+  }
+});
+
+$('chat-prompt').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    $('ask-deepseek').click();
+  }
+});
+
+$('apply-changes').addEventListener('click', async () => {
+  $('chat-error').textContent = '';
   $('render-error').textContent = '';
-  const instruction = $('edit-request').value.trim();
+  if (!app.proposal) return;
   if (!app.videos.length) {
-    $('render-error').textContent = 'Select at least one video.';
+    $('render-error').textContent = 'Attach at least one video before rendering.';
+    $('drop-zone').focus();
     return;
   }
   if (!app.outputDir) {
-    $('render-error').textContent = 'Choose an output folder.';
+    $('render-error').textContent = 'Choose where to save the finished video before rendering.';
+    document.querySelector('.edit-options').open = true;
+    $('select-output').focus();
     return;
   }
-  if (!instruction) {
-    $('render-error').textContent = 'Tell AutoEditor what you want done to the video.';
-    $('edit-request').focus();
-    return;
-  }
-
-  app.proposal = null;
-  app.initialPlanning = true;
-  app.chatting = true;
-  app.chat = [{ role: 'user', content: instruction }];
-  app.resultPath = '';
-  $('proposal').classList.add('hidden');
-  $('result-section').classList.add('hidden');
-  $('chat-section').classList.remove('hidden');
-  $('progress-section').classList.remove('hidden');
-  $('log').textContent = '';
-  $('chat-error').textContent = '';
-  $('ask-deepseek').disabled = true;
-  $('chat-status').textContent = 'DeepSeek is planning your edit...';
-  renderChat();
-  setProgress(0, 'DeepSeek is planning the edit you requested...');
+  $('apply-changes').disabled = true;
+  $('log').textContent = 'Starting local render...\n';
+  setProgress(1, 'Starting the local edit...');
   setRendering(true);
-  $('cancel').classList.add('hidden');
-
   try {
-    const result = await window.helper.chatLocal({
-      text: instruction,
-      history: [],
-      projectType: $('project-type').value,
-      transcript: $('script').value.trim(),
+    const request = renderRequest();
+    await window.helper.applyLocal({
+      ...request, proposal: app.proposal, resultPath: app.resultPath || undefined,
     });
-    handleRenderEvent(result || { status: 'started' });
+    showProposal(null);
   } catch (error) {
-    handleRenderEvent({ event: 'local-error', error: asError(error) });
+    appendLog(`ERROR: ${asError(error)}`);
+    setRendering(false, 'Render stopped.');
+    $('render-error').textContent = asError(error);
+  } finally {
+    if (!app.rendering) $('apply-changes').disabled = false;
   }
 });
 
@@ -401,78 +488,10 @@ $('cancel').addEventListener('click', async () => {
   }
 });
 
-function openCurrentResult() {
-  if (app.resultPath) window.helper.openResult(app.resultPath);
-}
-
-$('open-result').addEventListener('click', openCurrentResult);
-$('result-path').addEventListener('click', openCurrentResult);
-
-$('ask-deepseek').addEventListener('click', async () => {
-  const text = $('chat-prompt').value.trim();
-  if (!text) return;
-
-  $('chat-error').textContent = '';
-  $('ask-deepseek').disabled = true;
-  $('chat-status').textContent = 'DeepSeek is reviewing your edit...';
-  app.chatting = true;
-  app.chat.push({ role: 'user', content: text });
-  $('chat-prompt').value = '';
-  renderChat();
-
-  try {
-    await window.helper.chatLocal({
-      text,
-      history: app.chat.slice(0, -1).slice(-12),
-      projectType: $('project-type').value,
-      transcript: app.transcript || $('script').value.trim(),
-    });
-  } catch (error) {
-    app.chatting = false;
-    $('chat-error').textContent = asError(error);
-    $('ask-deepseek').disabled = false;
-    $('chat-status').textContent = '';
-  }
-});
-
-$('chat-prompt').addEventListener('keydown', (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') $('ask-deepseek').click();
-});
-
-$('apply-changes').addEventListener('click', async () => {
-  if (!app.proposal) return;
-  $('chat-error').textContent = '';
-  $('apply-changes').disabled = true;
-  $('progress-section').classList.remove('hidden');
-  setProgress(0, 'Applying approved changes on this computer...');
-  setRendering(true);
-  try {
-    const request = renderRequest();
-    const result = await window.helper.applyLocal({
-      proposal: app.proposal,
-      videos: request.videos,
-      outputDir: request.outputDir,
-      projectType: request.projectType,
-      script: request.script,
-      resultPath: app.resultPath,
-    });
-    $('proposal').classList.add('hidden');
-    app.proposal = null;
-    handleRenderEvent(result || { status: 'started' });
-  } catch (error) {
-    setRendering(false);
-    $('chat-error').textContent = asError(error);
-  } finally {
-    $('apply-changes').disabled = false;
-  }
-});
-
 $('save-settings').addEventListener('click', async () => {
   const fields = {
-    deepseekApiKey: $('deepseek-key'),
-    pexelsApiKey: $('pexels-key'),
-    pixabayApiKey: $('pixabay-key'),
-    elevenLabsApiKey: $('eleven-key'),
+    deepseekApiKey: $('deepseek-key'), pexelsApiKey: $('pexels-key'),
+    pixabayApiKey: $('pixabay-key'), elevenLabsApiKey: $('eleven-key'),
     remotionKey: $('remotion-key'),
   };
   const settings = {};
@@ -480,20 +499,19 @@ $('save-settings').addEventListener('click', async () => {
     const value = input.value.trim();
     if (value) settings[name] = value;
   });
-
   $('settings-error').textContent = '';
   if (!Object.keys(settings).length) {
-    $('settings-error').textContent = 'Paste at least one key to save.';
+    $('settings-error').textContent = 'Paste at least one new key to save. Blank fields keep their saved keys.';
     return;
   }
-
   $('save-settings').disabled = true;
   $('settings-status').textContent = 'Encrypting and saving on this computer...';
   try {
     const state = await window.helper.saveSettings(settings);
     Object.values(fields).forEach((input) => { input.value = ''; });
-    renderProviderStates(state || Object.fromEntries(Object.keys(settings).map((key) => [key, true])));
-    $('settings-status').textContent = 'Saved on this computer.';
+    renderProviderStates(state || Object.fromEntries(
+      Object.keys(settings).map((key) => [key, true])));
+    $('settings-status').textContent = 'Saved and reused automatically.';
   } catch (error) {
     $('settings-error').textContent = asError(error);
     $('settings-status').textContent = '';
@@ -505,9 +523,7 @@ $('save-settings').addEventListener('click', async () => {
 document.querySelectorAll('[data-open]').forEach((button) => {
   button.addEventListener('click', () => window.helper.open(button.dataset.open));
 });
-
 $('notices').addEventListener('click', () => window.helper.notices());
-
 window.helper.onState(renderState);
 window.helper.onLog(appendLog);
 window.helper.onRender(handleRenderEvent);

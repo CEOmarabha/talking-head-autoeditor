@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
+const { runEditingChat } = require('./lib/editing-harness');
 const {
   normalizeApplyRequest,
   normalizeChatRequest,
@@ -16,6 +17,8 @@ const {
   normalizeResultPath,
   normalizeVideoPaths,
   parseEngineEvent,
+  settingsForLocalRender,
+  engineProgress,
 } = require('./lib/local-render');
 
 let win = null;
@@ -24,6 +27,7 @@ let activeChat = null;
 let actionSequence = 0;
 const returnedOutputs = new Map();
 const returnedProposals = new Set();
+const returnedResearchSources = new Set();
 const selectedVideos = new Set();
 const selectedOutputDirs = new Set();
 const PACKAGED = app.isPackaged;
@@ -371,6 +375,20 @@ function rememberProposal(event) {
   } catch (_) { /* malformed daemon output is not applicable */ }
 }
 
+function rememberResearchSources(event) {
+  if (!Array.isArray(event.sources)) return;
+  for (const source of event.sources.slice(0, 12)) {
+    if (!source || typeof source !== 'object' || Array.isArray(source) ||
+        typeof source.url !== 'string' || source.url.length > 2048) continue;
+    try {
+      const parsed = new URL(source.url);
+      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) {
+        returnedResearchSources.add(source.url);
+      }
+    } catch (_) { /* malformed research source is never opened */ }
+  }
+}
+
 function proposalWasReturned(proposal) {
   if (!returnedProposals.has(stableJson(proposal))) {
     throw new Error('That edit proposal is no longer available. Ask DeepSeek again');
@@ -381,16 +399,25 @@ function proposalWasReturned(proposal) {
 function processLocalEvent(event, action) {
   if (!LOCAL_EVENTS.has(event.event)) return false;
   if (action.canceled) return true;
+  let visibleEvent = event;
+  if (event.event === 'local-progress') {
+    const mapped = engineProgress(event.line || event.stage || '');
+    if (mapped && mapped.progress > action.progress) {
+      action.progress = mapped.progress;
+      visibleEvent = { ...event, ...mapped };
+    }
+  }
   if (event.event === 'local-result' && action.kind === 'render') {
     rememberResult(event, action.outputDir);
     action.terminal = true;
   } else if (event.event === 'local-chat' && action.kind === 'chat') {
     rememberProposal(event);
+    rememberResearchSources(event);
     action.terminal = true;
   } else if (event.event === 'local-error') {
     action.terminal = true;
   }
-  send('helper-render', event);
+  send('helper-render', visibleEvent);
   return true;
 }
 
@@ -403,6 +430,7 @@ function localProcess(mode, payload, kind, settings) {
     proc: null,
     terminal: false,
     canceled: false,
+    progress: 0,
   };
   const child = spawn(p.daemon, [mode], {
     env: daemonEnv(settings), windowsHide: true, cwd: p.root,
@@ -413,6 +441,13 @@ function localProcess(mode, payload, kind, settings) {
   action.proc = child;
   if (kind === 'render') activeRender = action;
   else activeChat = action;
+  if (kind === 'render') {
+    action.progress = 1;
+    send('helper-render', {
+      event: 'local-progress', progress: 1,
+      message: 'Starting the local edit...',
+    });
+  }
 
   const onLine = (line) => {
     const event = parseEngineEvent(line);
@@ -456,15 +491,20 @@ function localProcess(mode, payload, kind, settings) {
   return action;
 }
 
-function requireReady() {
+function requireSecureSettings() {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Your OS keystore is unavailable, so AutoEditor cannot safely load API keys');
   }
+  return loadSettings();
+}
+
+function requireReady() {
+  const settings = requireSecureSettings();
   const ready = preflight();
   if (!ready.ok) {
     throw new Error('A built-in editing component is missing or this computer has less than 20 GB free');
   }
-  return loadSettings();
+  return settings;
 }
 
 function requireDialogSelection(request) {
@@ -497,7 +537,8 @@ function renderLocal(raw) {
   const request = normalizeLocalRequest(translateVideoPaths(raw));
   requireDialogSelection(request);
   const settings = requireReady();
-  localProcess('--local-render', request, 'render', settings);
+  localProcess('--local-render', request, 'render',
+    settingsForLocalRender(settings));
   return { ok: true };
 }
 
@@ -505,7 +546,11 @@ function chatLocal(raw) {
   if (activeChat) throw new Error('DeepSeek is already answering');
   const request = normalizeChatRequest(raw);
   if (raw && Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) {
-    normalizeVideoPaths(raw.videoPaths);
+    for (const video of normalizeVideoPaths(raw.videoPaths)) {
+      if (!selectedVideos.has(fs.realpathSync.native(video))) {
+        throw new Error('Attach every video with the picker or by dragging it into AutoEditor');
+      }
+    }
   }
   if (raw && raw.resultPath) {
     const real = realFile(raw.resultPath);
@@ -513,11 +558,33 @@ function chatLocal(raw) {
       throw new Error('That result is not from this AutoEditor session');
     }
   }
-  const settings = requireReady();
+  const settings = requireSecureSettings();
   if (!settings.deepseekApiKey) {
     throw new Error('Add your DeepSeek API key before opening the edit chat');
   }
-  localProcess('--local-chat', request, 'chat', settings);
+  const action = {
+    id: ++actionSequence, kind: 'chat', outputDir: '', proc: null,
+    terminal: false, canceled: false, progress: 0,
+  };
+  activeChat = action;
+  send('helper-state', {
+    running: !!activeRender, rendering: !!activeRender, chatting: true,
+  });
+  runEditingChat(request, settings.deepseekApiKey, (event) => {
+    processLocalEvent(event, action);
+  }).then((event) => {
+    processLocalEvent(event, action);
+  }).catch((error) => {
+    processLocalEvent({
+      event: 'local-error',
+      error: `DeepSeek stopped safely: ${error.message || String(error)}`,
+    }, action);
+  }).finally(() => {
+    if (activeChat === action) activeChat = null;
+    send('helper-state', {
+      running: !!activeRender, rendering: !!activeRender, chatting: false,
+    });
+  });
   return { ok: true };
 }
 
@@ -527,7 +594,8 @@ function applyLocal(raw) {
     translateVideoPaths(raw), proposalWasReturned);
   requireDialogSelection(request);
   const settings = requireReady();
-  localProcess('--local-render', request, 'render', settings);
+  localProcess('--local-render', request, 'render',
+    settingsForLocalRender(settings));
   return { ok: true };
 }
 
@@ -560,6 +628,27 @@ async function pickVideos() {
     selectedVideos.add(fs.realpathSync.native(video));
   }
   return videos;
+}
+
+function attachDroppedVideos(raw) {
+  const videos = normalizeVideoPaths(raw);
+  const accepted = [];
+  for (const video of videos) {
+    if (!VIDEO_EXTENSIONS.has(path.extname(video).toLowerCase())) {
+      throw new Error('Drop MP4, MOV, M4V, MKV, or WebM video files');
+    }
+    const real = fs.realpathSync.native(video);
+    selectedVideos.add(real);
+    accepted.push(real);
+  }
+  return accepted;
+}
+
+function openResearchSource(url) {
+  if (typeof url !== 'string' || !returnedResearchSources.has(url)) {
+    throw new Error('That research source is not from this AutoEditor session');
+  }
+  return shell.openExternal(url);
 }
 
 async function pickOutput() {
@@ -607,6 +696,8 @@ function setupIpc() {
     };
   });
   ipcMain.handle('helper:pick-videos', () => pickVideos());
+  ipcMain.handle('helper:attach-dropped-videos', (_event, files) =>
+    attachDroppedVideos(files));
   ipcMain.handle('helper:pick-output', () => pickOutput());
   ipcMain.handle('helper:save-settings', (_event, input) => saveSettings(input));
   ipcMain.handle('helper:render-local', (_event, input) => renderLocal(input));
@@ -614,6 +705,8 @@ function setupIpc() {
   ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));
   ipcMain.handle('helper:apply-local', (_event, input) => applyLocal(input));
   ipcMain.handle('helper:open-result', (_event, resultPath) => openResult(resultPath));
+  ipcMain.handle('helper:open-research-source', (_event, url) =>
+    openResearchSource(url));
   ipcMain.handle('helper:notices', () => shell.openPath(runtimePaths().notices));
   ipcMain.handle('helper:open', (_event, key) => {
     if (typeof key !== 'string' || !PROVIDER_LINKS[key]) {
@@ -688,7 +781,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   if (activeRender) stopProcessTree(activeRender.proc);
-  if (activeChat) stopProcessTree(activeChat.proc);
+  if (activeChat?.proc) stopProcessTree(activeChat.proc);
 });
 app.on('window-all-closed', () => app.quit());
 

@@ -19,120 +19,109 @@
       <span id="status" class="pill" role="status" aria-live="polite">Ready</span>
     </header>
 
-    <section class="card editor-card" aria-labelledby="editor-title">
-      <div class="section-heading">
-        <div>
-          <h2 id="editor-title">Make a video</h2>
-          <p>Choose your footage, tell AutoEditor what you want, then render it here.</p>
-        </div>
-        <button id="select-videos" class="primary" type="button">Select videos</button>
-      </div>
-
-      <div id="video-empty" class="empty-state">No videos selected.</div>
-      <div id="video-list-wrap" class="file-selection hidden">
-        <div class="list-heading">
-          <span id="video-count">0 videos selected</span>
-          <button id="clear-videos" class="text-button" type="button">Clear</button>
-        </div>
-        <ul id="video-list" class="file-list" aria-label="Selected videos"></ul>
-      </div>
-
-      <div class="form-grid">
-        <div class="field-group">
-          <label for="project-type">Project type</label>
-          <select id="project-type">
-            <option value="short">Short / Reel</option>
-            <option value="long">Long video</option>
-            <option value="commercial">Commercial</option>
-            <option value="podcast">Podcast</option>
-            <option value="course">Course</option>
-            <option value="custom">Custom</option>
-          </select>
-        </div>
-        <div class="field-group">
-          <label for="output-folder">Output folder</label>
-          <div class="path-picker">
-            <input id="output-folder" type="text" readonly placeholder="Choose where to save the finished video">
-            <button id="select-output" type="button">Choose</button>
-          </div>
-        </div>
-      </div>
-
-      <label for="edit-request">What do you want done to this video?</label>
-      <textarea id="edit-request" rows="5" maxlength="4000" placeholder="Example: Make this a fast, premium reel. Remove dead space, add clean captions, use relevant B-roll, and keep the pacing natural."></textarea>
-
-      <div class="script-field">
-        <label for="script">Spoken script <span class="optional">Optional</span></label>
-        <textarea id="script" rows="3" placeholder="Paste what is spoken, or leave this blank and AutoEditor will transcribe it."></textarea>
-      </div>
-
-      <div class="local-note">
-        <strong>Your files stay yours.</strong>
-        Rendering and saving happen on this computer. Connected AI or media services receive only the requests needed for features you use.
-      </div>
-
-      <div class="render-actions">
-        <button id="render" class="primary render-button" type="button">Render video</button>
-        <button id="cancel" class="ghost hidden" type="button">Cancel</button>
-      </div>
-      <p id="render-error" class="error" role="alert"></p>
-    </section>
-
-    <section id="progress-section" class="card progress-card hidden" aria-labelledby="progress-title">
-      <div class="progress-heading">
-        <div>
-          <h2 id="progress-title">Rendering on this computer</h2>
-          <p id="progress-message" aria-live="polite">Preparing your edit...</p>
-        </div>
-        <span id="progress-value">0%</span>
-      </div>
-      <progress id="progress" max="100" value="0">0%</progress>
-      <details class="activity">
-        <summary>Activity</summary>
-        <pre id="log" aria-live="polite"></pre>
-      </details>
-    </section>
-
-    <section id="result-section" class="card result-card hidden" aria-labelledby="result-title">
-      <div class="result-heading">
-        <div>
-          <h2 id="result-title">Your video is ready</h2>
-          <p>It was rendered and saved on this computer.</p>
-        </div>
-        <span class="success-mark" aria-hidden="true"></span>
-      </div>
-      <button id="result-path" class="file-link" type="button"></button>
-      <button id="open-result" class="primary" type="button">Show finished video</button>
-    </section>
-
-    <section id="chat-section" class="card chat-card hidden" aria-labelledby="chat-title">
+    <section id="chat-section" class="card chat-card" aria-labelledby="chat-title">
       <div class="section-heading chat-heading">
         <div>
-          <h2 id="chat-title">Your edit with DeepSeek</h2>
-          <p>Keep replying here until the video feels right. Later changes wait for your approval.</p>
+          <h2 id="chat-title">Edit chat</h2>
+          <p>Plan a post, research current ideas, attach footage when ready, then keep refining the finished video here.</p>
         </div>
       </div>
 
       <div id="chat-transcript" class="chat-transcript" aria-live="polite">
-        <p id="chat-empty" class="chat-empty">Your request and finished edit will appear here.</p>
+        <p id="chat-empty" class="chat-empty">Ask DeepSeek about a video idea, or attach footage and describe the edit you want.</p>
       </div>
-      <label for="chat-prompt">What should change?</label>
-      <textarea id="chat-prompt" rows="3" placeholder="Make the opening faster, use fewer stock clips, and tighten the captions."></textarea>
+
+      <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Attach video files">
+        <div>
+          <strong>Attach video</strong>
+          <span id="video-empty">Drag footage here, or choose files from this computer.</span>
+        </div>
+        <button id="select-videos" type="button">Choose files</button>
+      </div>
+      <div id="video-list-wrap" class="file-selection hidden">
+        <div class="list-heading">
+          <span id="video-count">0 videos attached</span>
+          <button id="clear-videos" class="text-button" type="button">Clear</button>
+        </div>
+        <ul id="video-list" class="file-list" aria-label="Attached videos"></ul>
+      </div>
+
+      <label for="chat-prompt">Message DeepSeek</label>
+      <textarea id="chat-prompt" rows="4" maxlength="4000" placeholder="What should we post, what is trending, or how should this attached footage be edited?"></textarea>
       <div class="chat-actions">
-        <button id="ask-deepseek" class="primary" type="button">Ask DeepSeek</button>
+        <button id="ask-deepseek" class="primary" type="button">Send</button>
+        <label class="research-toggle" for="live-research">
+          <input id="live-research" type="checkbox" checked>
+          <span>Use current public research when relevant</span>
+        </label>
         <span id="chat-status" class="small" role="status" aria-live="polite"></span>
       </div>
 
       <div id="proposal" class="proposal hidden">
         <div class="proposal-heading">
-          <h3>Proposed changes</h3>
-          <span>Review before applying</span>
+          <h3>Ready to edit</h3>
+          <span>Nothing changes until you render</span>
         </div>
-        <pre id="proposal-text"></pre>
-        <p class="small">Applying these changes starts a new render on this computer. Your current video stays untouched.</p>
-        <button id="apply-changes" class="primary" type="button">Apply changes</button>
+        <p id="proposal-text">DeepSeek mapped your request to the local editor.</p>
+        <p class="small">Rendering starts on this computer and keeps your current video untouched.</p>
+        <button id="apply-changes" class="primary" type="button">Render these changes</button>
       </div>
       <p id="chat-error" class="error" role="alert"></p>
+      <p id="render-error" class="error" role="alert"></p>
+
+      <details class="edit-options">
+        <summary>Video format, save folder, and optional spoken script</summary>
+        <div class="form-grid">
+          <div class="field-group">
+            <label for="project-type">Project type</label>
+            <select id="project-type">
+              <option value="short">Short / Reel</option>
+              <option value="long">Long video</option>
+              <option value="commercial">Commercial</option>
+              <option value="podcast">Podcast</option>
+              <option value="course">Course</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="output-folder">Save finished video to</label>
+            <div class="path-picker">
+              <input id="output-folder" type="text" readonly placeholder="Choose a folder before rendering">
+              <button id="select-output" type="button">Choose</button>
+            </div>
+          </div>
+        </div>
+        <div class="script-field">
+          <label for="script">Spoken script <span class="optional">Optional</span></label>
+          <textarea id="script" rows="2" placeholder="Paste what is spoken, or leave blank for local transcription."></textarea>
+        </div>
+      </details>
+
+      <div class="local-note">
+        <strong>Your video files stay on this computer.</strong>
+        DeepSeek receives chat, bounded editing context, and public research snippets, never the local video file itself.
+      </div>
+    </section>
+
+    <section id="progress-section" class="card progress-card hidden" aria-labelledby="progress-title">
+      <div class="progress-heading">
+        <div>
+          <h2 id="progress-title">Live edit console</h2>
+          <p id="progress-message" aria-live="polite">Waiting to start...</p>
+        </div>
+        <div class="progress-controls">
+          <span id="progress-value">0%</span>
+          <button id="cancel" class="ghost hidden" type="button">Cancel</button>
+        </div>
+      </div>
+      <progress id="progress" max="100" value="0">0%</progress>
+      <div class="live-console">
+        <div class="console-header">
+          <span><i aria-hidden="true"></i> AutoEditor local process</span>
+          <span>LIVE</span>
+        </div>
+        <pre id="log" aria-live="polite">Ready. Every edit stage will appear here.</pre>
+      </div>
     </section>
 
     <details class="card settings-card">
@@ -141,7 +130,7 @@
         <span class="summary-note">Optional, encrypted on this computer</span>
       </summary>
       <div class="settings-body">
-        <p class="small">Paste only the keys for services you want to use. Saved keys are encrypted and never shown again.</p>
+        <p class="small">Enter each key once. It stays encrypted on this computer and is reused automatically until you replace it. A blank field keeps the saved key.</p>
         <div class="settings-grid">
           <div class="provider-field">
             <div class="provider-label"><label for="deepseek-key">DeepSeek API key</label><button class="inline-link" type="button" data-open="deepseekApi">Get key</button></div>
