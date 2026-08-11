@@ -66,7 +66,29 @@ window.helper.onVisionRequest((request) => {
 });
 
 function asError(error) {
-  return error?.message || String(error || 'Something went wrong.');
+  const text = error?.message || String(error || 'Something went wrong.');
+  return text.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
+}
+
+const CHAT_HISTORY_MAX_ENTRIES = 12;
+const CHAT_HISTORY_MAX_ENTRY_CHARS = 2000;
+const CHAT_HISTORY_MAX_TOTAL_CHARS = 12000;
+
+function boundedChatHistory(messages) {
+  const entries = messages
+    .filter((message) => message.content)
+    .slice(-CHAT_HISTORY_MAX_ENTRIES)
+    .map(({ role, content }) => ({
+      role,
+      content: content.length > CHAT_HISTORY_MAX_ENTRY_CHARS
+        ? content.slice(0, CHAT_HISTORY_MAX_ENTRY_CHARS - 3) + '...'
+        : content,
+    }));
+  let total = entries.reduce((sum, entry) => sum + entry.content.length, 0);
+  while (entries.length && total > CHAT_HISTORY_MAX_TOTAL_CHARS) {
+    total -= entries.shift().content.length;
+  }
+  return entries;
 }
 
 function fileName(path) {
@@ -469,12 +491,11 @@ $('ask-deepseek').addEventListener('click', async () => {
   try {
     await window.helper.chatLocal({
       text,
-      history: app.chat.slice(0, -1).filter((message) => message.content)
-        .slice(-12).map(({ role, content }) => ({ role, content })),
+      history: boundedChatHistory(app.chat.slice(0, -1)),
       projectType: $('project-type').value,
-      transcript: app.transcript || $('script').value.trim(),
+      transcript: (app.transcript || $('script').value.trim()).slice(0, 20000),
       videoCount: app.videos.length,
-      videoPaths: [...app.videos],
+      ...(app.videos.length ? { videoPaths: [...app.videos] } : {}),
       resultPath: app.resultPath || undefined,
       research: $('live-research').checked,
     });

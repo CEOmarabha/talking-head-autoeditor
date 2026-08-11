@@ -58,6 +58,13 @@ assert.ok(!/setup code/i.test(helperHtml));
 assert.ok(!/AutoEditor website/i.test(helperHtml));
 assert.ok(!/Start Helper/i.test(helperHtml));
 assert.ok(helperRenderer.includes('window.helper.chatLocal'));
+assert.ok(helperRenderer.includes(
+  'history: boundedChatHistory(app.chat.slice(0, -1))'));
+assert.ok(helperRenderer.includes(
+  "...(app.videos.length ? { videoPaths: [...app.videos] } : {})"));
+assert.ok(helperRenderer.includes('const CHAT_HISTORY_MAX_ENTRY_CHARS = 2000'));
+assert.ok(helperRenderer.includes('const CHAT_HISTORY_MAX_TOTAL_CHARS = 12000'));
+assert.ok(!helperRenderer.includes('videoPaths: [...app.videos],'));
 assert.ok(helperRenderer.includes('window.helper.applyLocal'));
 assert.ok(helperRenderer.includes('window.helper.attachDroppedVideos'));
 assert.ok(helperRenderer.includes('video.controls = true'));
