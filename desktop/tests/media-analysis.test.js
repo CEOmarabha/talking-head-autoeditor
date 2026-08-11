@@ -71,8 +71,9 @@ assert.ok(!main.includes('transformers.node.mjs'));
 
 const harness = fs.readFileSync(path.join(
   __dirname, '..', 'helper', 'lib', 'editing-harness.js'), 'utf8');
-assert.ok(harness.includes('Private local media report:'));
-assert.ok(harness.includes('original\nvideo was not uploaded to DeepSeek'));
+const normalizedHarness = harness.replace(/\r\n/g, '\n');
+assert.ok(normalizedHarness.includes('Private local media report:'));
+assert.ok(normalizedHarness.includes('original\nvideo was not uploaded to DeepSeek'));
 
 const preload = fs.readFileSync(path.join(__dirname, '..', 'helper', 'preload.js'), 'utf8');
 assert.ok(preload.includes("ipcRenderer.send('helper:vision-result'"));
