@@ -945,14 +945,17 @@ def _asar_header_sha256(raw: bytes) -> str:
     size_pickle, header_pickle, header_payload, header_bytes = struct.unpack_from(
         "<IIII", raw, 0
     )
+    aligned_header_bytes = (header_bytes + 3) & ~3
     if (
         size_pickle != 4
-        or header_payload != header_bytes + 4
-        or header_pickle != header_bytes + 8
-        or 16 + header_bytes > len(raw)
+        or header_payload != aligned_header_bytes + 4
+        or header_pickle != aligned_header_bytes + 8
+        or 16 + aligned_header_bytes > len(raw)
     ):
         raise ElectronNativeReceiptError("final Electron app.asar has invalid header pickle")
     header = raw[16 : 16 + header_bytes]
+    if any(raw[16 + header_bytes : 16 + aligned_header_bytes]):
+        raise ElectronNativeReceiptError("final Electron app.asar has nonzero header padding")
     try:
         decoded = header.decode("utf-8")
         parsed = json.loads(decoded)

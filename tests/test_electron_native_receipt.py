@@ -419,15 +419,22 @@ class ElectronNativeReceiptTests(unittest.TestCase):
             validate(drifted)
 
     def test_windows_asar_integrity_binds_every_packed_asar(self):
-        header_one = b'{"files":{"one":{}}}'
+        header_one = b'{"files":{"one":{}}}\n'
         header_two = b'{"files":{"two":{}}}'
 
-        def asar(header: bytes) -> bytes:
+        def asar(header: bytes, *, padding_byte: bytes = b"\0") -> bytes:
+            aligned = (len(header) + 3) & ~3
+            padding = padding_byte * (aligned - len(header))
             return (
-                struct.pack("<IIII", 4, len(header) + 8, len(header) + 4, len(header))
+                struct.pack("<IIII", 4, aligned + 8, aligned + 4, len(header))
                 + header
+                + padding
                 + b"payload"
             )
+
+        self.assertEqual(receipt._asar_header_sha256(asar(header_one)), hashlib.sha256(header_one).hexdigest())
+        with self.assertRaisesRegex(receipt.ElectronNativeReceiptError, "nonzero header padding"):
+            receipt._asar_header_sha256(asar(header_one, padding_byte=b"X"))
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
