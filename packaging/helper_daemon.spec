@@ -25,6 +25,7 @@ a = Analysis(
         "webapp.render_worker.project_types",
         "autoeditor", "autoeditor.providers", "autoeditor.premium",
         "autoeditor.config", "autoeditor.creative_contract",
+        "autoeditor.creative_constraints",
     ],
     excludes=["tkinter", "matplotlib", "pytest", "av"],
 )

@@ -137,7 +137,8 @@ assert.deepStrictEqual(engineProgress('[pse-edit] phase 7: QA gate'), {
 
 const rendererRoot = path.join(__dirname, '..', 'helper', 'renderer');
 const html = fs.readFileSync(path.join(rendererRoot, 'index.html'), 'utf8');
-const appSource = fs.readFileSync(path.join(rendererRoot, 'app.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(rendererRoot, 'app.js'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'helper', 'main.js'), 'utf8');
 assert.ok(html.includes('Message DeepSeek'));
 assert.ok(html.includes('Optional spoken words for generated/scripted content. Do not put editing instructions here.'));

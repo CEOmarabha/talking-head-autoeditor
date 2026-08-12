@@ -12,6 +12,12 @@ const {
 const {
   durationIntent, storyTranscript,
 } = require('../helper/lib/story-plan');
+const {
+  CREATIVE_CONSTRAINTS_SCHEMA,
+  CURRENT_CREATIVE_CONSTRAINT_EXAMPLE,
+  normalizeCreativeConstraints,
+  structuralCreativeConstraints,
+} = require('../helper/lib/creative-constraints');
 
 assert.strictEqual(DEEPSEEK_MODEL, 'deepseek-v4-pro');
 for (const capability of [
@@ -96,10 +102,28 @@ const approvedStoryPlan = {
     },
   ],
 };
+const approvedCreativeConstraints = {
+  schema_version: CREATIVE_CONSTRAINTS_SCHEMA,
+  opener: { exact_text: 'word50 word51', max_start_seconds: 3 },
+  visual_policy: {
+    graphics_exact: 1,
+    broll_exact: 0,
+    opening_punch_required: true,
+    opening_visual_required: false,
+    max_visual_gap_seconds: null,
+  },
+  required_graphic: {
+    kind: 'callout',
+    text: 'WORD60 VS WORD65',
+    anchor_text: exactAnchor(60, 65),
+  },
+  music_allowed: false,
+};
 const approved = validateProposal({
   summary: 'A source-grounded 40 second story.',
   operations: [{ op: 'set_edit_style', style: 'short' }],
   storyPlan: approvedStoryPlan,
+  creativeConstraints: approvedCreativeConstraints,
 }, {
   mediaAnalysis: sourceReport, requireStoryPlan: true,
   requestedDuration: { minSeconds: 35, maxSeconds: 45 },
@@ -108,15 +132,88 @@ assert.ok(approved);
 assert.strictEqual(approved.storyPlan.keep_ranges[0].anchor_text,
   exactAnchor(50, 99));
 assert.strictEqual(approved.storyPlan.keep_ranges[0].source_start_word, 50);
+assert.deepStrictEqual(approved.creativeConstraints, approvedCreativeConstraints);
+assert.strictEqual(approved.creativeConstraints.music_allowed, false);
+assert.ok(Object.isFrozen(approved.creativeConstraints));
+assert.deepStrictEqual(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE, {
+  schema_version: 'autoeditor-creative-constraints/v1',
+  opener: { exact_text: 'Is now a bad time?', max_start_seconds: 3 },
+  visual_policy: {
+    graphics_exact: 1, broll_exact: 0,
+    opening_punch_required: true, opening_visual_required: false,
+    max_visual_gap_seconds: null,
+  },
+  required_graphic: {
+    kind: 'callout', text: 'BAD TIME VS MINUTE',
+    anchor_text: 'is now a bad time versus do you have a minute',
+  },
+  music_allowed: false,
+});
 assert.strictEqual(validateProposal({
   operations: [{ op: 'set_edit_style', style: 'short' }],
 }, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+  creativeConstraints: {
+    ...approvedCreativeConstraints,
+    visual_policy: {
+      ...approvedCreativeConstraints.visual_policy,
+      random_transition_pack: true,
+    },
+  },
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+  creativeConstraints: {
+    ...approvedCreativeConstraints,
+    visual_policy: {
+      ...approvedCreativeConstraints.visual_policy, graphics_exact: 2,
+    },
+  },
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+  creativeConstraints: {
+    ...approvedCreativeConstraints,
+    opener: { exact_text: 'word51 word52', max_start_seconds: 3 },
+  },
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+  creativeConstraints: {
+    ...approvedCreativeConstraints,
+    required_graphic: {
+      ...approvedCreativeConstraints.required_graphic,
+      anchor_text: exactAnchor(200, 205),
+    },
+  },
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(normalizeCreativeConstraints({
+  ...approvedCreativeConstraints,
+  required_graphic: {
+    ...approvedCreativeConstraints.required_graphic,
+    text: 'ONE TWO THREE FOUR FIVE',
+  },
+}, approvedStoryPlan), null);
+assert.throws(() => structuralCreativeConstraints({
+  ...approvedCreativeConstraints,
+  opener: { exact_text: ' word50 word51 ', max_start_seconds: 3 },
+}, approvedStoryPlan), /canonical text/);
 assert.strictEqual(validateProposal({
   operations: [{ op: 'set_edit_style', style: 'short' }],
   storyPlan: {
     ...approvedStoryPlan,
     target_duration: { min_seconds: 150, max_seconds: 160 },
   },
+  creativeConstraints: approvedCreativeConstraints,
 }, {
   mediaAnalysis: sourceReport, requireStoryPlan: true,
   requestedDuration: { minSeconds: 35, maxSeconds: 45 },
@@ -130,6 +227,7 @@ assert.strictEqual(validateProposal({
       approvedStoryPlan.keep_ranges[1],
     ],
   },
+  creativeConstraints: approvedCreativeConstraints,
 }, {
   mediaAnalysis: sourceReport, requireStoryPlan: true,
   requestedDuration: { minSeconds: 35, maxSeconds: 45 },

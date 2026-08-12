@@ -26,6 +26,7 @@ import tempfile, time, wave
 from pathlib import Path
 
 from . import creative_contract, providers
+from .creative_constraints import constraints_sha256
 from .config import (Config, CACHE, SFX_DIR as _SFX_DIR,
                      HOME_DATA as CFGH, VIZ_PROJECT)
 
@@ -384,10 +385,11 @@ def _creator_direction_text(profile_id: str | None,
 def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
                  style: str = "long", *, profile_id: str | None = None,
                  creative: dict | None = None,
-                 profile_sha256_value: str | None = None) -> dict | None:
+                 profile_sha256_value: str | None = None,
+                 constraints: dict | None = None) -> dict | None:
     """Run a V4 Pro director pass and an independent V4 Pro critic pass."""
     sp_punch, sp_broll, sp_gfx = _STYLE_SPACING.get(style, _STYLE_SPACING["long"])
-    style_rules = (
+    base_style_rules = (
         f"SHORTS. Put a punch-in on the opening spoken line. Put b-roll or a "
         f"graphic within 3 seconds of first speech. Keep every gap between "
         f"b-roll or graphics at 12 seconds or less. Punch-ins are limited to "
@@ -399,6 +401,12 @@ def deepseek_edl(words: list[dict], clips: list[dict], duration: float,
         f"or graphics may exceed 75 seconds. Punch-ins are limited to about "
         f"one per {sp_punch} seconds, b-roll one per {sp_broll} seconds, and "
         f"graphics one per {sp_gfx} seconds."
+    )
+    style_rules = (
+        "The APPROVED TYPED CREATIVE CONSTRAINTS below replace generic "
+        "opening-visual, layer-count, and maximum-gap defaults. Obey their "
+        "exact counts, exact opener, required graphic, and music policy."
+        if constraints is not None else base_style_rules
     )
     transcript = creative_contract.transcript_payload(words)
     creator_direction = _creator_direction_text(profile_id, creative)
@@ -473,6 +481,13 @@ but it cannot override transcript grounding, timing validation, collision rules,
 or any release gate.
 11. Return JSON with all five top-level keys even when a list is empty.
 
+APPROVED TYPED CREATIVE CONSTRAINTS:
+{json.dumps(constraints, ensure_ascii=True, sort_keys=True) if constraints is not None else "none"}
+These constraints are executable and take precedence over generic visual
+density. Do not add extra graphics, b-roll, music, or an opening visual when
+their exact policy forbids it. Never paraphrase required_graphic text or its
+anchor_text.
+
 CREATOR SHORT-FORM DIRECTION:
 {creator_direction}
 
@@ -515,7 +530,8 @@ Complete transcript JSON:
         director_errors = []
         try:
             director_edl, director_report = creative_contract.validate_edl(
-                parsed, words, clips, duration, style
+                parsed, words, clips, duration, style,
+                constraints=constraints,
             )
         except creative_contract.CreativeContractError as exc:
             director_edl, director_report = None, None
@@ -561,7 +577,8 @@ CURRENT CANDIDATE JSON:
                 return None
             try:
                 edl, report = creative_contract.validate_edl(
-                    revised, words, clips, duration, style
+                    revised, words, clips, duration, style,
+                    constraints=constraints,
                 )
                 validator_errors = []
                 break
@@ -607,6 +624,10 @@ CURRENT CANDIDATE JSON:
             "transcript_complete": True,
             "profile_id": profile_id,
             "profile_sha256": profile_sha256_value,
+            "creative_constraints_sha256": (
+                constraints_sha256(constraints)
+                if constraints is not None else None
+            ),
         }
         return edl
     except Exception as e:
@@ -706,7 +727,8 @@ def align_edl_to_speech(edl: dict, words: list[dict], duration: float) -> dict:
 def make_edl(words, clips, duration, use_llm=True,
              style: str = "long", *, profile_id: str | None = None,
              creative: dict | None = None,
-             profile_sha256_value: str | None = None) -> tuple[dict, str]:
+             profile_sha256_value: str | None = None,
+             constraints: dict | None = None) -> tuple[dict, str]:
     if use_llm:
         if not words:
             raise RuntimeError(
@@ -723,6 +745,7 @@ def make_edl(words, clips, duration, use_llm=True,
             words, clips, duration, style=style,
             profile_id=profile_id, creative=creative,
             profile_sha256_value=profile_sha256_value,
+            constraints=constraints,
         )
         if edl and edl.get("production_receipt", {}).get(
                 "critic_contract_passed"):

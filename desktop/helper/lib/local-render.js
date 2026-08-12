@@ -2,6 +2,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const { structuralStoryPlan } = require('./story-plan');
+const { structuralCreativeConstraints } = require('./creative-constraints');
 
 const MAX_INPUTS = 20;
 const MAX_SCRIPT_CHARS = 200000;
@@ -303,8 +304,15 @@ function normalizeApplyRequest(input, validateProposal) {
   requirePlainObject(input, 'local apply request');
   const request = normalizeLocalRequest(input);
   const proposal = normalizeProposal(input.proposal);
-  if (Object.prototype.hasOwnProperty.call(proposal, 'storyPlan')) {
+  const hasStoryPlan = Object.prototype.hasOwnProperty.call(proposal, 'storyPlan');
+  const hasCreativeConstraints = Object.prototype.hasOwnProperty.call(
+    proposal, 'creativeConstraints');
+  if (hasStoryPlan !== hasCreativeConstraints) {
+    throw new Error('story plan and creative constraints must be supplied together');
+  }
+  if (hasStoryPlan) {
     structuralStoryPlan(proposal.storyPlan);
+    structuralCreativeConstraints(proposal.creativeConstraints, proposal.storyPlan);
   }
   if (validateProposal !== undefined) {
     if (typeof validateProposal !== 'function') {

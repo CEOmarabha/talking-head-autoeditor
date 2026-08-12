@@ -1431,7 +1431,7 @@ class SafetyContracts(unittest.TestCase):
         source_hash = creative_contract.contract_sha256()
         self.assertEqual(
             source_hash,
-            "b95e53c789c1e0cc9c745dd101275f1844ce951db266cc67c2e99756d9a8157f",
+            "05fd1b1fb0f5c568de135f87b0bb46ed6fcc86718af974d08539e17a53d855db",
         )
         missing_source = (
             Path("/pyinstaller") / "autoeditor" / "creative_contract.py"
@@ -2488,11 +2488,14 @@ class SafetyContracts(unittest.TestCase):
             "edl": None,
             "background": None,
             "no_llm": False,
+            "creative_constraints": None,
         }
         cases = [
             {**base, "no_premium": True, "edl": Path("plan.json")},
             {**base, "no_premium": True, "background": Path("bg.png")},
             {**base, "no_premium": True, "no_llm": True},
+            {**base, "no_premium": True,
+             "creative_constraints": Path("constraints.json")},
             {**base, "edl": Path("plan.json"), "no_llm": True},
         ]
         for values in cases:

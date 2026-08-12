@@ -27,6 +27,7 @@ a = Analysis(
     hiddenimports=hiddenimports + ["autoeditor", "autoeditor.pipeline",
                                    "autoeditor.premium",
                                    "autoeditor.creative_contract",
+                                   "autoeditor.creative_constraints",
                                    "autoeditor.providers",
                                    "autoeditor.profiles",
                                    "autoeditor.config",

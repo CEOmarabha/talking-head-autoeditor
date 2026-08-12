@@ -25,6 +25,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from autoeditor.creative_constraints import (
+    CreativeConstraintsError, validate_creative_constraints,
+)
+
 
 MAX_LOCAL_REQUEST_BYTES = 1_000_000
 MAX_LOCAL_SCRIPT_CHARS = 200_000
@@ -212,6 +216,27 @@ def _story_plan_from_proposal(proposal: dict | None) -> dict | None:
     return json.loads(encoded)
 
 
+def _creative_constraints_from_proposal(
+        proposal: dict | None) -> dict | None:
+    if proposal is None or "creativeConstraints" not in proposal:
+        return None
+    try:
+        constraints = validate_creative_constraints(
+            proposal.get("creativeConstraints")
+        )
+    except CreativeConstraintsError as exc:
+        raise ValueError(
+            f"the approved creative constraints are malformed: {exc}"
+        ) from exc
+    encoded = json.dumps(
+        constraints, ensure_ascii=True, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    if len(encoded.encode("utf-8")) > 32_768:
+        raise ValueError("the approved creative constraints are too large")
+    return json.loads(encoded)
+
+
 def _local_render_request(value: dict) -> dict:
     allowed = {
         "inputs", "outputDir", "projectType", "script", "proposal",
@@ -264,6 +289,12 @@ def _local_render_request(value: dict) -> dict:
     if creative_brief_sha256 != measured_brief_sha256:
         raise ValueError("creative brief digest does not match")
     story_plan = _story_plan_from_proposal(proposal)
+    creative_constraints = _creative_constraints_from_proposal(proposal)
+    if proposal is not None and story_plan is not None \
+            and creative_constraints is None:
+        raise ValueError(
+            "an approved story plan requires typed creative constraints"
+        )
     approved_plan_text = " ".join((
         creative_brief,
         str(proposal.get("summary") or "") if proposal else "",
@@ -285,6 +316,7 @@ def _local_render_request(value: dict) -> dict:
         "vision_attempt": vision_attempt,
         "proposal": proposal,
         "story_plan": story_plan,
+        "creative_constraints": creative_constraints,
     }
 
 
@@ -511,6 +543,15 @@ def local_render() -> int:
                 separators=(",", ":"), allow_nan=False,
             ), encoding="utf-8")
             args.extend(["--story-plan", str(story_file)])
+        if request["creative_constraints"] is not None:
+            constraints_file = work / "approved-creative-constraints.json"
+            constraints_file.write_text(json.dumps(
+                request["creative_constraints"], ensure_ascii=True,
+                sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ), encoding="utf-8")
+            args.extend([
+                "--creative-constraints", str(constraints_file),
+            ])
         deepseek = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
         if not deepseek and "--no-premium" not in args:
             raise RuntimeError(

@@ -7,6 +7,11 @@ const {
   storyTranscript,
   normalizeStoryPlan,
 } = require('./story-plan');
+const {
+  CREATIVE_CONSTRAINTS_SCHEMA,
+  CURRENT_CREATIVE_CONSTRAINT_EXAMPLE,
+  normalizeCreativeConstraints,
+} = require('./creative-constraints');
 
 const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_MEDIA_EVIDENCE_CHARS = 700_000;
@@ -291,10 +296,18 @@ function validateProposal(raw, {
   if ((requireStoryPlan && !storyPlan) || (raw?.storyPlan !== undefined && !storyPlan)) {
     return null;
   }
+  const hasStoryPlan = raw?.storyPlan !== undefined;
+  const hasCreativeConstraints = raw?.creativeConstraints !== undefined;
+  if (hasStoryPlan !== hasCreativeConstraints ||
+      (requireStoryPlan && !hasCreativeConstraints)) return null;
+  const creativeConstraints = !hasCreativeConstraints ? null
+    : normalizeCreativeConstraints(raw.creativeConstraints, storyPlan);
+  if (hasCreativeConstraints && !creativeConstraints) return null;
   return {
     operations: clean,
     summary: cleanText(raw.summary, 400),
     ...(storyPlan ? { storyPlan } : {}),
+    ...(creativeConstraints ? { creativeConstraints } : {}),
   };
 }
 
@@ -482,7 +495,7 @@ Executable operation contract:
 ${JSON.stringify(operationContract)}
 
 Respond as one JSON object exactly shaped like this JSON example:
-{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}],"storyPlan":{"schema_version":"${STORY_PLAN_SCHEMA}","timeline":"${STORY_TIMELINE}","target_duration":{"min_seconds":35,"max_seconds":45},"hook_anchor_id":"hook","closer_anchor_id":"closer","keep_ranges":[{"anchor_id":"hook","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":0,"source_end_word":12,"source_start_seconds":0.0,"source_end_seconds":4.2},{"anchor_id":"closer","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":100,"source_end_word":112,"source_start_seconds":36.0,"source_end_seconds":40.0}]}}
+{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}],"storyPlan":{"schema_version":"${STORY_PLAN_SCHEMA}","timeline":"${STORY_TIMELINE}","target_duration":{"min_seconds":35,"max_seconds":45},"hook_anchor_id":"hook","closer_anchor_id":"closer","keep_ranges":[{"anchor_id":"hook","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":0,"source_end_word":12,"source_start_seconds":0.0,"source_end_seconds":4.2},{"anchor_id":"closer","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":100,"source_end_word":112,"source_start_seconds":36.0,"source_end_seconds":40.0}]},"creativeConstraints":${JSON.stringify(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE)}}
 
 Story-cut contract for this request:
 - A storyPlan is ${storyPlanRequired ? 'MANDATORY' : 'not required'} for an executable response.
@@ -502,6 +515,28 @@ Story-cut contract for this request:
 - If the complete timed transcript is unavailable, the requested duration
   cannot be met with exact transcript-grounded ranges, or the plan will not
   fit, return operations as [] and explain that rendering is blocked.
+
+Creative-constraint contract for this request:
+- creativeConstraints is mandatory alongside every executable storyPlan and
+  must use schema_version "${CREATIVE_CONSTRAINTS_SCHEMA}" with only the exact
+  object keys shown in the example. Never return either object without the
+  other.
+- opener.exact_text must exactly prefix the first keep range's anchor_text.
+  required_graphic.anchor_text must be an exact contiguous excerpt of the kept
+  story transcript. exact_text is 1-160 canonical characters and its finite
+  max_start_seconds is 0-10. Graphic copy is 1-44 canonical uppercase
+  characters and at most four words; anchor_text is 1-400 canonical characters;
+  kind is only keyword, stat, callout, or bars.
+- graphics_exact and broll_exact are literal counts, not suggestions. Exactly
+  one graphic requires the non-null required_graphic shown; all other graphic
+  counts require null. Counts are integer 0-16; max_visual_gap_seconds is null
+  or a finite 1-300; opening flags and music_allowed are true booleans.
+  music_allowed=false means no music may be planned.
+- The current approved example is exactly one comparison callout, zero B-roll,
+  and no music: ${JSON.stringify(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE)}
+- Copy the current user's actual approved opener and graphic anchor from the
+  kept source transcript. If those exact constraints cannot be grounded in the
+  storyPlan, return operations as [] and explain that rendering is blocked.
 
 For an attached-video editing request, the message must cover: a clear video
 summary; strongest hook and useful moments; the proposed edit; format, pacing,

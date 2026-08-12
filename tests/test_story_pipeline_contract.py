@@ -67,6 +67,29 @@ def _plan():
     }
 
 
+def _creative_constraints():
+    return {
+        "schema_version": "autoeditor-creative-constraints/v1",
+        "opener": {
+            "exact_text": "word50 word51 word52",
+            "max_start_seconds": 3.0,
+        },
+        "visual_policy": {
+            "graphics_exact": 1,
+            "broll_exact": 0,
+            "opening_punch_required": True,
+            "opening_visual_required": False,
+            "max_visual_gap_seconds": None,
+        },
+        "required_graphic": {
+            "kind": "callout",
+            "text": "WORD300 VS WORD301",
+            "anchor_text": "word300 word301 word302 word303 word304",
+        },
+        "music_allowed": False,
+    }
+
+
 class ApprovedStoryPipelineContractTests(unittest.TestCase):
     def test_approved_plan_binds_source_transcript_and_exact_complement(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -138,13 +161,39 @@ class ApprovedStoryPipelineContractTests(unittest.TestCase):
                 helper_daemon_entry._local_render_request(request)
 
             request["proposal"] = {
-                **request["proposal"], "storyPlan": copy.deepcopy(_plan())
+                **request["proposal"], "storyPlan": copy.deepcopy(_plan()),
+                "creativeConstraints": _creative_constraints(),
             }
             normalized = helper_daemon_entry._local_render_request(request)
             self.assertEqual(
                 normalized["story_plan"]["target_duration"],
                 {"min_seconds": 35.0, "max_seconds": 45.0},
             )
+            self.assertEqual(
+                normalized["creative_constraints"]["visual_policy"][
+                    "graphics_exact"
+                ], 1,
+            )
+
+    def test_daemon_rejects_story_plan_without_typed_creative_constraints(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.mov"
+            source.write_bytes(b"source")
+            request = {
+                "inputs": [str(source)], "outputDir": str(root),
+                "projectType": "short", "script": "",
+                "cachedTranscript": "", "creativeBrief": "",
+                "creativeBriefSha256": "",
+                "proposal": {
+                    "summary": "approved edit",
+                    "operations": [{"op": "set_edit_style", "style": "short"}],
+                    "storyPlan": _plan(),
+                },
+            }
+            with self.assertRaisesRegex(
+                    ValueError, "requires typed creative constraints"):
+                helper_daemon_entry._local_render_request(request)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,10 @@ from pathlib import Path
 
 from . import creative_contract, providers
 from .config import Config, font_file as _font_file
+from .creative_constraints import (
+    CreativeConstraintsError, constraints_sha256,
+    validate_creative_constraints,
+)
 from .story_edit import (
     StoryEditContractError, derive_complementary_cuts, kept_duration,
     story_plan_sha256, validate_story_plan,
@@ -1836,6 +1840,79 @@ def script_correct(words: list[dict], script_path: Path) -> list[dict]:
     return words
 
 
+def _approved_opener_check(words: list[dict], constraints: dict) -> dict:
+    """Find the exact approved opener on the measured word timeline."""
+    exact = constraints["opener"]["exact_text"]
+    expected = re.findall(r"[A-Za-z0-9']+(?:[?!.])?", exact)
+    norm = lambda value: re.sub(r"[^a-z0-9']", "", value.lower())
+    wanted = [norm(token) for token in expected]
+    limit = float(constraints["opener"]["max_start_seconds"])
+    starts = []
+    for start in range(max(0, len(words) - len(expected) + 1)):
+        if float(words[start].get("s", limit + 1)) > limit:
+            break
+        heard = [norm(str(word.get("w", "")))
+                 for word in words[start:start + len(expected)]]
+        if heard == wanted:
+            starts.append(start)
+    return {
+        "ok": bool(starts),
+        "exact_text": exact,
+        "max_start_seconds": limit,
+        "matched_start_seconds": (
+            round(float(words[starts[0]]["s"]), 3) if starts else None
+        ),
+    }
+
+
+def apply_approved_opener(words: list[dict], constraints: dict) -> list[dict]:
+    """Use approved text for a phonetically matching low-confidence opener.
+
+    Audio timing stays untouched. This closes the recurrent Whisper
+    ``is now`` -> ``it's not`` error without treating arbitrary script prose
+    as authoritative over unrelated, confidently spoken words.
+    """
+    check = _approved_opener_check(words, constraints)
+    if check["ok"]:
+        return words
+    import difflib
+    exact = constraints["opener"]["exact_text"]
+    expected = re.findall(r"[A-Za-z0-9']+(?:[?!.])?", exact)
+    norm = lambda value: re.sub(r"[^a-z0-9']", "", value.lower())
+    wanted = [norm(token) for token in expected]
+    limit = float(constraints["opener"]["max_start_seconds"])
+    candidates = []
+    for start in range(max(0, len(words) - len(expected) + 1)):
+        if float(words[start].get("s", limit + 1)) > limit:
+            break
+        window = words[start:start + len(expected)]
+        heard = [norm(str(word.get("w", ""))) for word in window]
+        ratio = difflib.SequenceMatcher(
+            a=wanted, b=heard, autojunk=False
+        ).ratio()
+        character_ratio = difflib.SequenceMatcher(
+            a=" ".join(wanted), b=" ".join(heard), autojunk=False
+        ).ratio()
+        confidence = sum(float(word.get("p", 1.0)) for word in window) \
+            / max(1, len(window))
+        candidates.append((ratio + character_ratio, -confidence, start,
+                           ratio, character_ratio))
+    if not candidates:
+        return words
+    _score, _confidence, start, ratio, character_ratio = max(candidates)
+    window = words[start:start + len(expected)]
+    uncertain = any(float(word.get("p", 1.0)) < 0.75 for word in window)
+    if ratio < 0.60 or character_ratio < 0.72 or not uncertain:
+        return words
+    for offset, token in enumerate(expected):
+        words[start + offset]["w"] = token
+    log(
+        "captions: applied the exact approved opener over a measured "
+        "low-confidence ASR homophone"
+    )
+    return words
+
+
 def _retranscribe_post_cut(video: Path, workdir: Path,
                            script_path: Path | None) -> list[dict]:
     """Refresh cut-relative timing and restore script-backed caption spelling."""
@@ -2679,6 +2756,8 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    outdir: Path, retention: float = 1.0,
                    edl: dict | None = None,
                    approved_creative_brief_sha256: str | None = None,
+                   approved_creative_constraints: dict | None = None,
+                   music_present: bool = False,
                    approved_story_retention: float | None = None,
                    visual_master: Path | None = None,
                    visual_reference: Path | None = None,
@@ -2833,6 +2912,52 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                 == approved_creative_brief_sha256
         )
         plan_ok = plan_ok and brief_bound
+        constraints_hash = (
+            constraints_sha256(approved_creative_constraints)
+            if approved_creative_constraints is not None else None
+        )
+        opener_check = (
+            _approved_opener_check(words, approved_creative_constraints)
+            if approved_creative_constraints is not None else {"ok": True}
+        )
+        required_graphic = (
+            approved_creative_constraints["required_graphic"]
+            if approved_creative_constraints is not None else None
+        )
+        required_graphic_ok = (
+            required_graphic is None
+            or any(
+                event.get("kind") == required_graphic["kind"]
+                and re.sub(r"\s+", " ", str(event.get("text", ""))).strip()
+                    == required_graphic["text"]
+                and re.sub(
+                    r"\s+", " ", str(event.get("anchor_quote", ""))
+                ).strip() == required_graphic["anchor_text"]
+                for event in edl.get("graphics", [])
+            )
+        )
+        constraints_bound = (
+            approved_creative_constraints is None
+            or (
+                receipt.get("creative_constraints_sha256")
+                    == constraints_hash
+                and len(edl.get("graphics", []))
+                    == approved_creative_constraints["visual_policy"][
+                        "graphics_exact"
+                    ]
+                and len(edl.get("broll", []))
+                    == approved_creative_constraints["visual_policy"][
+                        "broll_exact"
+                    ]
+                and (
+                    approved_creative_constraints["music_allowed"]
+                    or not music_present
+                )
+                and opener_check["ok"]
+                and required_graphic_ok
+            )
+        )
+        plan_ok = plan_ok and constraints_bound
         qa["checks"]["creative_plan_provenance"] = {
             "ok": plan_ok,
             "source": source,
@@ -2840,8 +2965,24 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
             "protocol_version": receipt.get("protocol_version"),
             "approved_creative_brief_sha256": receipt.get(
                 "approved_creative_brief_sha256"),
+            "creative_constraints_sha256": receipt.get(
+                "creative_constraints_sha256"),
             "note": "" if plan_ok else
                     "creative plan lacks a complete trusted production receipt",
+        }
+        qa["checks"]["approved_creative_constraints"] = {
+            "ok": constraints_bound,
+            "expected_sha256": constraints_hash,
+            "receipt_sha256": receipt.get("creative_constraints_sha256"),
+            "graphics": len(edl.get("graphics", [])),
+            "broll": len(edl.get("broll", [])),
+            "music_present": music_present,
+            "opener": opener_check,
+            "required_graphic_ok": required_graphic_ok,
+            "note": "" if constraints_bound else (
+                "the rendered layers do not exactly match the approved "
+                "typed creative constraints"
+            ),
         }
         qa["checks"]["creator_profile_bound"] = {
             "ok": profile_bound,
@@ -2954,6 +3095,10 @@ def _option_conflicts(args: argparse.Namespace) -> list[str]:
         conflicts.append("--background cannot be used with --no-premium")
     if args.no_premium and args.no_llm:
         conflicts.append("--no-llm has no effect with --no-premium")
+    if args.no_premium and getattr(args, "creative_constraints", None):
+        conflicts.append(
+            "--creative-constraints cannot be used with --no-premium"
+        )
     if args.edl and args.no_llm:
         conflicts.append("--no-llm has no effect with --edl")
     if args.edl and getattr(args, "story_plan", None):
@@ -3031,6 +3176,9 @@ def main():
     ap.add_argument("--creative-brief", type=Path, default=None,
                     help="the exact user-approved edit brief; treated as "
                          "bounded director context, never as transcript data")
+    ap.add_argument("--creative-constraints", type=Path, default=None,
+                    help="closed JSON creative policy approved with the edit "
+                         "plan; exact opener/layer counts are hard gates")
     ap.add_argument("--av-offset", type=int, default=None,
                     help="source AV offset correction in ms; positive = delay "
                          "audio (audio leads video). Omit to use a valid "
@@ -3076,7 +3224,8 @@ def main():
         sys.exit(0)
     try:
         for attr in (
-                "script", "creative_brief", "edl", "story_plan", "music",
+                "script", "creative_brief", "creative_constraints", "edl",
+                "story_plan", "music",
                 "background"):
             setattr(
                 a, attr,
@@ -3105,6 +3254,27 @@ def main():
     story_cut_receipt = None
     story_source_words = None
     approved_story_retention = None
+    approved_creative_constraints = None
+    if a.creative_constraints:
+        try:
+            raw_constraints = a.creative_constraints.read_text(
+                encoding="utf-8", errors="strict"
+            )
+            if len(raw_constraints.encode("utf-8")) > 32_768:
+                raise CreativeConstraintsError(
+                    "creative constraints exceed 32 KiB"
+                )
+            approved_creative_constraints = validate_creative_constraints(
+                json.loads(raw_constraints)
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError,
+                CreativeConstraintsError) as error:
+            sys.exit(f"FATAL: approved creative constraints are invalid: {error}")
+        if a.music and not approved_creative_constraints["music_allowed"]:
+            sys.exit(
+                "FATAL: a music file was supplied but the approved creative "
+                "constraints forbid music"
+            )
     if a.story_plan:
         log("approved story plan: transcribing untouched source timeline")
         story_source_words = transcribe(orig_src, work)
@@ -3248,6 +3418,8 @@ def main():
                 "gate 4 will judge any survivors")
     if a.script and a.script.exists():
         words = script_correct(words, a.script)
+    if approved_creative_constraints is not None:
+        words = apply_approved_opener(words, approved_creative_constraints)
     # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
     # director mode (--edl) the director owns every cut decision.
     if not story_plan and not (a.edl and a.edl.exists()):
@@ -3302,12 +3474,18 @@ def main():
                                          use_llm=not a.no_llm, style=style,
                                          profile_id=CFG.profile_id,
                                          creative=render_creative,
+                                         constraints=(
+                                             approved_creative_constraints),
                                          profile_sha256_value=(
                                              active_profile_sha256))
             if approved_creative_brief_sha256:
                 edl.setdefault("production_receipt", {})[
                     "approved_creative_brief_sha256"
                 ] = approved_creative_brief_sha256
+            if approved_creative_constraints is not None:
+                edl.setdefault("production_receipt", {})[
+                    "creative_constraints_sha256"
+                ] = constraints_sha256(approved_creative_constraints)
         if story_cut_receipt:
             edl.setdefault("production_receipt", {})[
                 "approved_story_plan_sha256"
@@ -3421,6 +3599,9 @@ def main():
                         edl=(edl if (not a.no_premium and words) else None),
                         approved_creative_brief_sha256=(
                             approved_creative_brief_sha256),
+                        approved_creative_constraints=(
+                            approved_creative_constraints),
+                        music_present=a.music is not None,
                         approved_story_retention=approved_story_retention,
                         visual_master=master,
                         visual_reference=cut,

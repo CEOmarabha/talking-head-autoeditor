@@ -249,19 +249,80 @@ try {
       },
     ],
   };
+  const creativeConstraints = {
+    schema_version: 'autoeditor-creative-constraints/v1',
+    opener: { exact_text: 'opening hook', max_start_seconds: 3 },
+    visual_policy: {
+      graphics_exact: 1,
+      broll_exact: 0,
+      opening_punch_required: true,
+      opening_visual_required: false,
+      max_visual_gap_seconds: null,
+    },
+    required_graphic: {
+      kind: 'callout',
+      text: 'OPENING VS CLOSING',
+      anchor_text: 'closing line',
+    },
+    music_allowed: false,
+  };
   const storyApply = normalizeApplyRequest({
     inputs: [first], outputDir, projectType: 'short', script: '',
-    proposal: { operations: [], storyPlan },
+    proposal: { operations: [], storyPlan, creativeConstraints },
   });
   assert.deepStrictEqual(storyApply.proposal.storyPlan, storyPlan);
+  assert.deepStrictEqual(storyApply.proposal.creativeConstraints,
+    creativeConstraints);
   assert.throws(() => normalizeApplyRequest({
     inputs: [first], outputDir, projectType: 'short', script: '',
     proposal: {
       operations: [], storyPlan: {
         ...storyPlan, keep_ranges: storyPlan.keep_ranges.slice(0, 1),
-      },
+      }, creativeConstraints,
     },
   }), /story plan/);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: { operations: [], storyPlan },
+  }), /supplied together/);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: { operations: [], creativeConstraints },
+  }), /supplied together/);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: {
+      operations: [], storyPlan,
+      creativeConstraints: {
+        ...creativeConstraints,
+        visual_policy: {
+          ...creativeConstraints.visual_policy, surprise_transition: true,
+        },
+      },
+    },
+  }), /creative constraints visual policy/);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: {
+      operations: [], storyPlan,
+      creativeConstraints: {
+        ...creativeConstraints,
+        visual_policy: {
+          ...creativeConstraints.visual_policy, graphics_exact: 2,
+        },
+      },
+    },
+  }), /requires graphics_exact=1/);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: {
+      operations: [], storyPlan,
+      creativeConstraints: {
+        ...creativeConstraints,
+        opener: { exact_text: 'closing line', max_start_seconds: 3 },
+      },
+    },
+  }), /prefix the first kept story anchor/);
   assert.throws(() => normalizeApplyRequest({
     videos: [first], outputDir, projectType: 'long', script: '', proposal: [],
   }), /proposal must be an object/);
