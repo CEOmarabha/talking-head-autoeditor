@@ -11,6 +11,13 @@ from pathlib import Path
 
 from . import creative_contract, providers
 from .config import Config, font_file as _font_file
+from .story_edit import (
+    StoryEditContractError, derive_complementary_cuts, kept_duration,
+    story_plan_sha256, validate_story_plan,
+)
+from .story_qa import (
+    STORY_CUT_RECEIPT_SCHEMA_VERSION, validate_story_acceptance,
+)
 
 CFG = Config.load()
 providers.load_dotenv()
@@ -52,10 +59,14 @@ def _console_safe(value: object) -> str:
 
 def log(msg):
     safe = _console_safe(msg)
-    print(f"[pse-edit {time.strftime('%H:%M:%S')}] {safe}", flush=True)
     if os.environ.get("AUTOEDITOR_PROGRESS_JSON"):
-        # machine-readable mirror for the desktop shell; one JSON per line
+        # The desktop daemon turns this single structured event back into the
+        # raw Technical-details line.  Emitting a human line as well caused
+        # two UI updates for every message and the second, generic `log`
+        # event overwrote the useful plain-English stage.
         print(json.dumps({"event": "log", "msg": str(msg)}), flush=True)
+    else:
+        print(f"[pse-edit {time.strftime('%H:%M:%S')}] {safe}", flush=True)
 
 
 def emit(event: dict):
@@ -999,6 +1010,52 @@ def _dur(path: Path) -> float:
         return float(p.stdout.decode().strip())
     except ValueError:
         return 0.0
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _approved_story_cut(source: Path, source_duration: float,
+                        source_words: list[dict], plan_path: Path
+                        ) -> tuple[dict, list[dict], dict]:
+    """Validate and bind an approved plan to untouched source evidence."""
+    try:
+        raw_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan = validate_story_plan(
+            raw_plan, source_words, source_duration,
+            duration_tolerance=0.05,
+        )
+        cuts = derive_complementary_cuts(plan, source_duration)
+        planned_seconds = kept_duration(plan)
+    except (OSError, json.JSONDecodeError, StoryEditContractError,
+            TypeError, ValueError) as error:
+        raise ValueError(
+            f"approved story plan failed source-transcript validation: {error}"
+        ) from error
+    receipt = {
+        "schema_version": STORY_CUT_RECEIPT_SCHEMA_VERSION,
+        "source": "deepseek",
+        "source_sha256": _file_sha256(source),
+        "story_plan_sha256": story_plan_sha256(plan),
+        "transcript_sha256": _canonical_sha256(source_words),
+        "timeline": "source_seconds",
+        "kept_duration_seconds": planned_seconds,
+        "derived_cuts_sha256": _canonical_sha256(cuts),
+    }
+    return plan, cuts, receipt
 
 
 class LowSpeechCutError(RuntimeError):
@@ -2622,6 +2679,7 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    outdir: Path, retention: float = 1.0,
                    edl: dict | None = None,
                    approved_creative_brief_sha256: str | None = None,
+                   approved_story_retention: float | None = None,
                    visual_master: Path | None = None,
                    visual_reference: Path | None = None,
                    captions_burn_requested: bool = True,
@@ -2637,13 +2695,33 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     }
     # 2026-07-23 incident guard: a silence-cut that deletes actual speech
     # must NEVER pass QA silently. retention==1.0 means source-uncut fallback.
+    if approved_story_retention is None:
+        retention_ok = retention >= 0.55
+        retention_note = "" if retention_ok else (
+            "silence-cut removed too much, likely quiet audio; "
+            "re-record closer to mic or re-run (guardrail should have "
+            "shipped source uncut)"
+        )
+    else:
+        retention_ok = (
+            0.0 < approved_story_retention <= 1.0
+            and abs(retention - approved_story_retention) <= 0.01
+        )
+        retention_note = "" if retention_ok else (
+            "actual speech retention does not match the exact approved "
+            "source-timeline story plan"
+        )
     qa["checks"]["speech_retention"] = {
         "kept_ratio": round(retention, 3),
-        "ok": retention >= 0.55,
-        "note": "" if retention >= 0.55 else
-                "silence-cut removed too much, likely quiet audio; "
-                "re-record closer to mic or re-run (guardrail should have "
-                "shipped source uncut)"}
+        "approved_ratio": (
+            round(approved_story_retention, 3)
+            if approved_story_retention is not None else None
+        ),
+        "mode": "approved_story_plan" if approved_story_retention is not None
+                else "automatic_cleanup",
+        "ok": retention_ok,
+        "note": retention_note,
+    }
     primary = next(iter(outs.values()))
     p = run([FFMPEG, "-i", primary, "-af",
              "loudnorm=I=-14:TP=-1:print_format=json", "-f", "null", "-"], check=False)
@@ -2878,6 +2956,10 @@ def _option_conflicts(args: argparse.Namespace) -> list[str]:
         conflicts.append("--no-llm has no effect with --no-premium")
     if args.edl and args.no_llm:
         conflicts.append("--no-llm has no effect with --edl")
+    if args.edl and getattr(args, "story_plan", None):
+        conflicts.append(
+            "--story-plan cannot be combined with a second director --edl"
+        )
     return conflicts
 
 
@@ -2936,6 +3018,10 @@ def main():
     ap.add_argument("--edl", type=Path, default=None,
                     help="use a hand-authored EDL json (director mode); "
                          "skips DeepSeek/heuristic")
+    ap.add_argument("--story-plan", type=Path, default=None,
+                    help="use the exact approved transcript-grounded source "
+                         "timeline keep plan; fails closed if it cannot be "
+                         "validated against untouched-source ASR")
     ap.add_argument("--background", type=Path, default=None,
                     help="backdrop image: chromakey the green screen and "
                          "composite this behind you (zone-key chain)")
@@ -2989,7 +3075,9 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
         sys.exit(0)
     try:
-        for attr in ("script", "creative_brief", "edl", "music", "background"):
+        for attr in (
+                "script", "creative_brief", "edl", "story_plan", "music",
+                "background"):
             setattr(
                 a, attr,
                 _required_input_file(getattr(a, attr), f"--{attr}")
@@ -3011,6 +3099,36 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="pse-edit-"))
     t0 = time.time()
     info = preflight(src)
+    source_duration = info["duration"]
+    story_plan = None
+    story_cuts = None
+    story_cut_receipt = None
+    story_source_words = None
+    approved_story_retention = None
+    if a.story_plan:
+        log("approved story plan: transcribing untouched source timeline")
+        story_source_words = transcribe(orig_src, work)
+        try:
+            story_plan, story_cuts, story_cut_receipt = _approved_story_cut(
+                orig_src, source_duration, story_source_words, a.story_plan,
+            )
+        except ValueError as error:
+            shutil.rmtree(work, ignore_errors=True)
+            sys.exit(f"FATAL: {error}")
+        approved_story_retention = (
+            story_cut_receipt["kept_duration_seconds"] / source_duration
+        )
+        (outdir / "APPROVED_STORY_PLAN.json").write_text(
+            json.dumps(story_plan, indent=2), encoding="utf-8"
+        )
+        (outdir / "STORY_CUT_RECEIPT.json").write_text(
+            json.dumps(story_cut_receipt, indent=2), encoding="utf-8"
+        )
+        log(
+            "approved story plan: source-bound "
+            f"{story_cut_receipt['story_plan_sha256'][:12]}, "
+            f"keep {story_cut_receipt['kept_duration_seconds']:.1f}s"
+        )
     fixed = deletterbox(src, work)
     if fixed != src:
         src = fixed
@@ -3023,10 +3141,22 @@ def main():
     except ValueError as e:
         sys.exit(f"FATAL: refusing uncertified A/V correction: {e}")
     log(f"av-offset: {cert_note}")
+    if story_plan and offset:
+        shutil.rmtree(work, ignore_errors=True)
+        sys.exit(
+            "FATAL: a nonzero A/V correction would change the approved "
+            "source transcript timebase; refusing to shift story anchors"
+        )
     if offset:
         log(f"av-offset: applying certified {offset:+d}ms")
     src = cfr_normalize(src, work, av_offset_ms=offset)
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
+    if story_plan and abs(info["duration"] - source_duration) > 0.05:
+        shutil.rmtree(work, ignore_errors=True)
+        sys.exit(
+            "FATAL: normalized media changed the approved source timeline; "
+            "refusing to apply story anchors to a different timebase"
+        )
     # ---- style profile: shorts/reels grammar vs long-form lesson grammar
     style = _resolve_style(a.style, CFG, info)
     cut_settings = _cut_settings(style, CFG)
@@ -3045,22 +3175,39 @@ def main():
             PROFILE[k] = int(ov) if k == "cap_words" else float(ov)
     log(f"phase 1: {info['width']}x{info['height']} {info['duration']:.1f}s "
         f"ok, style={style}")
-    cut, retention, raw_words = word_guarded_cut(
-        src, work,
-        min_pause=cut_settings["min_pause"],
-        head=cut_settings["head"],
-        tail=cut_settings["tail"],
-    )
+    if story_plan:
+        cut = apply_cuts(src, story_cuts, work)
+        actual_story_duration = _dur(cut)
+        target = story_plan["target_duration"]
+        if not (
+                target["min_seconds"] <= actual_story_duration
+                <= target["max_seconds"]):
+            shutil.rmtree(work, ignore_errors=True)
+            sys.exit(
+                "FATAL: approved story cut produced "
+                f"{actual_story_duration:.3f}s, outside the required "
+                f"{target['min_seconds']:.3f}-{target['max_seconds']:.3f}s"
+            )
+        retention = actual_story_duration / source_duration
+        raw_words = story_source_words
+        words = transcribe(cut, work)
+    else:
+        cut, retention, raw_words = word_guarded_cut(
+            src, work,
+            min_pause=cut_settings["min_pause"],
+            head=cut_settings["head"],
+            tail=cut_settings["tail"],
+        )
+        words = transcribe(cut, work)
     # every downstream layer (caption band length above all) is built against
     # info["duration"], leaving the PRE-cut value stretched the master ~21s
     # past the end of speech with a dead tail (2026-07-24).
     info["duration"] = _dur(cut)
-    words = transcribe(cut, work)
     log(f"phase 3: {len(words)} words post-cut "
         f"(raw had {len(raw_words)})")
     # ---- cleanup pass: flubbed retakes + dead air the raw pass missed.
     # Runs in AUTO mode only; in director mode (--edl) you owns every cut.
-    if not (a.edl and a.edl.exists()):
+    if not story_plan and not (a.edl and a.edl.exists()):
         converged = False
         for round_no in range(1, MAX_CLEANUP_PASSES + 1):
             cleanup = (detect_retakes(
@@ -3103,7 +3250,7 @@ def main():
         words = script_correct(words, a.script)
     # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
     # director mode (--edl) the director owns every cut decision.
-    if not (a.edl and a.edl.exists()):
+    if not story_plan and not (a.edl and a.edl.exists()):
         anomalies = detect_anomaly_cuts(cut, words, a.script)
         if anomalies:
             cut = apply_cuts(cut, anomalies, work)
@@ -3161,6 +3308,13 @@ def main():
                 edl.setdefault("production_receipt", {})[
                     "approved_creative_brief_sha256"
                 ] = approved_creative_brief_sha256
+        if story_cut_receipt:
+            edl.setdefault("production_receipt", {})[
+                "approved_story_plan_sha256"
+            ] = story_cut_receipt["story_plan_sha256"]
+            edl["production_receipt"]["story_cut_receipt"] = dict(
+                story_cut_receipt
+            )
         log(f"phase 4p: EDL via {edl_src}, {len(edl['punch_ins'])} punch-ins, "
             f"{len(edl['broll'])} b-roll ({len(clips)} clips avail), "
             f"{len(edl['graphics'])} graphics")
@@ -3267,6 +3421,7 @@ def main():
                         edl=(edl if (not a.no_premium and words) else None),
                         approved_creative_brief_sha256=(
                             approved_creative_brief_sha256),
+                        approved_story_retention=approved_story_retention,
                         visual_master=master,
                         visual_reference=cut,
                         captions_burn_requested=not a.no_burn,
@@ -3294,6 +3449,30 @@ def main():
     # Every remaining delivery gate consumes the delivered artifact's own
     # transcript, never an intermediate transcript.
     final_words = transcribe(main_out_v, work)
+    if story_plan:
+        story_acceptance = validate_story_acceptance(
+            final_duration_seconds=_dur(main_out_v),
+            final_words=final_words,
+            story_plan=story_plan,
+            story_cut_receipt=story_cut_receipt,
+            expected_receipt_source="deepseek",
+            expected_source_sha256=story_cut_receipt["source_sha256"],
+        )
+        qa["checks"]["approved_story_edit"] = {
+            "ok": story_acceptance["pass"],
+            "story_plan_sha256": story_cut_receipt[
+                "story_plan_sha256"
+            ],
+            "acceptance": story_acceptance,
+            "note": "" if story_acceptance["pass"] else (
+                "delivered artifact does not contain the exact approved "
+                "story duration and transcript anchors"
+            ),
+        }
+        qa["pass"] = qa["pass"] and story_acceptance["pass"]
+        (outdir / "STORY_ACCEPTANCE.json").write_text(
+            json.dumps(story_acceptance, indent=2), encoding="utf-8"
+        )
     # GATE 4: no flubbed take may survive into the delivered file.
     residue = verify_no_retakes(final_words, a.script, work)
     qa["checks"]["retake_residue"] = residue

@@ -18,9 +18,25 @@ const {
 assert.strictEqual(MODEL_ID, 'HuggingFaceTB/SmolVLM2-256M-Video-Instruct');
 assert.strictEqual(MODEL_REVISION, '067788b187b95ebe7b2e040b3e4299e342e5b8fd');
 
-assert.deepStrictEqual(sampleTimes(10, 4), [0.1, 1, 1.25, 9.95]);
-assert.deepStrictEqual(sampleTimes(60, 8),
-  [0.1, 1, 2.5, 3.75, 11.25, 18.75, 26.25, 59.95]);
+assert.deepStrictEqual(sampleTimes(10, 4), [0.1, 1, 2.5, 9.95]);
+
+const fortyFiveSecondSamples = sampleTimes(45, 8);
+assert.strictEqual(fortyFiveSecondSamples.length, 8);
+assert.deepStrictEqual(fortyFiveSecondSamples.slice(0, 3), [0.1, 1, 2.5]);
+assert.strictEqual(fortyFiveSecondSamples.at(-1), 44.95);
+assert.ok(fortyFiveSecondSamples.some((time) => time > 15 && time < 30),
+  '45-second sampling must cover the timeline interior');
+assert.ok(fortyFiveSecondSamples.some((time) => time > 33 && time < 44.95),
+  '45-second sampling must cover the late interior before the final frame');
+
+const twoMinuteSamples = sampleTimes(154, 8);
+assert.strictEqual(twoMinuteSamples.length, 8);
+assert.deepStrictEqual(twoMinuteSamples.slice(0, 3), [0.1, 1, 2.5]);
+assert.strictEqual(twoMinuteSamples.at(-1), 153.95);
+assert.ok(twoMinuteSamples.some((time) => time > 70 && time < 110),
+  '154-second sampling must cover the middle of the artifact');
+assert.ok(twoMinuteSamples.some((time) => time > 115 && time < 145),
+  '154-second sampling must cover the late interior before the final frame');
 assert.deepStrictEqual(sampleTimes(0, 4), [0]);
 
 const probe = summarizeProbe({

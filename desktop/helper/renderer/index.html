@@ -91,6 +91,72 @@
         </div>
       </details>
 
+      <section id="preference-feedback" class="preference-feedback hidden" aria-labelledby="preference-feedback-title">
+        <div class="preference-heading">
+          <div>
+            <h3 id="preference-feedback-title">Compare this revision</h3>
+            <p>Optional: explicitly teach AutoEditor which reviewed version you prefer.</p>
+          </div>
+          <div class="comparison-actions">
+            <button id="feedback-open-before" type="button">Open prior</button>
+            <button id="feedback-open-after" type="button">Open revision</button>
+          </div>
+        </div>
+        <div class="comparison-files" aria-label="Versions being compared">
+          <span>Prior: <strong id="feedback-before-name"></strong></span>
+          <span>Revision: <strong id="feedback-after-name"></strong></span>
+        </div>
+
+        <fieldset>
+          <legend>Which reviewed version is better?</legend>
+          <label><input type="radio" name="feedback-preferred" value="before"> Prior version</label>
+          <label><input type="radio" name="feedback-preferred" value="after"> Revised version</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>What defects influenced your choice?</legend>
+          <div id="feedback-defects" class="feedback-options">
+            <label><input type="checkbox" value="captions"> Captions</label>
+            <label><input type="checkbox" value="audio"> Audio</label>
+            <label><input type="checkbox" value="sound-design"> Sound design</label>
+            <label><input type="checkbox" value="transitions"> Transitions</label>
+            <label><input type="checkbox" value="pacing"> Pacing</label>
+            <label><input type="checkbox" value="cuts"> Cuts</label>
+            <label><input type="checkbox" value="continuity"> Continuity</label>
+            <label><input type="checkbox" value="framing"> Framing</label>
+            <label><input type="checkbox" value="color"> Color</label>
+            <label><input type="checkbox" value="graphics"> Graphics</label>
+            <label><input type="checkbox" value="b-roll"> B-roll</label>
+            <label><input type="checkbox" value="accessibility"> Accessibility</label>
+            <label><input type="checkbox" value="export"> Export</label>
+            <label><input type="checkbox" value="other"> Other</label>
+          </div>
+        </fieldset>
+
+        <label for="feedback-timecodes">Timecoded examples</label>
+        <p class="field-help">One per line: version | start | end | category | note. Example: before | 00:12.000 | 00:15.500 | captions | Covers the speaker's face</p>
+        <textarea id="feedback-timecodes" rows="3" maxlength="6000" placeholder="before | 00:12.000 | 00:15.500 | captions | Covers the speaker's face"></textarea>
+
+        <label for="feedback-rationale">Why is your choice better?</label>
+        <textarea id="feedback-rationale" rows="3" maxlength="1200" placeholder="Describe the visible or audible difference you personally reviewed."></textarea>
+
+        <fieldset>
+          <legend>Where should this preference apply?</legend>
+          <label><input type="radio" name="feedback-scope" value="project" checked> This project</label>
+          <label><input type="radio" name="feedback-scope" value="account"> My future AutoEditor projects</label>
+        </fieldset>
+
+        <label class="feedback-consent" for="feedback-consent">
+          <input id="feedback-consent" type="checkbox">
+          <span>I separately consent to saving this explicit comparison in my encrypted local personalization journal. AutoEditor will not learn from renders, retries, watch time, or silence.</span>
+        </label>
+        <div class="feedback-actions">
+          <button id="save-preference-feedback" class="primary" type="button">Save explicit preference</button>
+          <span id="feedback-status" class="small" role="status" aria-live="polite"></span>
+        </div>
+        <p id="feedback-error" class="error" role="alert"></p>
+      </section>
+
       <div class="local-note">
         <strong>Your video files stay on this computer.</strong>
         DeepSeek receives chat, bounded editing context, and public research snippets, never the local video file itself.
@@ -146,6 +212,7 @@
   </main>
   <script src="chat-state.js"></script>
   <script src="view-state.js"></script>
+  <script src="preference-form.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

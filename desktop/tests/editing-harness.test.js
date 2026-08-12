@@ -9,6 +9,9 @@ const {
   mediaEvidenceForPrompt,
   validateProposal,
 } = require('../helper/lib/editing-harness');
+const {
+  durationIntent, storyTranscript,
+} = require('../helper/lib/story-plan');
 
 assert.strictEqual(DEEPSEEK_MODEL, 'deepseek-v4-pro');
 for (const capability of [
@@ -39,11 +42,98 @@ const mediaEvidence = mediaEvidenceForPrompt({
     localOnly: true,
   })),
 });
-assert.ok(mediaEvidence.length <= 80000);
+assert.ok(mediaEvidence.length <= 700000);
 const parsedMediaEvidence = JSON.parse(mediaEvidence);
 assert.strictEqual(parsedMediaEvidence.originalVideosUploaded, false);
 assert.strictEqual(parsedMediaEvidence.videos.length, 20);
 assert.ok(parsedMediaEvidence.videos[19].visualSummary.includes('visible-19'));
+assert.strictEqual(parsedMediaEvidence.storyTranscript.complete, false);
+assert.deepStrictEqual(parsedMediaEvidence.storyTranscript.words, []);
+
+const sourceWords = Array.from({ length: 417 }, (_, index) => ({
+  word: `word${index}`,
+  start: Number((index * 0.4).toFixed(3)),
+  end: Number(((index + 1) * 0.4).toFixed(3)),
+}));
+const sourceReport = {
+  schema: 'autoeditor-local-media-analysis/v2',
+  originalVideosUploaded: false,
+  videos: [{
+    file: '174-second-source.mov',
+    technical: { durationSeconds: 174.9 },
+    signals: {}, transcript: sourceWords.map((word) => word.word).join(' '),
+    timedWords: sourceWords, visualSummary: 'One speaker', localOnly: true,
+  }],
+};
+const completeEvidence = JSON.parse(mediaEvidenceForPrompt(sourceReport));
+assert.strictEqual(completeEvidence.storyTranscript.complete, true);
+assert.strictEqual(completeEvidence.storyTranscript.words.length, 417);
+assert.strictEqual(storyTranscript(sourceReport).sourceDuration, 174.9);
+assert.deepStrictEqual(durationIntent('Make this a premium 35-45s cut.'), {
+  minSeconds: 35, maxSeconds: 45,
+});
+
+function exactAnchor(start, end) {
+  return sourceWords.slice(start, end + 1).map((word) => word.word).join(' ');
+}
+
+const approvedStoryPlan = {
+  schema_version: 'autoeditor-story-edit/v1',
+  timeline: 'source_seconds',
+  target_duration: { min_seconds: 35, max_seconds: 45 },
+  hook_anchor_id: 'hook',
+  closer_anchor_id: 'closer',
+  keep_ranges: [
+    {
+      anchor_id: 'hook', anchor_text: exactAnchor(50, 99),
+      source_start_word: 50, source_end_word: 99,
+      source_start_seconds: 20, source_end_seconds: 40,
+    },
+    {
+      anchor_id: 'closer', anchor_text: exactAnchor(300, 349),
+      source_start_word: 300, source_end_word: 349,
+      source_start_seconds: 120, source_end_seconds: 140,
+    },
+  ],
+};
+const approved = validateProposal({
+  summary: 'A source-grounded 40 second story.',
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: approvedStoryPlan,
+}, {
+  mediaAnalysis: sourceReport, requireStoryPlan: true,
+  requestedDuration: { minSeconds: 35, maxSeconds: 45 },
+});
+assert.ok(approved);
+assert.strictEqual(approved.storyPlan.keep_ranges[0].anchor_text,
+  exactAnchor(50, 99));
+assert.strictEqual(approved.storyPlan.keep_ranges[0].source_start_word, 50);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+}, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: {
+    ...approvedStoryPlan,
+    target_duration: { min_seconds: 150, max_seconds: 160 },
+  },
+}, {
+  mediaAnalysis: sourceReport, requireStoryPlan: true,
+  requestedDuration: { minSeconds: 35, maxSeconds: 45 },
+}), null);
+assert.strictEqual(validateProposal({
+  operations: [{ op: 'set_edit_style', style: 'short' }],
+  storyPlan: {
+    ...approvedStoryPlan,
+    keep_ranges: [
+      { ...approvedStoryPlan.keep_ranges[0], anchor_text: 'hallucinated hook' },
+      approvedStoryPlan.keep_ranges[1],
+    ],
+  },
+}, {
+  mediaAnalysis: sourceReport, requireStoryPlan: true,
+  requestedDuration: { minSeconds: 35, maxSeconds: 45 },
+}), null);
 
 assert.deepStrictEqual(validateProposal({
   summary: 'Make it a vertical social edit.',

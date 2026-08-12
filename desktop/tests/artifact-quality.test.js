@@ -48,8 +48,27 @@ assert.match(main, /void reviewArtifact\(event, action\)/);
 assert.match(main, /The draft was not exposed as a finished video/);
 assert.match(main, /retryRejectedRender\(action, artifact, issue\)/);
 assert.match(main, /VISION-REJECTED/);
-assert.ok(main.indexOf('rememberResult(event, action.outputDir)') >
+assert.ok(main.indexOf('rememberResult(event, action.outputDir, metadata)') >
   main.indexOf('if (!reviewPasses(review))'));
+assert.ok(main.indexOf('stageArtifactForVision(artifact)') <
+  main.indexOf('const raw = await requestVision(frames, action'));
+assert.ok(main.indexOf('fs.renameSync(staged.pending, staged.approved)') <
+  main.indexOf('rememberResult(event, action.outputDir, metadata)'));
+assert.ok(main.indexOf("event.qaPass !== true") <
+  main.indexOf('void reviewArtifact(event, action)'));
+const retryBody = main.match(
+  /function retryRejectedRender\(action, artifact, issue\) \{([\s\S]*?)\n\}/)?.[1] || '';
+assert.match(retryBody, /\.\.\.action\.payload/);
+assert.match(retryBody, /normalizeApplyRequest\(payload\)/);
+assert.match(retryBody, /visionAttempt: priorAttempts \+ 1/);
+assert.ok(!retryBody.includes('delete payload.proposal'));
+const cancelBody = main.match(
+  /async function cancelLocal\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+assert.match(cancelBody, /action\.canceled = true/);
+assert.match(cancelBody, /rejectPendingVisionForAction/);
+assert.match(cancelBody, /await stopProcessTree\(action\.proc\)/);
+assert.ok(cancelBody.indexOf('action.canceled = true') <
+  cancelBody.indexOf('await stopProcessTree(action.proc)'));
 
 const renderer = fs.readFileSync(path.join(
   __dirname, '..', 'helper', 'renderer', 'app.js'), 'utf8');

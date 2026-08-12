@@ -4,6 +4,7 @@
 const { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } =
   require('electron');
 const { spawn, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
@@ -15,6 +16,14 @@ const {
   reviewIssueText,
   reviewPasses,
 } = require('./lib/artifact-quality');
+const {
+  MAX_JOURNAL_BYTES,
+  createPreferenceJournal,
+  appendPreferenceRecord,
+  serializeForEncryption,
+  parsePreferenceJournal,
+  buildEditingContext,
+} = require('./lib/preference-learning');
 const {
   normalizeApplyRequest,
   normalizeChatRequest,
@@ -44,6 +53,8 @@ const RES = PACKAGED ? process.resourcesPath : path.join(__dirname, '../..');
 const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 const MAX_ENCRYPTED_SETTINGS_BYTES = 128 * 1024;
 const MAX_ENCRYPTED_CONVERSATION_BYTES = 512 * 1024;
+const MAX_ENCRYPTED_PREFERENCE_BYTES = MAX_JOURNAL_BYTES + 64 * 1024;
+const PREFERENCE_POLICY_VERSION = '2026-08-12';
 const MAX_LOG_LINE = 20000;
 const MAX_LINE_BUFFER = 2 * 1024 * 1024;
 const MAX_VISION_FRAME_BYTES = 1536 * 1024;
@@ -125,6 +136,14 @@ function conversationFile() {
   return path.join(app.getPath('userData'), 'conversation.enc');
 }
 
+function preferenceJournalFile() {
+  return path.join(app.getPath('userData'), 'preference-journal.enc');
+}
+
+function preferenceProfileKeyFile() {
+  return path.join(app.getPath('userData'), 'preference-profile-key.enc');
+}
+
 function readEncryptedObject(file, maxBytes = MAX_ENCRYPTED_SETTINGS_BYTES) {
   try {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file)) {
@@ -167,6 +186,102 @@ function saveConversation(value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, sealed, { mode: 0o600 });
   return { ok: true };
+}
+
+function loadPreferenceJournal({ strict = false } = {}) {
+  const file = preferenceJournalFile();
+  if (!fs.existsSync(file)) return createPreferenceJournal();
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Your OS keystore is unavailable');
+    }
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_ENCRYPTED_PREFERENCE_BYTES) {
+      throw new Error('the encrypted preference journal has an invalid size');
+    }
+    const plain = safeStorage.decryptString(fs.readFileSync(file));
+    return parsePreferenceJournal(plain);
+  } catch (error) {
+    if (strict) {
+      throw new Error(`The encrypted preference journal could not be verified: ${error.message}`);
+    }
+    return createPreferenceJournal();
+  }
+}
+
+function replaceEncryptedFile(file, sealed) {
+  const stamp = `${process.pid}.${Date.now()}`;
+  const temporary = `${file}.${stamp}.tmp`;
+  const backup = `${file}.${stamp}.bak`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(temporary, sealed, { mode: 0o600, flag: 'wx' });
+  let backedUp = false;
+  try {
+    if (fs.existsSync(file)) {
+      fs.renameSync(file, backup);
+      backedUp = true;
+    }
+    fs.renameSync(temporary, file);
+    if (backedUp) fs.rmSync(backup, { force: true });
+  } catch (error) {
+    if (!fs.existsSync(file) && backedUp && fs.existsSync(backup)) {
+      try { fs.renameSync(backup, file); }
+      catch (_) { /* retain the backup rather than destroying recoverable data */ }
+    }
+    throw error;
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  }
+}
+
+function writePreferenceJournal(journal) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so feedback cannot be saved safely');
+  }
+  const plain = serializeForEncryption(journal);
+  const sealed = safeStorage.encryptString(plain);
+  if (sealed.length > MAX_ENCRYPTED_PREFERENCE_BYTES) {
+    throw new Error('The encrypted preference journal is too large');
+  }
+  const file = preferenceJournalFile();
+  replaceEncryptedFile(file, sealed);
+}
+
+function preferenceProfileKey() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so preferences cannot be used safely');
+  }
+  const file = preferenceProfileKeyFile();
+  if (fs.existsSync(file)) {
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 4096) throw new Error('invalid key file');
+      const encoded = safeStorage.decryptString(fs.readFileSync(file));
+      const key = Buffer.from(encoded, 'base64');
+      if (key.length !== 32) throw new Error('invalid key length');
+      return key;
+    } catch (error) {
+      throw new Error(`The encrypted preference profile key could not be verified: ${error.message}`);
+    }
+  }
+  const key = crypto.randomBytes(32);
+  const sealed = safeStorage.encryptString(key.toString('base64'));
+  replaceEncryptedFile(file, sealed);
+  return key;
+}
+
+function pseudonymousProfileHash(key, namespace, value = '') {
+  return crypto.createHmac('sha256', key)
+    .update(`autoeditor:${namespace}:v1\0${value}`, 'utf8').digest('hex');
+}
+
+function accountProfileHash(key) {
+  return pseudonymousProfileHash(key, 'account-profile');
+}
+
+function projectProfileHash(key, sourceSha256, projectType) {
+  return pseudonymousProfileHash(
+    key, 'project-profile', `${sourceSha256}\0${projectType}`);
 }
 
 function writeSettings(settings) {
@@ -541,6 +656,42 @@ function stableJson(value) {
     `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
 }
 
+function sha256Text(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+async function sourceManifestSha256(inputs) {
+  if (!Array.isArray(inputs) || !inputs.length) {
+    throw new Error('source lineage is unavailable');
+  }
+  const entries = [];
+  for (const input of inputs) {
+    const real = realFile(input);
+    const stat = fs.statSync(real);
+    entries.push({ bytes: stat.size, sha256: await sha256File(real) });
+  }
+  return sha256Text(stableJson({ schema: 'autoeditor-source-manifest/v1', entries }));
+}
+
+function planSha256(request) {
+  return sha256Text(stableJson({
+    schema: 'autoeditor-approved-plan/v1',
+    projectType: request.projectType,
+    proposal: request.proposal || null,
+    creativeBrief: request.creativeBrief || '',
+  }));
+}
+
 function realFile(file) {
   return fs.realpathSync.native(normalizeResultPath(file));
 }
@@ -552,23 +703,194 @@ function isInside(directory, file) {
     !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function rememberOutput(raw, outputDir) {
+function rememberOutput(raw, outputDir, metadata = {}) {
   try {
     const real = realFile(raw);
     if (!isInside(outputDir, real)) return false;
-    returnedOutputs.set(real, raw);
+    returnedOutputs.set(real, Object.freeze({
+      path: raw,
+      real,
+      sourceSha256: metadata.sourceSha256 || '',
+      sourceInputs: Object.freeze([...(metadata.sourceInputs || [])]),
+      planSha256: metadata.planSha256 || '',
+      priorResult: metadata.priorResult || '',
+      projectType: metadata.projectType || 'custom',
+      style: metadata.style || 'auto',
+    }));
     return true;
   } catch (_) { return false; }
 }
 
-function rememberResult(event, outputDir) {
-  if (typeof event.output === 'string') rememberOutput(event.output, outputDir);
+function rememberResult(event, outputDir, metadata = {}) {
+  if (typeof event.output === 'string') rememberOutput(event.output, outputDir, metadata);
   if (event.outputs && typeof event.outputs === 'object' &&
       !Array.isArray(event.outputs)) {
     for (const value of Object.values(event.outputs)) {
-      if (typeof value === 'string') rememberOutput(value, outputDir);
+      if (typeof value === 'string') rememberOutput(value, outputDir, metadata);
     }
   }
+}
+
+function editStyle(request) {
+  const operation = request.proposal?.operations?.find((item) =>
+    item?.op === 'set_edit_style' && typeof item.style === 'string');
+  return operation?.style || request.projectType || 'auto';
+}
+
+async function approvedResultMetadata(action) {
+  const context = action.resultContext || {};
+  const sourceSha256 = context.sourceSha256 ||
+    await sourceManifestSha256(context.sourceInputs || action.payload?.inputs);
+  return {
+    sourceSha256,
+    sourceInputs: context.sourceInputs || action.payload?.inputs || [],
+    planSha256: context.planSha256 || planSha256(action.payload || {}),
+    priorResult: context.priorResult || '',
+    projectType: action.payload?.projectType || 'custom',
+    style: editStyle(action.payload || {}),
+  };
+}
+
+function preferenceSplit(key, beforeOutputSha256, afterOutputSha256) {
+  const assignment = crypto.createHmac('sha256', key)
+    .update(`autoeditor-held-out:v1\0${beforeOutputSha256}\0${afterOutputSha256}`)
+    .digest();
+  return assignment[0] < 32 ? 'held-out' : 'training';
+}
+
+function normalizedFeedbackRequest(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Feedback must be a plain object');
+  }
+  const allowed = new Set([
+    'beforeResultPath', 'afterResultPath', 'preferred', 'defectCategories',
+    'timecodes', 'rationale', 'consent', 'profileScope',
+  ]);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) {
+    throw new Error('Feedback has unsupported fields');
+  }
+  if (typeof raw.beforeResultPath !== 'string' ||
+      typeof raw.afterResultPath !== 'string') {
+    throw new Error('Choose both reviewed results');
+  }
+  if (raw.preferred !== 'before' && raw.preferred !== 'after') {
+    throw new Error('Choose the version you prefer');
+  }
+  if (raw.profileScope !== 'project' && raw.profileScope !== 'account') {
+    throw new Error('Choose whether this preference applies to the project or account');
+  }
+  if (!raw.consent || typeof raw.consent !== 'object' || Array.isArray(raw.consent) ||
+      raw.consent.given !== true ||
+      raw.consent.policyVersion !== PREFERENCE_POLICY_VERSION) {
+    throw new Error('Explicit personalization consent is required');
+  }
+  return raw;
+}
+
+async function savePreferenceFeedback(raw) {
+  const feedback = normalizedFeedbackRequest(raw);
+  const beforeReal = realFile(feedback.beforeResultPath);
+  const afterReal = realFile(feedback.afterResultPath);
+  const before = returnedOutputs.get(beforeReal);
+  const after = returnedOutputs.get(afterReal);
+  if (!before || !after || beforeReal === afterReal) {
+    throw new Error('Compare two different completed results from this session');
+  }
+  if (after.priorResult !== beforeReal) {
+    throw new Error('Feedback is available only for a result and its direct revision');
+  }
+  if (!before.sourceSha256 || before.sourceSha256 !== after.sourceSha256 ||
+      !before.planSha256 || !after.planSha256) {
+    throw new Error('The reviewed result lineage could not be verified');
+  }
+
+  const [beforeOutputSha256, afterOutputSha256] = await Promise.all([
+    sha256File(beforeReal), sha256File(afterReal),
+  ]);
+  const key = preferenceProfileKey();
+  const accountHash = accountProfileHash(key);
+  const projectHash = projectProfileHash(
+    key, after.sourceSha256, after.projectType);
+  const split = preferenceSplit(key, beforeOutputSha256, afterOutputSha256);
+  const payload = {
+    capturedAt: new Date().toISOString(),
+    consent: {
+      given: true,
+      purpose: 'personalization',
+      method: 'explicit-pairwise-feedback',
+      policyVersion: PREFERENCE_POLICY_VERSION,
+    },
+    split,
+    profile: {
+      scope: feedback.profileScope,
+      accountProfileSha256: accountHash,
+      projectProfileSha256: projectHash,
+    },
+    context: {
+      projectType: after.projectType,
+      style: after.style,
+      aspectRatio: ['short', 'commercial'].includes(after.projectType)
+        ? '9:16' : '16:9',
+      locale: String(app.getLocale() || 'en-US').slice(0, 120),
+      tags: [],
+    },
+    artifacts: {
+      sourceSha256: after.sourceSha256,
+      before: {
+        outputSha256: beforeOutputSha256,
+        planSha256: before.planSha256,
+        origin: 'system-output',
+        reviewStatus: 'explicit-human-review',
+      },
+      after: {
+        outputSha256: afterOutputSha256,
+        planSha256: after.planSha256,
+        origin: 'system-output',
+        reviewStatus: 'explicit-human-review',
+      },
+    },
+    preference: {
+      preferred: feedback.preferred,
+      strength: 5,
+      rationale: feedback.rationale,
+    },
+    defectCategories: feedback.defectCategories,
+    timecodes: feedback.timecodes,
+  };
+  const journal = loadPreferenceJournal({ strict: true });
+  const next = appendPreferenceRecord(journal, payload);
+  writePreferenceJournal(next);
+  return {
+    ok: true,
+    split,
+    recordSha256: next.records.at(-1).recordSha256,
+  };
+}
+
+function preferenceEditingContext(sourceSha256, projectType) {
+  if (!fs.existsSync(preferenceJournalFile())) return '';
+  try {
+    const key = preferenceProfileKey();
+    return buildEditingContext(loadPreferenceJournal(), {
+      accountProfileSha256: accountProfileHash(key),
+      ...(sourceSha256 ? {
+        projectProfileSha256: projectProfileHash(key, sourceSha256, projectType),
+      } : {}),
+      projectType,
+    }, { limit: 4, maxChars: 1000 });
+  } catch (_) {
+    return '';
+  }
+}
+
+function historyWithPreferenceContext(history, context) {
+  if (!context) return history;
+  const bounded = [...history, { role: 'assistant', content: context.slice(0, 1000) }];
+  let characters = bounded.reduce((sum, entry) => sum + entry.content.length, 0);
+  while (bounded.length > 12 || characters > 12000) {
+    characters -= bounded.shift().content.length;
+  }
+  return bounded;
 }
 
 function rememberProposal(event) {
@@ -688,7 +1010,8 @@ function retryRejectedRender(action, artifact, issue) {
   action.qaPending = false;
   if (activeRender === action) activeRender = null;
   const retryRequest = normalizeApplyRequest(payload);
-  localProcess('--local-render', retryRequest, 'render', action.settings);
+  localProcess('--local-render', retryRequest, 'render', action.settings,
+    { ...action.resultContext, planSha256: planSha256(retryRequest) });
   return true;
 }
 
@@ -737,7 +1060,8 @@ async function reviewArtifact(event, action) {
     fs.renameSync(staged.pending, staged.approved);
     replaceEventArtifactPath(event, staged.pending, staged.approved);
     artifact = staged.approved;
-    rememberResult(event, action.outputDir);
+    const metadata = await approvedResultMetadata(action);
+    rememberResult(event, action.outputDir, metadata);
     send('helper-render', { ...event, actionId: action.id, kind: action.kind });
     markRenderFinished(action);
   } catch (error) {
@@ -820,7 +1144,7 @@ function processLocalEvent(event, action) {
   return true;
 }
 
-function localProcess(mode, payload, kind, settings) {
+function localProcess(mode, payload, kind, settings, resultContext = null) {
   const p = runtimePaths();
   const action = {
     id: ++actionSequence,
@@ -838,6 +1162,9 @@ function localProcess(mode, payload, kind, settings) {
     qaPending: false,
     payload: kind === 'render' ? { ...payload } : null,
     settings: { ...settings },
+    resultContext: kind === 'render' && resultContext
+      ? { ...resultContext, sourceInputs: [...(resultContext.sourceInputs || [])] }
+      : null,
   };
   const child = spawn(p.daemon, [mode], {
     env: daemonEnv(settings), windowsHide: true, cwd: p.root,
@@ -952,7 +1279,12 @@ function renderLocal(raw) {
   requireDialogSelection(request);
   const settings = requireReady();
   localProcess('--local-render', request, 'render',
-    settingsForLocalRender(settings));
+    settingsForLocalRender(settings), {
+      sourceInputs: request.inputs,
+      sourceSha256: '',
+      planSha256: planSha256(request),
+      priorResult: '',
+    });
   return { ok: true };
 }
 
@@ -960,6 +1292,7 @@ function chatLocal(raw) {
   if (activeChat) throw new Error('DeepSeek is already answering');
   const request = normalizeChatRequest(raw);
   let videoPaths = [];
+  let revisionMetadata = null;
   if (raw && Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) {
     videoPaths = normalizeVideoPaths(raw.videoPaths);
     for (const video of videoPaths) {
@@ -973,6 +1306,7 @@ function chatLocal(raw) {
     if (!returnedOutputs.has(real)) {
       throw new Error('That result is not from this AutoEditor session');
     }
+    revisionMetadata = returnedOutputs.get(real);
   }
   const settings = requireSecureSettings();
   if (!settings.deepseekApiKey) {
@@ -990,6 +1324,9 @@ function chatLocal(raw) {
     activeRender: activeRenderState(),
   });
   (async () => {
+    const sourceHashPromise = videoPaths.length
+      ? sourceManifestSha256(videoPaths).catch(() => '')
+      : Promise.resolve(revisionMetadata?.sourceSha256 || '');
     let mediaAnalysis = null;
     if (videoPaths.length) {
       try {
@@ -1020,8 +1357,16 @@ function chatLocal(raw) {
     }
     if (activeChat !== action || action.canceled) return;
     action.proc = null;
+    const sourceSha256 = await sourceHashPromise;
+    const preferenceContext = preferenceEditingContext(
+      sourceSha256, request.projectType);
     const event = await runEditingChat(
-      { ...request, mediaAnalysis, hasCompletedRender: !!raw?.resultPath },
+      {
+        ...request,
+        history: historyWithPreferenceContext(request.history, preferenceContext),
+        mediaAnalysis,
+        hasCompletedRender: !!raw?.resultPath,
+      },
       settings.deepseekApiKey,
       (progress) => processLocalEvent(progress, action));
     if (mediaAnalysis?.videos?.length) {
@@ -1049,11 +1394,13 @@ function applyLocal(raw) {
   if (activeRender) throw new Error('An edit is already rendering');
   let translated = translateVideoPaths(raw);
   let revisionInput = '';
+  let revisionMetadata = null;
   if (raw && raw.resultPath) {
     revisionInput = realFile(raw.resultPath);
     if (!returnedOutputs.has(revisionInput)) {
       throw new Error('That revision target is not from this AutoEditor session');
     }
+    revisionMetadata = returnedOutputs.get(revisionInput);
     translated = { ...translated, videos: [revisionInput] };
     delete translated.inputs;
     delete translated.videoPaths;
@@ -1069,7 +1416,12 @@ function applyLocal(raw) {
   }
   const settings = requireReady();
   localProcess('--local-render', request, 'render',
-    settingsForLocalRender(settings));
+    settingsForLocalRender(settings), {
+      sourceInputs: revisionMetadata?.sourceInputs || request.inputs,
+      sourceSha256: revisionMetadata?.sourceSha256 || '',
+      planSha256: planSha256(request),
+      priorResult: revisionInput,
+    });
   return { ok: true };
 }
 
@@ -1186,6 +1538,8 @@ function setupIpc() {
   ipcMain.handle('helper:save-settings', (_event, input) => saveSettings(input));
   ipcMain.handle('helper:save-conversation', (_event, input) =>
     saveConversation(input));
+  ipcMain.handle('helper:save-preference-feedback', (_event, input) =>
+    savePreferenceFeedback(input));
   ipcMain.handle('helper:render-local', (_event, input) => renderLocal(input));
   ipcMain.handle('helper:cancel-local', () => cancelLocal());
   ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));

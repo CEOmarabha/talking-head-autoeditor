@@ -88,8 +88,55 @@
     }
   }
 
+  function preserveTranscriptScroll(transcript, mutation) {
+    if (!transcript || typeof mutation !== 'function') return false;
+    const followBottom = isNearBottom(transcript);
+    const scrollTop = Math.max(0, finiteNumber(transcript.scrollTop));
+    const restore = () => {
+      const maxScroll = Math.max(0,
+        finiteNumber(transcript.scrollHeight) - finiteNumber(transcript.clientHeight));
+      transcript.scrollTop = followBottom ? maxScroll : Math.min(scrollTop, maxScroll);
+    };
+    const result = mutation();
+    restore();
+    if (typeof root?.requestAnimationFrame === 'function') {
+      root.requestAnimationFrame(restore);
+    }
+    return result !== false;
+  }
+
+  function updateActivityView(row, message, timingText = '') {
+    if (!row || !message) return false;
+    const card = row.querySelector?.('.activity-card');
+    const stage = card?.querySelector?.('.activity-stage');
+    const detailsLog = card?.querySelector?.('.technical-details pre');
+    if (!card || !stage || !detailsLog) return false;
+    stage.textContent = message.stage || 'Working...';
+    const logs = Array.isArray(message.logs) ? message.logs : [];
+    detailsLog.textContent = logs.length
+      ? logs.join('\n') : 'Waiting for engine output...';
+
+    const timing = card.querySelector?.('.activity-timing');
+    if (timing && timingText) timing.textContent = timingText;
+    const measurable = message.kind === 'render' && message.measurable === true &&
+      Number.isFinite(Number(message.progress));
+    const progressWrap = card.querySelector?.('.activity-progress');
+    const progress = progressWrap?.querySelector?.('progress');
+    const progressLabel = progressWrap?.querySelector?.('.progress-label');
+    const working = card.querySelector?.('.working-indicator');
+    if (progressWrap) progressWrap.hidden = !measurable;
+    if (working) working.hidden = measurable;
+    if (measurable && progress && progressLabel) {
+      const value = Math.max(0, Math.min(100, Math.round(Number(message.progress))));
+      progress.value = value;
+      progress.textContent = `${value}%`;
+      progressLabel.textContent = `${value}%`;
+    }
+    return true;
+  }
+
   return Object.freeze({
     DEFAULT_BOTTOM_THRESHOLD, isNearBottom, captureTranscriptView,
-    restoreTranscriptView,
+    restoreTranscriptView, preserveTranscriptScroll, updateActivityView,
   });
 });

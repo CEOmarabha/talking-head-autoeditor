@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('helper', Object.freeze({
   saveSettings: (settings) => ipcRenderer.invoke('helper:save-settings', settings),
   saveConversation: (conversation) => ipcRenderer.invoke(
     'helper:save-conversation', conversation),
+  savePreferenceFeedback: (feedback) => ipcRenderer.invoke(
+    'helper:save-preference-feedback', feedback),
   renderLocal: (request) => ipcRenderer.invoke('helper:render-local', request),
   cancelLocal: () => ipcRenderer.invoke('helper:cancel-local'),
   chatLocal: (request) => ipcRenderer.invoke('helper:chat-local', request),

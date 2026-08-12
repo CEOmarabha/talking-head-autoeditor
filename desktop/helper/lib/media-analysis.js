@@ -241,13 +241,25 @@ function sampleTimes(duration, count) {
   if (!(duration > 0)) return [0];
   const wanted = Math.max(1, Math.min(count, MAX_FRAMES_TOTAL));
   const limit = Math.max(0, duration - 0.05);
-  const anchors = [0.1, 1.0, 2.5, limit].map((value) =>
-    Math.max(0, Math.min(limit, value)));
-  const spread = Array.from({ length: wanted }, (_, index) =>
-    Math.max(0, Math.min(limit, duration * ((index + 0.5) / wanted))));
-  return [...new Set([...anchors, ...spread].map((value) => value.toFixed(3)))]
-    .map(Number).sort((a, b) => a - b).slice(0, wanted - 1).concat(limit)
-    .slice(0, wanted);
+  const round = (value) => Number(
+    Math.max(0, Math.min(limit, value)).toFixed(3));
+  const final = round(limit);
+  const hooks = [...new Set([0.1, 1.0, 2.5].map(round))]
+    .filter((value) => value < final);
+  const samples = hooks.slice(0, Math.max(0, wanted - 1));
+  samples.push(final);
+
+  // Reserve the hook and final-frame samples first, then distribute the
+  // remaining budget across the entire post-hook timeline. Merging a full
+  // spread before truncating favored early timestamps and dropped the second
+  // half of longer artifacts.
+  const remaining = wanted - samples.length;
+  const spreadStart = samples.length > 1 ? samples[samples.length - 2] : 0;
+  for (let index = 1; index <= remaining; index += 1) {
+    samples.push(round(spreadStart +
+      (final - spreadStart) * (index / (remaining + 1))));
+  }
+  return [...new Set(samples)].sort((a, b) => a - b);
 }
 
 async function extractFrames(file, probe, output, count, runtime, onChild) {

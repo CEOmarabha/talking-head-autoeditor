@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import wave
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -920,7 +921,57 @@ class SafetyContracts(unittest.TestCase):
                 self.assertEqual(
                     premium._api_key("ELEVENLABS_API_KEY", old_key), ""
                 )
-                self.assertEqual(premium._resolve_sfx("boom"), root / "boom.wav")
+                resolved = premium._resolve_sfx("boom")
+                self.assertEqual(resolved, root / "boom.wav")
+                self.assertNotEqual(resolved.read_bytes(), b"old-generated-audio")
+
+    def test_clean_install_builds_deterministic_48k_sfx_fallbacks(self):
+        edl = {
+            "punch_ins": [{"s": 0.25, "e": 1.0, "scale": 1.12}],
+            "broll": [{
+                "s": 2.0, "e": 5.0,
+                "viz": {"template": "steps", "items": ["one", "two"]},
+            }],
+            "graphics": [{"s": 6.0, "e": 8.0, "kind": "stat"}],
+        }
+        with tempfile.TemporaryDirectory() as td, mock.patch.dict(
+            os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }
+        ), mock.patch.object(premium, "SFX_DIR", Path(td) / "missing-sfx"):
+            first = premium.build_sfx_plan(edl)
+            first_bytes = {path.name: path.read_bytes() for path, _, _ in first}
+            second = premium.build_sfx_plan(edl)
+            second_bytes = {path.name: path.read_bytes() for path, _, _ in second}
+
+        self.assertEqual(len(first), 6)
+        self.assertEqual(
+            {path.name for path, _, _ in first},
+            {"boom.wav", "whoosh.wav", "pop.wav", "riser.wav", "impact.wav"},
+        )
+        self.assertEqual(
+            [(path.name, timestamp, gain) for path, timestamp, gain in first],
+            [(path.name, timestamp, gain) for path, timestamp, gain in second],
+        )
+        self.assertEqual(first_bytes, second_bytes)
+        for data in first_bytes.values():
+            with contextlib.closing(wave.open(io.BytesIO(data), "rb")) as cue:
+                self.assertEqual(cue.getframerate(), 48_000)
+                self.assertEqual(cue.getnchannels(), 1)
+                self.assertEqual(cue.getsampwidth(), 2)
+                self.assertGreater(cue.getnframes(), 0)
+
+    def test_sfx_plan_fails_when_a_planned_cue_cannot_be_produced(self):
+        edl = {"punch_ins": [{"s": 0.0, "e": 1.0, "scale": 1.12}]}
+        with tempfile.TemporaryDirectory() as td:
+            blocked = Path(td) / "not-a-directory"
+            blocked.write_text("storage unavailable")
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }), mock.patch.object(
+                premium, "SFX_DIR", blocked
+            ), self.assertRaisesRegex(RuntimeError, "boom"):
+                premium.build_sfx_plan(edl)
 
     def test_premium_media_checks_use_packaged_ffmpeg_paths(self):
         probe_result = mock.Mock(

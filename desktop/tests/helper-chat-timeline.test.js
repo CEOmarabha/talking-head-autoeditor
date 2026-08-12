@@ -212,4 +212,75 @@ const tallerTranscript = fakeTranscript({
 ViewState.restoreTranscriptView(tallerTranscript, bottomView);
 assert.strictEqual(tallerTranscript.scrollTop, 1100);
 
+function fakeNode(selectors = {}) {
+  return {
+    textContent: '', hidden: false, value: 0,
+    querySelector(selector) { return selectors[selector] || null; },
+  };
+}
+
+const progress = fakeNode();
+const progressLabel = fakeNode();
+const progressWrap = fakeNode({ progress, '.progress-label': progressLabel });
+const working = fakeNode();
+const stage = fakeNode();
+const timingNode = fakeNode();
+const detailsLog = fakeNode();
+const card = fakeNode({
+  '.activity-stage': stage,
+  '.activity-timing': timingNode,
+  '.technical-details pre': detailsLog,
+  '.activity-progress': progressWrap,
+  '.working-indicator': working,
+});
+const activityRow = fakeNode({ '.activity-card': card });
+const preservedDetails = { open: true };
+const preservedVideo = { currentTime: 17.25, paused: false };
+const progressTranscript = {
+  scrollTop: 120, scrollHeight: 1000, clientHeight: 300,
+};
+for (let index = 1; index <= 5; index += 1) {
+  const message = {
+    kind: 'render', stage: `Pass ${index}`, logs: [`line ${index}`],
+    measurable: true, progress: index * 10,
+  };
+  ViewState.preserveTranscriptScroll(progressTranscript, () => {
+    progressTranscript.scrollHeight += 25;
+    return ViewState.updateActivityView(
+      activityRow, message, `Elapsed ${index}s`);
+  });
+}
+assert.strictEqual(progressTranscript.scrollTop, 120);
+assert.strictEqual(stage.textContent, 'Pass 5');
+assert.strictEqual(detailsLog.textContent, 'line 5');
+assert.strictEqual(progress.value, 50);
+assert.strictEqual(progressLabel.textContent, '50%');
+assert.strictEqual(progressWrap.hidden, false);
+assert.strictEqual(working.hidden, true);
+assert.strictEqual(preservedDetails.open, true);
+assert.strictEqual(preservedVideo.currentTime, 17.25);
+assert.strictEqual(preservedVideo.paused, false);
+const followingProgress = {
+  scrollTop: 700, scrollHeight: 1000, clientHeight: 300,
+};
+ViewState.preserveTranscriptScroll(followingProgress, () => {
+  followingProgress.scrollHeight += 125;
+  return ViewState.updateActivityView(activityRow, {
+    kind: 'render', stage: 'QA', logs: ['quality gate'],
+    measurable: false, progress: null,
+  }, 'Elapsed 6s');
+});
+assert.strictEqual(followingProgress.scrollTop, 825);
+assert.strictEqual(progressWrap.hidden, true);
+assert.strictEqual(working.hidden, false);
+
+const progressBranch = appSource.match(
+  /if \(event\.event === 'local-progress'\) \{([\s\S]*?)\n  \}\n\}/)?.[1] || '';
+assert.ok(progressBranch.includes('updateActiveActivity(active)'));
+assert.ok(progressBranch.includes('if (!updateActiveActivity(active)) renderChat();'));
+const rawLogBody = appSource.match(
+  /function handleRawLog\(value\) \{([\s\S]*?)\n\}/)?.[1] || '';
+assert.ok(rawLogBody.includes('updateActiveActivity(active)'));
+assert.ok(rawLogBody.includes('if (active && !updateActiveActivity(active)) renderChat();'));
+
 console.log('helper chat timeline tests passed');

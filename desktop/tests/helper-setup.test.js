@@ -11,6 +11,8 @@ const helperRenderer = fs.readFileSync(
   path.join(helperRoot, 'renderer', 'app.js'), 'utf8');
 const daemonEntry = fs.readFileSync(
   path.join(__dirname, '..', '..', 'packaging', 'helper_daemon_entry.py'), 'utf8');
+const pipelineSource = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'autoeditor', 'pipeline.py'), 'utf8');
 
 assert.ok(!helperMain.includes("require('./lib/setup-code')"));
 assert.ok(!helperMain.includes('AUTOEDITOR_WEB_API:'));
@@ -40,6 +42,7 @@ for (const api of [
   'pickVideos', 'pickOutput', 'saveSettings', 'renderLocal', 'cancelLocal',
   'attachDroppedVideos', 'chatLocal', 'applyLocal', 'openResult',
   'openResearchSource', 'onRender', 'saveConversation',
+  'savePreferenceFeedback',
 ]) {
   assert.ok(helperPreload.includes(`${api}:`), api);
 }
@@ -76,6 +79,7 @@ assert.ok(helperRenderer.includes('Saved securely and reused automatically'));
 assert.ok(helperMain.includes('settingsForLocalRender(settings)'));
 assert.ok(helperRenderer.includes("button.textContent = 'Render these changes'"));
 assert.ok(helperMain.includes("return path.join(app.getPath('userData'), 'conversation.enc')"));
+assert.ok(helperMain.includes("return path.join(app.getPath('userData'), 'preference-journal.enc')"));
 assert.ok(helperMain.includes('MAX_ENCRYPTED_CONVERSATION_BYTES'));
 assert.ok(helperRenderer.includes('ChatState.conversationSnapshot'));
 assert.ok(helperRenderer.includes("research: $('live-research').checked"));
@@ -90,5 +94,16 @@ assert.ok(daemonEntry.includes('EDITOR_CAPABILITY_CONTEXT'));
 assert.ok(daemonEntry.includes('def _live_research'));
 assert.ok(daemonEntry.includes('def _deepseek_json_stream'));
 assert.ok(daemonEntry.includes('"--local-render", "--local-chat"'));
+assert.ok(daemonEntry.includes('args.extend(["--story-plan", str(story_file)])'));
+assert.ok(daemonEntry.includes(
+  'an approved target duration requires a transcript-grounded story plan'));
+assert.ok(pipelineSource.includes('ap.add_argument("--story-plan"'));
+assert.ok(pipelineSource.includes('validate_story_plan('));
+assert.ok(pipelineSource.includes('derive_complementary_cuts('));
+assert.ok(pipelineSource.includes('validate_story_acceptance('));
+assert.ok(pipelineSource.indexOf('story_source_words = transcribe(orig_src, work)') <
+  pipelineSource.lastIndexOf('word_guarded_cut('));
+assert.ok(pipelineSource.includes(
+  'if not story_plan and not (a.edl and a.edl.exists()):'));
 
 console.log('helper local-only setup contract passed');

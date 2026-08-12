@@ -480,12 +480,14 @@ pre {
 .activity-stage { display: block; color: #ede7dc; font-size: 14px; }
 .activity-timing { margin: 5px 0 10px; color: var(--muted); font: 11px/1.5 var(--mono); }
 .working-indicator { display: flex; align-items: center; gap: 5px; margin: 11px 0; color: var(--muted); font-size: 11px; }
+.activity-progress[hidden], .working-indicator[hidden] { display: none; }
+.activity-progress { margin: 10px 0 4px; }
 .working-indicator i { width: 6px; height: 6px; background: var(--brass); border-radius: 50%; animation: working-pulse 1.2s infinite ease-in-out; }
 .working-indicator i:nth-child(2) { animation-delay: .16s; }
 .working-indicator i:nth-child(3) { animation-delay: .32s; }
 .working-indicator span { display: inline; margin: 0 0 0 4px; color: var(--muted); text-transform: none; letter-spacing: 0; font: 11px/1.3 var(--body); }
 @keyframes working-pulse { 0%, 80%, 100% { opacity: .25; transform: scale(.75); } 40% { opacity: 1; transform: scale(1); } }
-.activity-card progress { margin: 10px 0 4px; }
+.activity-card progress { margin: 0 0 4px; }
 .progress-label { color: var(--brass); font: 11px/1.4 var(--mono); }
 .technical-details { margin-top: 12px; border-top: 1px solid var(--rule); }
 .technical-details > summary { padding: 10px 0 0; color: #aaa69e; font-size: 11px; }
@@ -505,6 +507,72 @@ pre {
 }
 .edit-options > summary { color: #b8b3aa; font-size: 12px; }
 .edit-options[open] > summary { margin-bottom: 17px; }
+
+.preference-feedback {
+  margin-top: 22px;
+  padding: 18px;
+  background: rgba(212, 173, 98, .045);
+  border: 1px solid rgba(212, 173, 98, .3);
+  border-radius: 9px;
+}
+.preference-heading,
+.comparison-actions,
+.feedback-actions {
+  display: flex;
+  align-items: center;
+}
+.preference-heading { justify-content: space-between; gap: 18px; }
+.preference-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.comparison-actions, .feedback-actions { gap: 8px; }
+.comparison-actions button { min-height: 36px; padding: 7px 10px; }
+.comparison-files {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  margin: 14px 0;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: var(--field);
+  border-radius: 6px;
+  font-size: 11px;
+}
+.comparison-files span, .comparison-files strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comparison-files strong { color: #ddd7cc; }
+.preference-feedback fieldset {
+  margin: 14px 0;
+  padding: 11px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+}
+.preference-feedback legend { padding: 0 5px; color: #d8d3ca; font-size: 12px; }
+.preference-feedback fieldset > label,
+.feedback-options label,
+.feedback-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 5px 12px 5px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+}
+.preference-feedback input { flex: none; accent-color: var(--brass); }
+.feedback-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.feedback-consent {
+  margin: 16px 0 11px;
+  padding: 11px 12px;
+  background: var(--field);
+  border: 1px solid var(--rule-strong);
+  border-radius: 7px;
+}
+.feedback-consent span { margin: 0; color: #c4beb4; font: 11px/1.5 var(--body); text-transform: none; letter-spacing: 0; }
+.feedback-actions { flex-wrap: wrap; margin-top: 10px; }
+.feedback-actions .small { margin: 0; }
 
 .settings-card { padding-top: 0; padding-bottom: 0; }
 .settings-card > summary {
@@ -579,6 +647,9 @@ footer {
   .chat-media-footer { align-items: stretch; flex-direction: column; }
   .result-actions button { flex: 1; }
   .settings-body { padding-bottom: 21px; }
+  .preference-heading { align-items: stretch; flex-direction: column; }
+  .comparison-actions button { flex: 1; }
+  .comparison-files, .feedback-options { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {

@@ -32,6 +32,8 @@ MAX_CHAT_TEXT_CHARS = 4_000
 LOCAL_PROJECT_TYPES = frozenset({
     "short", "long", "commercial", "podcast", "course", "custom",
 })
+STORY_PLAN_SCHEMA = "autoeditor-story-edit/v1"
+STORY_PLAN_TIMELINE = "source_seconds"
 
 
 EDITOR_CAPABILITY_CONTEXT = """AutoEditor editing knowledge pack v1 (bundled
@@ -166,6 +168,50 @@ def _project_type(value: object) -> str:
     return value
 
 
+def _duration_requested(value: str) -> bool:
+    """Detect an approved numeric runtime promise that requires a story plan."""
+    return bool(re.search(
+        r"(?:~|about\s+|around\s+|approximately\s+|roughly\s+)?"
+        r"\b\d+(?:\.\d+)?\s*(?:-|to)?\s*\d*(?:\.\d+)?\s*"
+        r"(?:seconds?|secs?|s|minutes?|mins?|m)\b",
+        value or "", re.I,
+    ))
+
+
+def _story_plan_from_proposal(proposal: dict | None) -> dict | None:
+    if proposal is None or "storyPlan" not in proposal:
+        return None
+    plan = proposal.get("storyPlan")
+    root_keys = {
+        "schema_version", "timeline", "target_duration", "hook_anchor_id",
+        "closer_anchor_id", "keep_ranges",
+    }
+    range_keys = {
+        "anchor_id", "anchor_text", "source_start_word", "source_end_word",
+        "source_start_seconds", "source_end_seconds",
+    }
+    if (not isinstance(plan, dict) or set(plan) != root_keys
+            or plan.get("schema_version") != STORY_PLAN_SCHEMA
+            or plan.get("timeline") != STORY_PLAN_TIMELINE
+            or not isinstance(plan.get("target_duration"), dict)
+            or set(plan["target_duration"]) != {"min_seconds", "max_seconds"}
+            or not isinstance(plan.get("keep_ranges"), list)
+            or not 2 <= len(plan["keep_ranges"]) <= 64
+            or any(not isinstance(item, dict) or set(item) != range_keys
+                   for item in plan["keep_ranges"])):
+        raise ValueError("the approved story plan is malformed")
+    try:
+        encoded = json.dumps(
+            plan, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("the approved story plan is not finite JSON") from exc
+    if len(encoded.encode("utf-8")) > 100_000:
+        raise ValueError("the approved story plan is too large")
+    return json.loads(encoded)
+
+
 def _local_render_request(value: dict) -> dict:
     allowed = {
         "inputs", "outputDir", "projectType", "script", "proposal",
@@ -217,6 +263,15 @@ def _local_render_request(value: dict) -> dict:
     )
     if creative_brief_sha256 != measured_brief_sha256:
         raise ValueError("creative brief digest does not match")
+    story_plan = _story_plan_from_proposal(proposal)
+    approved_plan_text = " ".join((
+        creative_brief,
+        str(proposal.get("summary") or "") if proposal else "",
+    ))
+    if _duration_requested(approved_plan_text) and story_plan is None:
+        raise ValueError(
+            "an approved target duration requires a transcript-grounded story plan"
+        )
     return {
         "inputs": inputs,
         "output": output,
@@ -229,6 +284,7 @@ def _local_render_request(value: dict) -> dict:
         "creative_brief_sha256": measured_brief_sha256,
         "vision_attempt": vision_attempt,
         "proposal": proposal,
+        "story_plan": story_plan,
     }
 
 
@@ -314,10 +370,15 @@ def _run_local_engine(args: list[str]) -> tuple[int, dict | None]:
         if event and event.get("event") == "result":
             result = event
         elif event:
-            _emit_local({
-                "event": "local-progress",
-                "stage": str(event.get("event") or "working")[:80],
-            })
+            kind = str(event.get("event") or "working")[:80]
+            if kind == "log":
+                message = str(event.get("msg") or "").strip()
+                if message:
+                    _emit_local({
+                        "event": "local-progress", "line": message[:300],
+                    })
+            else:
+                _emit_local({"event": "local-progress", "stage": kind})
         else:
             _emit_local({"event": "local-progress", "line": line[:300]})
     return proc.wait(), result
@@ -443,6 +504,13 @@ def local_render() -> int:
             brief_file = work / "approved-creative-brief.txt"
             brief_file.write_text(request["creative_brief"], encoding="utf-8")
             args.extend(["--creative-brief", str(brief_file)])
+        if request["story_plan"] is not None:
+            story_file = work / "approved-story-plan.json"
+            story_file.write_text(json.dumps(
+                request["story_plan"], ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ), encoding="utf-8")
+            args.extend(["--story-plan", str(story_file)])
         deepseek = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
         if not deepseek and "--no-premium" not in args:
             raise RuntimeError(

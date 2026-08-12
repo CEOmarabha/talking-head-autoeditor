@@ -232,6 +232,36 @@ try {
   }), /vision attempt/);
   assert.deepStrictEqual(validatedProposal, proposal);
   assert.notStrictEqual(apply.proposal, proposal);
+  const storyPlan = {
+    schema_version: 'autoeditor-story-edit/v1', timeline: 'source_seconds',
+    target_duration: { min_seconds: 2, max_seconds: 2 },
+    hook_anchor_id: 'hook', closer_anchor_id: 'closer',
+    keep_ranges: [
+      {
+        anchor_id: 'hook', anchor_text: 'opening hook',
+        source_start_word: 0, source_end_word: 1,
+        source_start_seconds: 0, source_end_seconds: 1,
+      },
+      {
+        anchor_id: 'closer', anchor_text: 'closing line',
+        source_start_word: 8, source_end_word: 9,
+        source_start_seconds: 9, source_end_seconds: 10,
+      },
+    ],
+  };
+  const storyApply = normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: { operations: [], storyPlan },
+  });
+  assert.deepStrictEqual(storyApply.proposal.storyPlan, storyPlan);
+  assert.throws(() => normalizeApplyRequest({
+    inputs: [first], outputDir, projectType: 'short', script: '',
+    proposal: {
+      operations: [], storyPlan: {
+        ...storyPlan, keep_ranges: storyPlan.keep_ranges.slice(0, 1),
+      },
+    },
+  }), /story plan/);
   assert.throws(() => normalizeApplyRequest({
     videos: [first], outputDir, projectType: 'long', script: '', proposal: [],
   }), /proposal must be an object/);
@@ -306,12 +336,18 @@ try {
     message: 'Planning the visual edit...',
     measurable: false,
   });
-  assert.deepStrictEqual(engineProgress(
+assert.deepStrictEqual(engineProgress(
     '[pse-edit 12:00:01] phase 7: QA gate'), {
-    stage: 'quality-assurance',
-    message: 'Checking video and audio quality...',
-    measurable: false,
-  });
+  stage: 'quality-assurance',
+  message: 'Checking video and audio quality...',
+  measurable: false,
+});
+assert.deepStrictEqual(engineProgress(
+    'DeepSeek critic round 1 needs repair: graphics are too close'), {
+  stage: 'deepseek',
+  message: 'DeepSeek is validating the premium edit plan...',
+  measurable: false,
+});
   assert.strictEqual(engineProgress('ordinary diagnostic line'), null);
   for (const line of [
     '', 'rendering', '[1,2,3]', 'null', '42', '{}',

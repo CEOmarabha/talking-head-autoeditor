@@ -21,7 +21,8 @@ Renderers are pure ffmpeg/Pillow:
                  ffmpeg fade (restrained enterprise motion, no slideshow)
 """
 from __future__ import annotations
-import csv, hashlib, html, json, os, re, shutil, subprocess, tempfile, time
+import csv, hashlib, html, json, math, os, re, shutil, struct, subprocess
+import tempfile, time, wave
 from pathlib import Path
 
 from . import creative_contract, providers
@@ -794,19 +795,123 @@ _ELEVEN_PROMPTS = {
                "premium trailer sound", 1.0),
 }
 
+_SFX_SAMPLE_RATE = 48_000
+
+
+def _validated_sfx(path: Path) -> Path:
+    """Require a bounded, mix-safe PCM cue before it reaches ffmpeg."""
+    if not path.is_file():
+        raise FileNotFoundError("SFX cue is missing")
+    file_size = path.stat().st_size
+    try:
+        with wave.open(str(path), "rb") as cue:
+            channels = cue.getnchannels()
+            sample_width = cue.getsampwidth()
+            sample_rate = cue.getframerate()
+            frames = cue.getnframes()
+            compression = cue.getcomptype()
+    except (EOFError, OSError, wave.Error) as exc:
+        raise ValueError("SFX cue is not a readable WAV") from exc
+    if (sample_rate != _SFX_SAMPLE_RATE or channels not in {1, 2}
+            or sample_width != 2 or compression != "NONE"
+            or not 0 < frames <= _SFX_SAMPLE_RATE * 5
+            or not 44 <= file_size <= _SFX_SAMPLE_RATE * 5 * 2 * 2 + 65_536):
+        raise ValueError("SFX cue does not satisfy the 48 kHz PCM contract")
+    return path
+
+
+def _synth_sfx_pcm(name: str) -> bytes:
+    """Return deterministic, restrained mono PCM for the offline fallback."""
+    duration = _ELEVEN_PROMPTS[name][1]
+    frame_count = round(duration * _SFX_SAMPLE_RATE)
+    pcm = bytearray(frame_count * 2)
+    noise_state = {
+        "boom": 0x13579BDF,
+        "whoosh": 0x2468ACE1,
+        "pop": 0x10293847,
+        "riser": 0x55667789,
+        "impact": 0x89ABCDEF,
+    }[name]
+    smoothed_noise = 0.0
+    for index in range(frame_count):
+        t = index / _SFX_SAMPLE_RATE
+        progress = index / max(1, frame_count - 1)
+        noise_state = (1664525 * noise_state + 1013904223) & 0xFFFFFFFF
+        noise = ((noise_state >> 8) / 0xFFFFFF) * 2.0 - 1.0
+        smoothed_noise += 0.12 * (noise - smoothed_noise)
+        attack = min(1.0, t / 0.008)
+        if name == "boom":
+            envelope = attack * (1.0 - progress) ** 3
+            phase = 2.0 * math.pi * (72.0 * t - 20.0 * t * t)
+            sample = envelope * (0.62 * math.sin(phase) + 0.10 * smoothed_noise)
+        elif name == "whoosh":
+            envelope = math.sin(math.pi * progress) ** 1.5
+            phase = 2.0 * math.pi * (180.0 * t + 720.0 * t * progress)
+            sample = envelope * (0.24 * noise + 0.08 * math.sin(phase))
+        elif name == "pop":
+            envelope = attack * (1.0 - progress) ** 8
+            phase = 2.0 * math.pi * (920.0 * t - 380.0 * t * t)
+            sample = envelope * (0.48 * math.sin(phase) + 0.08 * noise)
+        elif name == "riser":
+            fade = min(1.0, (1.0 - progress) / 0.06)
+            envelope = progress ** 1.35 * fade
+            phase = 2.0 * math.pi * (115.0 * t + 260.0 * t * progress)
+            sample = envelope * (0.24 * math.sin(phase) + 0.12 * noise)
+        else:  # impact
+            envelope = attack * (1.0 - progress) ** 4
+            phase = 2.0 * math.pi * (84.0 * t - 24.0 * t * t)
+            sample = envelope * (0.58 * math.sin(phase) + 0.16 * noise)
+        value = round(max(-0.85, min(0.85, sample)) * 32767)
+        struct.pack_into("<h", pcm, index * 2, value)
+    return bytes(pcm)
+
+
+def _synth_sfx_fallback(name: str) -> Path:
+    """Create an atomic 48 kHz fallback, or raise without dropping the cue."""
+    target = SFX_DIR / f"{name}.wav"
+    try:
+        return _validated_sfx(target)
+    except (FileNotFoundError, ValueError):
+        pass
+    SFX_DIR.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w+b", prefix=f".{name}-", suffix=".wav",
+                dir=SFX_DIR, delete=False) as raw:
+            temporary = Path(raw.name)
+            with wave.open(raw, "wb") as cue:
+                cue.setnchannels(1)
+                cue.setsampwidth(2)
+                cue.setframerate(_SFX_SAMPLE_RATE)
+                cue.writeframes(_synth_sfx_pcm(name))
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    return _validated_sfx(target)
+
 
 def _resolve_sfx(name: str) -> Path:
     """ElevenLabs-generated cue if a key exists (cached forever), else the
     synthesized fallback. Drop an API key in ~/.autoeditor/elevenlabs.key to
     upgrade every cue automatically on the next render."""
+    if name not in _ELEVEN_PROMPTS:
+        raise ValueError("unsupported SFX cue")
     _ek = _api_key("ELEVENLABS_API_KEY", ELEVEN_KEY_FILE)
     if not _ek:
-        return SFX_DIR / f"{name}.wav"
+        return _synth_sfx_fallback(name)
     eleven = SFX_DIR / f"eleven_{name}.wav"
-    if eleven.exists():
-        return eleven
+    try:
+        return _validated_sfx(eleven)
+    except (FileNotFoundError, ValueError):
+        pass
+    temporary = None
     try:
         import urllib.request, tempfile
+        SFX_DIR.mkdir(parents=True, exist_ok=True)
         key = _ek
         prompt, dur = _ELEVEN_PROMPTS[name]
         req = urllib.request.Request(
@@ -818,14 +923,20 @@ def _resolve_sfx(name: str) -> Path:
         audio = urllib.request.urlopen(req, timeout=120).read()
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             f.write(audio); tmp = f.name
+            temporary = Path(tmp)
         _run([_ffmpeg_path(), "-y", "-i", tmp,
-              "-ar", "48000", eleven])
+              "-vn", "-ac", "1", "-ar", str(_SFX_SAMPLE_RATE),
+              "-c:a", "pcm_s16le", eleven])
+        _validated_sfx(eleven)
         log(f"sfx: generated '{name}' via ElevenLabs (cached)")
         return eleven
     except Exception as e:
         log(f"sfx: ElevenLabs '{name}' failed ({type(e).__name__}), "
             "using synth fallback")
-    return SFX_DIR / f"{name}.wav"
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return _synth_sfx_fallback(name)
 
 
 def build_sfx_plan(edl: dict) -> list:
@@ -835,26 +946,36 @@ def build_sfx_plan(edl: dict) -> list:
     Grammar: animated diagram = whoosh + a pop per step · stat counter =
     riser then impact at landing · VERDICT punch-ins only (scale >= 1.10)
     = sub boom. Cards, b-roll entries, minor punch-ins: SILENT."""
-    S = SFX_DIR
     plan = []
-    if not S.exists():
-        return plan
+    resolved: dict[str, Path] = {}
+
+    def add(name: str, timestamp: float, gain: float) -> None:
+        try:
+            cue = resolved.get(name)
+            if cue is None:
+                cue = _resolve_sfx(name)
+                resolved[name] = cue
+            _validated_sfx(cue)
+        except Exception:
+            raise RuntimeError(
+                f"planned SFX cue '{name}' could not be produced"
+            ) from None
+        plan.append((cue, timestamp, gain))
+
     for p in edl.get("punch_ins", []):
         if float(p.get("scale", 1.08)) >= 1.10:
-            plan.append((_resolve_sfx("boom"), max(0, float(p["s"])), 0.45))
+            add("boom", max(0, float(p["s"])), 0.45)
     for b in edl.get("broll", []):
         viz = b.get("viz") or {}
         if str(viz.get("template", "")).lower() == "steps":
-            plan.append((_resolve_sfx("whoosh"), max(0, float(b["s"]) - 0.15), 0.55))
+            add("whoosh", max(0, float(b["s"]) - 0.15), 0.55)
             for i, _ in enumerate(viz.get("items", [])[:5]):
                 # StepsViz reveals land at s + 0.5 + i*0.6 (template timing)
-                plan.append((_resolve_sfx("pop"),
-                             float(b["s"]) + 0.5 + i * 0.6, 0.65))
+                add("pop", float(b["s"]) + 0.5 + i * 0.6, 0.65)
     for g in edl.get("graphics", []):
         if str(g.get("kind", "keyword")).lower() == "stat":
-            plan.append((_resolve_sfx("riser"), max(0, float(g["s"])), 0.50))
-            plan.append((_resolve_sfx("impact"), float(g["s"]) + 1.45, 0.55))
-    plan = [(w, t, g) for w, t, g in plan if w.exists()]
+            add("riser", max(0, float(g["s"])), 0.50)
+            add("impact", float(g["s"]) + 1.45, 0.55)
     plan.sort(key=lambda x: x[1])
     return plan
 

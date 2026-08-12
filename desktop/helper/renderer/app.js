@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const ChatState = window.AutoEditorChatState;
 const ViewState = window.AutoEditorViewState;
+const PreferenceForm = window.AutoEditorPreferenceForm;
 
 const app = {
   videos: [], outputDir: '', resultPath: '', transcript: '', proposal: null,
@@ -8,6 +9,7 @@ const app = {
   attachmentsDirty: false, chatQueue: [], currentChat: null,
   lastRenderPayload: null, proposalTargetResultPath: '', proposalBrief: '', platform: '',
   attachmentRevision: 0,
+  feedbackPair: null,
 };
 
 let visionWorker = null;
@@ -236,6 +238,31 @@ function mediaMessage(path, allowActions, mediaKey) {
   return wrap;
 }
 
+function hidePreferenceFeedback() {
+  app.feedbackPair = null;
+  $('preference-feedback').classList.add('hidden');
+  $('feedback-status').textContent = '';
+  $('feedback-error').textContent = '';
+}
+
+function showPreferenceFeedback(pair) {
+  app.feedbackPair = pair;
+  $('feedback-before-name').textContent = fileName(pair.beforeResultPath);
+  $('feedback-after-name').textContent = fileName(pair.afterResultPath);
+  document.querySelectorAll('input[name="feedback-preferred"]')
+    .forEach((input) => { input.checked = false; });
+  document.querySelectorAll('#feedback-defects input[type="checkbox"]')
+    .forEach((input) => { input.checked = false; });
+  document.querySelector('input[name="feedback-scope"][value="project"]').checked = true;
+  $('feedback-timecodes').value = '';
+  $('feedback-rationale').value = '';
+  $('feedback-consent').checked = false;
+  $('feedback-status').textContent = '';
+  $('feedback-error').textContent = '';
+  $('save-preference-feedback').disabled = false;
+  $('preference-feedback').classList.remove('hidden');
+}
+
 function technicalDetails(logs, detailsKey) {
   const details = document.createElement('details');
   const summary = document.createElement('summary');
@@ -263,21 +290,23 @@ function renderActivity(message, messageKey) {
       ? `Elapsed ${value.elapsed} · Still working; last engine update ${value.lastActivity}`
       : `Elapsed ${value.elapsed} · Last activity ${value.lastActivity}`;
     card.appendChild(timing);
-    if (message.measurable && Number.isFinite(message.progress)) {
-      const progress = document.createElement('progress');
-      progress.max = 100;
-      progress.value = message.progress;
-      progress.textContent = `${message.progress}%`;
-      const label = document.createElement('span');
-      label.className = 'progress-label';
-      label.textContent = `${message.progress}%`;
-      card.append(progress, label);
-    } else {
-      const working = document.createElement('div');
-      working.className = 'working-indicator';
-      working.innerHTML = '<i></i><i></i><i></i><span>Working</span>';
-      card.appendChild(working);
-    }
+    const progressWrap = document.createElement('div');
+    const progress = document.createElement('progress');
+    const label = document.createElement('span');
+    const working = document.createElement('div');
+    const measurable = message.measurable && Number.isFinite(message.progress);
+    progressWrap.className = 'activity-progress';
+    progressWrap.hidden = !measurable;
+    progress.max = 100;
+    progress.value = measurable ? message.progress : 0;
+    progress.textContent = `${measurable ? message.progress : 0}%`;
+    label.className = 'progress-label';
+    label.textContent = `${measurable ? message.progress : 0}%`;
+    progressWrap.append(progress, label);
+    working.className = 'working-indicator';
+    working.hidden = measurable;
+    working.innerHTML = '<i></i><i></i><i></i><span>Working</span>';
+    card.append(progressWrap, working);
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'ghost';
@@ -377,11 +406,13 @@ function renderChat(options = {}) {
 
 function invalidateAttachmentAnalysis() {
   app.attachmentRevision += 1;
+  app.resultPath = '';
   app.transcript = '';
   app.proposal = null;
   app.proposalBrief = '';
   app.proposalTargetResultPath = '';
   app.lastRenderPayload = null;
+  hidePreferenceFeedback();
 }
 
 function refreshActiveRenderClock(clock = Date.now()) {
@@ -396,6 +427,29 @@ function refreshActiveRenderClock(clock = Date.now()) {
   timing.textContent = value.stale
     ? `Elapsed ${value.elapsed} \u00b7 Still working; last engine update ${value.lastActivity}`
     : `Elapsed ${value.elapsed} \u00b7 Last activity ${value.lastActivity}`;
+}
+
+function updateActiveActivity(message, clock = Date.now()) {
+  if (!message) return false;
+  const transcript = $('chat-transcript');
+  const messageId = String(message.id || '');
+  const row = Array.from(transcript.querySelectorAll('[data-message-id]'))
+    .find((candidate) => candidate.dataset.messageId === messageId);
+  if (!row) return false;
+  let timingText = '';
+  if (message.kind === 'render') {
+    const value = ChatState.renderTiming(message, clock);
+    timingText = value.stale
+      ? `Elapsed ${value.elapsed} \u00b7 Still working; last engine update ${value.lastActivity}`
+      : `Elapsed ${value.elapsed} \u00b7 Last activity ${value.lastActivity}`;
+  }
+  const updated = ViewState.preserveTranscriptScroll(transcript, () =>
+    ViewState.updateActivityView(row, message, timingText));
+  if (updated) {
+    scheduleConversationSave();
+    setStatus(message.kind === 'render' ? 'Rendering' : 'Analyzing', 'on');
+  }
+  return updated;
 }
 
 function scheduleConversationSave() {
@@ -536,7 +590,7 @@ async function submitMessage() {
   app.attachmentsDirty = false;
   ChatState.dispatch(app.conversation, {
     type: 'user_message', content: text, attachments,
-    targetResultPath: app.resultPath,
+    targetResultPath: PreferenceForm.resultTarget(attachments, app.resultPath),
   });
   renderChat();
   if (ChatState.isStatusQuestion(text)) {
@@ -550,7 +604,7 @@ async function submitMessage() {
   }
   queueChat({
     text, attachments, history: boundedChatHistory(before),
-    targetResultPath: attachments.length ? '' : app.resultPath,
+    targetResultPath: PreferenceForm.resultTarget(attachments, app.resultPath),
     attachmentRevision: app.attachmentRevision,
   });
 }
@@ -623,6 +677,7 @@ function handleRenderEvent(event = {}) {
   if (event.event === 'local-result') {
     const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs : {};
     const output = event.output || Object.values(outputs)[0] || '';
+    const feedbackPair = PreferenceForm.comparisonPair(app.lastRenderPayload, output);
     app.transcript = typeof event.transcript === 'string' ? event.transcript : app.transcript;
     app.resultPath = output;
     ChatState.dispatch(app.conversation, event.qaPass === false ? {
@@ -634,6 +689,8 @@ function handleRenderEvent(event = {}) {
       content: 'Your edited video is ready. Tell me what you want changed.',
     });
     renderChat();
+    if (feedbackPair && event.qaPass !== false) showPreferenceFeedback(feedbackPair);
+    else hidePreferenceFeedback();
     return;
   }
   if (event.event === 'local-progress' && event.stage === 'canceled') {
@@ -644,19 +701,20 @@ function handleRenderEvent(event = {}) {
   if (event.event === 'local-progress') {
     const message = event.message || event.userStage || event.stage || 'Working...';
     const log = event.log || event.line || '';
+    let active;
     if (kind === 'chat') {
-      ChatState.dispatch(app.conversation, {
+      active = ChatState.dispatch(app.conversation, {
         type: 'analysis_progress', stage: message, log, engineActivity: true,
       });
     } else {
       const exact = event.measurable === true &&
         Number.isFinite(Number(event.progress ?? event.percent));
-      ChatState.dispatch(app.conversation, {
+      active = ChatState.dispatch(app.conversation, {
         type: 'render_progress', stage: message, log, engineActivity: true,
         measurable: exact, progress: exact ? Number(event.progress ?? event.percent) : undefined,
       });
     }
-    renderChat();
+    if (!updateActiveActivity(active)) renderChat();
   }
 }
 
@@ -665,16 +723,17 @@ function handleRawLog(value) {
   if (!line) return;
   const kind = typeof value === 'object' && value?.kind
     ? value.kind : (app.conversation.activeRender ? 'render' : 'chat');
+  let active = null;
   if (kind === 'render' && app.conversation.activeRender) {
-    ChatState.dispatch(app.conversation, {
+    active = ChatState.dispatch(app.conversation, {
       type: 'render_progress', log: line, engineActivity: true,
     });
   } else if (app.conversation.activeAnalysis) {
-    ChatState.dispatch(app.conversation, {
+    active = ChatState.dispatch(app.conversation, {
       type: 'analysis_progress', log: line, engineActivity: true,
     });
   }
-  renderChat();
+  if (active && !updateActiveActivity(active)) renderChat();
 }
 
 function renderState(state = {}) {
@@ -781,6 +840,59 @@ $('chat-prompt').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     submitMessage();
+  }
+});
+
+$('feedback-open-before').addEventListener('click', () => {
+  if (app.feedbackPair) window.helper.openResult(app.feedbackPair.beforeResultPath, 'open');
+});
+$('feedback-open-after').addEventListener('click', () => {
+  if (app.feedbackPair) window.helper.openResult(app.feedbackPair.afterResultPath, 'open');
+});
+$('save-preference-feedback').addEventListener('click', async () => {
+  const pair = app.feedbackPair;
+  const button = $('save-preference-feedback');
+  $('feedback-error').textContent = '';
+  $('feedback-status').textContent = '';
+  if (!pair) {
+    $('feedback-error').textContent = 'Render a revision before saving a comparison.';
+    return;
+  }
+  try {
+    const preferred = document.querySelector(
+      'input[name="feedback-preferred"]:checked')?.value || '';
+    const profileScope = document.querySelector(
+      'input[name="feedback-scope"]:checked')?.value || '';
+    const defectCategories = Array.from(document.querySelectorAll(
+      '#feedback-defects input[type="checkbox"]:checked'))
+      .map((input) => input.value);
+    const timecodes = PreferenceForm.parseTimecodes($('feedback-timecodes').value);
+    const rationale = $('feedback-rationale').value.trim();
+    if (!preferred) throw new Error('Choose the version you prefer.');
+    if (!defectCategories.length) throw new Error('Choose at least one defect category.');
+    if (timecodes.some((timecode) => !defectCategories.includes(timecode.category))) {
+      throw new Error('Every timecode category must also be checked above.');
+    }
+    if (!rationale) throw new Error('Explain why your preferred version is better.');
+    if (!$('feedback-consent').checked) {
+      throw new Error('Consent is required before saving personalization feedback.');
+    }
+    button.disabled = true;
+    $('feedback-status').textContent = 'Encrypting explicit feedback on this computer...';
+    await window.helper.savePreferenceFeedback({
+      ...pair,
+      preferred,
+      profileScope,
+      defectCategories,
+      timecodes,
+      rationale,
+      consent: { given: true, policyVersion: '2026-08-12' },
+    });
+    $('feedback-status').textContent = 'Explicit reviewed feedback saved securely.';
+  } catch (error) {
+    button.disabled = false;
+    $('feedback-status').textContent = '';
+    $('feedback-error').textContent = asError(error);
   }
 });
 

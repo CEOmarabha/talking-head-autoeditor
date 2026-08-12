@@ -1,6 +1,15 @@
 'use strict';
 
+const {
+  STORY_PLAN_SCHEMA,
+  STORY_TIMELINE,
+  durationIntent,
+  storyTranscript,
+  normalizeStoryPlan,
+} = require('./story-plan');
+
 const MAX_RESPONSE_BYTES = 1_000_000;
+const MAX_MEDIA_EVIDENCE_CHARS = 700_000;
 const MAX_SOURCES = 12;
 const DEEPSEEK_MODEL = 'deepseek-v4-pro';
 const RESEARCH_INTENT = /\b(trend|trending|viral|research|current|today|this week|social|tiktok|instagram|youtube|reddit|twitter|github|repo|competitor)\b/i;
@@ -257,7 +266,9 @@ async function research(query, emit) {
   return sources;
 }
 
-function validateProposal(raw) {
+function validateProposal(raw, {
+  mediaAnalysis = null, requireStoryPlan = false, requestedDuration = null,
+} = {}) {
   const operations = raw?.operations;
   if (!Array.isArray(operations) || operations.length === 0) return null;
   if (operations.length > 8) return null;
@@ -274,9 +285,16 @@ function validateProposal(raw) {
     seen.add(operation.op);
     clean.push({ op: operation.op, [spec.key]: value, human: spec.human(value) });
   }
+  const transcript = storyTranscript(mediaAnalysis);
+  const storyPlan = raw?.storyPlan === undefined ? null
+    : normalizeStoryPlan(raw.storyPlan, transcript, requestedDuration);
+  if ((requireStoryPlan && !storyPlan) || (raw?.storyPlan !== undefined && !storyPlan)) {
+    return null;
+  }
   return {
     operations: clean,
     summary: cleanText(raw.summary, 400),
+    ...(storyPlan ? { storyPlan } : {}),
   };
 }
 
@@ -357,7 +375,7 @@ function mediaEvidenceForPrompt(report) {
   const count = Math.max(1, sourceVideos.length);
   const transcriptLimit = Math.max(1200, Math.floor(32000 / count));
   const visualLimit = Math.max(400, Math.floor(12000 / count));
-  const wordLimit = Math.max(5, Math.floor(160 / count));
+  const sourceTranscript = storyTranscript(report);
   const videos = sourceVideos.map((video) => {
     const signals = video?.signals && typeof video.signals === 'object'
       ? video.signals : {};
@@ -377,12 +395,7 @@ function mediaEvidenceForPrompt(report) {
       },
       visualSummary: cleanText(video?.visualSummary, visualLimit),
       transcript: cleanText(video?.transcript, transcriptLimit),
-      timedWords: Array.isArray(video?.timedWords)
-        ? video.timedWords.slice(0, wordLimit).map((word) => ({
-          word: cleanText(word?.word, 120),
-          start: Number(word?.start || 0),
-          end: Number(word?.end || 0),
-        })) : [],
+      timedWordCount: Array.isArray(video?.timedWords) ? video.timedWords.length : 0,
       localOnly: video?.localOnly === true,
     };
   });
@@ -392,17 +405,34 @@ function mediaEvidenceForPrompt(report) {
     originalVideosUploaded: report.originalVideosUploaded === false ? false : undefined,
     error: cleanText(report.error, 1000),
     videos,
+    storyTranscript: {
+      schema: 'autoeditor-source-timed-words/v1',
+      timeline: STORY_TIMELINE,
+      complete: sourceTranscript.complete,
+      sourceDurationSeconds: sourceTranscript.sourceDuration,
+      words: sourceTranscript.words,
+    },
   };
   let encoded = JSON.stringify(compact);
-  if (encoded.length > 80000) {
+  if (encoded.length > MAX_MEDIA_EVIDENCE_CHARS) {
     compact.videos = videos.map((video) => ({
       ...video,
       transcript: video.transcript.slice(0, 1000),
       visualSummary: video.visualSummary.slice(0, 500),
-      timedWords: [],
       signals: { ...video.signals, sceneChangeTimes: [], silenceSegments: [] },
     }));
     encoded = JSON.stringify(compact);
+  }
+  if (encoded.length > MAX_MEDIA_EVIDENCE_CHARS) {
+    compact.storyTranscript = {
+      schema: 'autoeditor-source-timed-words/v1', timeline: STORY_TIMELINE,
+      complete: false, sourceDurationSeconds: sourceTranscript.sourceDuration,
+      words: [], error: 'complete timed transcript exceeds the bounded planning context',
+    };
+    encoded = JSON.stringify(compact);
+  }
+  if (encoded.length > MAX_MEDIA_EVIDENCE_CHARS) {
+    throw new Error('bounded media evidence could not be prepared safely');
   }
   return encoded;
 }
@@ -417,6 +447,9 @@ async function runEditingChat(request, apiKey, emit) {
     : `Current request: ${request.text}`;
   const operationContract = Object.fromEntries(Object.entries(EDIT_OPERATIONS)
     .map(([name, spec]) => [name, { [spec.key]: spec.values }]));
+  const sourceTranscript = storyTranscript(request.mediaAnalysis);
+  const requestedDuration = durationIntent(request.text);
+  const storyPlanRequired = request.videoCount > 0;
   const mediaEvidence = mediaEvidenceForPrompt(request.mediaAnalysis);
   const prompt = `${EDITING_CONTEXT}
 
@@ -449,7 +482,26 @@ Executable operation contract:
 ${JSON.stringify(operationContract)}
 
 Respond as one JSON object exactly shaped like this JSON example:
-{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}]}
+{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}],"storyPlan":{"schema_version":"${STORY_PLAN_SCHEMA}","timeline":"${STORY_TIMELINE}","target_duration":{"min_seconds":35,"max_seconds":45},"hook_anchor_id":"hook","closer_anchor_id":"closer","keep_ranges":[{"anchor_id":"hook","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":0,"source_end_word":12,"source_start_seconds":0.0,"source_end_seconds":4.2},{"anchor_id":"closer","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":100,"source_end_word":112,"source_start_seconds":36.0,"source_end_seconds":40.0}]}}
+
+Story-cut contract for this request:
+- A storyPlan is ${storyPlanRequired ? 'MANDATORY' : 'not required'} for an executable response.
+- Complete source-timed transcript available: ${sourceTranscript.complete ? 'yes' : 'no'}.
+- Requested duration bounds detected from the current request: ${requestedDuration ? JSON.stringify(requestedDuration) : 'none; choose and state honest bounds suited to the requested format'}.
+- storyPlan must contain only the exact keys shown. target_duration must stay
+  inside the detected requested bounds when present. keep_ranges are the only
+  source speech that will survive, in original source order. Their durations
+  must sum inside target_duration. Every range uses inclusive global word
+  indices from storyTranscript.words, exact boundary start/end values, and
+  anchor_text copied exactly from every word in that inclusive range.
+- The first keep range is the opening hook and its id must equal
+  hook_anchor_id. A plan needs at least two ranges with distinct, unique IDs.
+  It may select a strong later source moment by omitting all earlier words.
+  The last range id must equal closer_anchor_id. Never invent, paraphrase,
+  reorder, or partially quote an anchor.
+- If the complete timed transcript is unavailable, the requested duration
+  cannot be met with exact transcript-grounded ranges, or the plan will not
+  fit, return operations as [] and explain that rendering is blocked.
 
 For an attached-video editing request, the message must cover: a clear video
 summary; strongest hook and useful moments; the proposed edit; format, pacing,
@@ -469,7 +521,11 @@ private chain-of-thought. Output JSON only.`;
   }
   const message = cleanText(raw?.message, 8000) ||
     'DeepSeek did not return a complete answer before the safety limit. Nothing was rendered. Send the message again.';
-  const proposal = validateProposal(raw) || { operations: [] };
+  const proposal = validateProposal(raw, {
+    mediaAnalysis: request.mediaAnalysis,
+    requireStoryPlan: storyPlanRequired,
+    requestedDuration,
+  }) || { operations: [] };
   return {
     event: 'local-chat', message, proposal,
     canApply: proposal.operations.length > 0, sources,

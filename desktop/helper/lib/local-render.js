@@ -1,6 +1,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
+const { structuralStoryPlan } = require('./story-plan');
 
 const MAX_INPUTS = 20;
 const MAX_SCRIPT_CHARS = 200000;
@@ -302,6 +303,9 @@ function normalizeApplyRequest(input, validateProposal) {
   requirePlainObject(input, 'local apply request');
   const request = normalizeLocalRequest(input);
   const proposal = normalizeProposal(input.proposal);
+  if (Object.prototype.hasOwnProperty.call(proposal, 'storyPlan')) {
+    structuralStoryPlan(proposal.storyPlan);
+  }
   if (validateProposal !== undefined) {
     if (typeof validateProposal !== 'function') {
       throw new TypeError('proposal validator must be a function');
@@ -384,8 +388,8 @@ function engineProgress(line) {
       'media-analysis', 'Inspecting the video on this computer...'],
     [/^research$|research:/,
       'research', 'Researching relevant current public sources...'],
-    [/^deepseek$|deepseek v4/,
-      'deepseek', 'DeepSeek is preparing the edit plan...'],
+    [/^deepseek$|deepseek v4|deepseek (?:director|critic|edl)/,
+      'deepseek', 'DeepSeek is validating the premium edit plan...'],
     [/transcribe-only|faster-whisper word-level transcript|transcrib/,
       'transcription', 'Transcribing audio, still working'],
     [/phase 1:/, 'preparing', 'Preparing the footage...'],
