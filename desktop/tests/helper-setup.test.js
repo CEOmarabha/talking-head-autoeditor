@@ -47,8 +47,11 @@ for (const api of [
 assert.ok(helperHtml.includes('Rendering and file saving stay on this computer.'));
 assert.ok(helperHtml.includes('Edit chat'));
 assert.ok(helperHtml.includes('Message DeepSeek'));
-assert.ok(helperHtml.includes('Drag footage here'));
-assert.ok(helperHtml.includes('Live edit console'));
+assert.ok(helperHtml.includes('Drag and drop here'));
+assert.ok(!helperHtml.includes('Live edit console'));
+assert.ok(helperHtml.includes('Optional settings'));
+assert.ok(helperHtml.includes(
+  'Optional spoken words for generated/scripted content. Do not put editing instructions here.'));
 assert.ok(helperHtml.includes('Use current public research when relevant'));
 assert.ok(helperHtml.includes('DeepSeek API key'));
 assert.ok(helperHtml.includes('Enter each key once.'));
@@ -59,9 +62,9 @@ assert.ok(!/AutoEditor website/i.test(helperHtml));
 assert.ok(!/Start Helper/i.test(helperHtml));
 assert.ok(helperRenderer.includes('window.helper.chatLocal'));
 assert.ok(helperRenderer.includes(
-  'history: boundedChatHistory(app.chat.slice(0, -1))'));
+  'history: boundedChatHistory(before)'));
 assert.ok(helperRenderer.includes(
-  "...(app.videos.length ? { videoPaths: [...app.videos] } : {})"));
+  '...(job.attachments.length ? { videoPaths: job.attachments } : {})'));
 assert.ok(helperRenderer.includes('const CHAT_HISTORY_MAX_ENTRY_CHARS = 2000'));
 assert.ok(helperRenderer.includes('const CHAT_HISTORY_MAX_TOTAL_CHARS = 12000'));
 assert.ok(!helperRenderer.includes('videoPaths: [...app.videos],'));
@@ -71,7 +74,7 @@ assert.ok(helperRenderer.includes('video.controls = true'));
 assert.ok(helperRenderer.includes('function localFileUrl'));
 assert.ok(helperRenderer.includes('Saved securely and reused automatically'));
 assert.ok(helperMain.includes('settingsForLocalRender(settings)'));
-assert.ok(helperHtml.includes('Render these changes'));
+assert.ok(helperRenderer.includes("button.textContent = 'Render these changes'"));
 assert.ok(helperRenderer.includes("research: $('live-research').checked"));
 assert.ok(helperMain.includes('returnedResearchSources'));
 assert.ok(helperMain.includes("require('./lib/editing-harness')"));

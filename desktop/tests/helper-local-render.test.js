@@ -273,13 +273,15 @@ try {
   { event: 'result', path: '/tmp/result.mp4' });
   assert.deepStrictEqual(engineProgress(
     '[pse-edit 12:00:00] phase 4p: EDL via heuristic'), {
-    progress: 55,
+    stage: 'planning',
     message: 'Planning the visual edit...',
+    measurable: false,
   });
   assert.deepStrictEqual(engineProgress(
     '[pse-edit 12:00:01] phase 7: QA gate'), {
-    progress: 90,
+    stage: 'quality-assurance',
     message: 'Checking video and audio quality...',
+    measurable: false,
   });
   assert.strictEqual(engineProgress('ordinary diagnostic line'), null);
   for (const line of [

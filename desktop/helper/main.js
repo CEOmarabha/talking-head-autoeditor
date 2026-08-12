@@ -315,6 +315,19 @@ function send(channel, value) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, value);
 }
 
+function activeRenderState() {
+  if (!activeRender) return null;
+  return {
+    id: activeRender.id,
+    stage: activeRender.stage,
+    message: activeRender.message,
+    startedAt: activeRender.startedAt,
+    lastActivityAt: activeRender.lastActivityAt,
+    measurable: activeRender.measurable,
+    progress: activeRender.measurable ? activeRender.progress : null,
+  };
+}
+
 function registerVisionProtocol() {
   const root = runtimePaths().visionDir;
   protocol.handle('autoeditor-vision', (request) => {
@@ -543,13 +556,28 @@ function proposalWasReturned(proposal) {
 function processLocalEvent(event, action) {
   if (!LOCAL_EVENTS.has(event.event)) return false;
   if (action.canceled) return true;
-  let visibleEvent = event;
+  action.lastActivityAt = Date.now();
+  let visibleEvent = { ...event, actionId: action.id, kind: action.kind };
   if (event.event === 'local-progress') {
     const mapped = engineProgress(event.line || event.stage || '');
-    if (mapped && mapped.progress > action.progress) {
-      action.progress = mapped.progress;
-      visibleEvent = { ...event, ...mapped };
+    if (mapped) {
+      visibleEvent = { ...visibleEvent, ...mapped };
     }
+    const exact = event.measurable === true &&
+      Number.isFinite(Number(event.progress ?? event.percent));
+    if (exact) {
+      action.measurable = true;
+      action.progress = Math.max(0, Math.min(100,
+        Math.round(Number(event.progress ?? event.percent))));
+      visibleEvent = {
+        ...visibleEvent, measurable: true, progress: action.progress,
+      };
+    } else if (mapped?.measurable === false || event.measurable === false) {
+      action.measurable = false;
+      action.progress = null;
+    }
+    action.stage = String(visibleEvent.stage || action.stage || 'working');
+    action.message = String(visibleEvent.message || action.message || 'Working...');
   }
   if (event.event === 'local-result' && action.kind === 'render') {
     rememberResult(event, action.outputDir);
@@ -560,6 +588,9 @@ function processLocalEvent(event, action) {
     action.terminal = true;
   } else if (event.event === 'local-error') {
     action.terminal = true;
+    visibleEvent = {
+      ...visibleEvent, stage: event.stage || action.message || action.stage,
+    };
   }
   send('helper-render', visibleEvent);
   return true;
@@ -574,7 +605,12 @@ function localProcess(mode, payload, kind, settings) {
     proc: null,
     terminal: false,
     canceled: false,
-    progress: 0,
+    progress: null,
+    measurable: false,
+    stage: kind === 'render' ? 'starting' : 'analysis',
+    message: kind === 'render' ? 'Starting the local edit...' : 'Analyzing...',
+    startedAt: Date.now(),
+    lastActivityAt: Date.now(),
   };
   const child = spawn(p.daemon, [mode], {
     env: daemonEnv(settings), windowsHide: true, cwd: p.root,
@@ -586,17 +622,19 @@ function localProcess(mode, payload, kind, settings) {
   if (kind === 'render') activeRender = action;
   else activeChat = action;
   if (kind === 'render') {
-    action.progress = 1;
-    send('helper-render', {
-      event: 'local-progress', progress: 1,
+    processLocalEvent({
+      event: 'local-progress', stage: 'starting', measurable: false,
       message: 'Starting the local edit...',
-    });
+    }, action);
   }
 
   const onLine = (line) => {
+    action.lastActivityAt = Date.now();
     const event = parseEngineEvent(line);
     if (event && processLocalEvent(event, action)) return;
-    if (!event) send('helper-log', redact(line, settings));
+    if (!event) send('helper-log', {
+      line: redact(line, settings), actionId: action.id, kind: action.kind,
+    });
   };
   const stdout = lineReader(onLine);
   const stderr = lineReader(onLine);
@@ -607,7 +645,9 @@ function localProcess(mode, payload, kind, settings) {
     if (!action.terminal && !action.canceled) {
       action.terminal = true;
       send('helper-render', {
-        event: 'local-error', error: `AutoEditor could not start: ${error.message}`,
+        event: 'local-error', actionId: action.id, kind: action.kind,
+        stage: action.message || action.stage,
+        error: `AutoEditor could not start: ${error.message}`,
       });
     }
   });
@@ -618,7 +658,8 @@ function localProcess(mode, payload, kind, settings) {
     if (kind === 'chat' && activeChat === action) activeChat = null;
     if (!action.terminal && !action.canceled) {
       send('helper-render', {
-        event: 'local-error',
+        event: 'local-error', actionId: action.id, kind: action.kind,
+        stage: action.message || action.stage,
         error: code === 0
           ? 'AutoEditor ended without returning a result'
           : `AutoEditor stopped before finishing (${code})`,
@@ -626,11 +667,13 @@ function localProcess(mode, payload, kind, settings) {
     }
     send('helper-state', {
       running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
+      activeRender: activeRenderState(),
     });
   });
   child.stdin.end(`${JSON.stringify(payload)}\n`);
   send('helper-state', {
     running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
+    activeRender: activeRenderState(),
   });
   return action;
 }
@@ -710,11 +753,14 @@ function chatLocal(raw) {
   }
   const action = {
     id: ++actionSequence, kind: 'chat', outputDir: '', proc: null,
-    terminal: false, canceled: false, progress: 0,
+    terminal: false, canceled: false, progress: null, measurable: false,
+    stage: 'analysis', message: 'Analyzing...',
+    startedAt: Date.now(), lastActivityAt: Date.now(),
   };
   activeChat = action;
   send('helper-state', {
     running: !!activeRender, rendering: !!activeRender, chatting: true,
+    activeRender: activeRenderState(),
   });
   (async () => {
     let mediaAnalysis = null;
@@ -748,7 +794,8 @@ function chatLocal(raw) {
     if (activeChat !== action || action.canceled) return;
     action.proc = null;
     const event = await runEditingChat(
-      { ...request, mediaAnalysis }, settings.deepseekApiKey,
+      { ...request, mediaAnalysis, hasCompletedRender: !!raw?.resultPath },
+      settings.deepseekApiKey,
       (progress) => processLocalEvent(progress, action));
     processLocalEvent(event, action);
   })().catch((error) => {
@@ -760,6 +807,7 @@ function chatLocal(raw) {
     if (activeChat === action) activeChat = null;
     send('helper-state', {
       running: !!activeRender, rendering: !!activeRender, chatting: false,
+      activeRender: activeRenderState(),
     });
   });
   return { ok: true };
@@ -767,9 +815,26 @@ function chatLocal(raw) {
 
 function applyLocal(raw) {
   if (activeRender) throw new Error('An edit is already rendering');
-  const request = normalizeApplyRequest(
-    translateVideoPaths(raw), proposalWasReturned);
-  requireDialogSelection(request);
+  let translated = translateVideoPaths(raw);
+  let revisionInput = '';
+  if (raw && raw.resultPath) {
+    revisionInput = realFile(raw.resultPath);
+    if (!returnedOutputs.has(revisionInput)) {
+      throw new Error('That revision target is not from this AutoEditor session');
+    }
+    translated = { ...translated, videos: [revisionInput] };
+    delete translated.inputs;
+    delete translated.videoPaths;
+    delete translated.clips;
+  }
+  const request = normalizeApplyRequest(translated, proposalWasReturned);
+  if (revisionInput) {
+    if (!selectedOutputDirs.has(fs.realpathSync.native(request.outputDir))) {
+      throw new Error('Choose the output folder with the Choose button');
+    }
+  } else {
+    requireDialogSelection(request);
+  }
   const settings = requireReady();
   localProcess('--local-render', request, 'render',
     settingsForLocalRender(settings));
@@ -783,10 +848,11 @@ async function cancelLocal() {
   activeRender = null;
   await stopProcessTree(action.proc);
   send('helper-render', {
-    event: 'local-progress', stage: 'canceled', line: 'Edit canceled',
+    event: 'local-progress', actionId: action.id, kind: 'render',
+    stage: 'canceled', line: 'Edit canceled',
   });
   send('helper-state', { running: false, rendering: false,
-    chatting: !!activeChat });
+    chatting: !!activeChat, activeRender: null });
   return { ok: true, canceled: true };
 }
 
@@ -839,14 +905,18 @@ async function pickOutput() {
   return output;
 }
 
-function openResult(raw) {
+function openResult(raw, action = 'reveal') {
   if (typeof raw !== 'string') throw new Error('Result path must be a string');
+  if (action !== 'open' && action !== 'reveal') {
+    throw new Error('Result action must be open or reveal');
+  }
   const real = realFile(raw);
   if (!returnedOutputs.has(real)) {
     throw new Error('That result is not from this AutoEditor session');
   }
+  if (action === 'open') return shell.openPath(real);
   shell.showItemInFolder(real);
-  return { ok: true };
+  return { ok: true, action };
 }
 
 function setupIpc() {
@@ -860,6 +930,7 @@ function setupIpc() {
       running: !!activeRender,
       rendering: !!activeRender,
       chatting: !!activeChat,
+      activeRender: activeRenderState(),
       settings: settingsPresence(settings),
       capabilities: {
         deepseek: !!settings.deepseekApiKey,
@@ -883,7 +954,8 @@ function setupIpc() {
   ipcMain.handle('helper:cancel-local', () => cancelLocal());
   ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));
   ipcMain.handle('helper:apply-local', (_event, input) => applyLocal(input));
-  ipcMain.handle('helper:open-result', (_event, resultPath) => openResult(resultPath));
+  ipcMain.handle('helper:open-result', (_event, resultPath, action) =>
+    openResult(resultPath, action));
   ipcMain.handle('helper:open-research-source', (_event, url) =>
     openResearchSource(url));
   ipcMain.handle('helper:notices', () => shell.openPath(runtimePaths().notices));

@@ -357,20 +357,26 @@ function engineProgress(line) {
   if (typeof line !== 'string') return null;
   const text = line.trim().toLowerCase();
   const rules = [
-    [/transcribe-only|faster-whisper word-level transcript/, 8,
-      'Transcribing the video on this computer...'],
-    [/phase 1:/, 18, 'Preparing the footage...'],
-    [/phase 2|silence cut|word-guarded cut/, 30,
+    [/media-analysis|sampling local frames|probing local video/,
+      'media-analysis', 'Inspecting the video on this computer...'],
+    [/^research$|research:/,
+      'research', 'Researching relevant current public sources...'],
+    [/^deepseek$|deepseek v4/,
+      'deepseek', 'DeepSeek is preparing the edit plan...'],
+    [/transcribe-only|faster-whisper word-level transcript|transcrib/,
+      'transcription', 'Transcribing audio, still working'],
+    [/phase 1:/, 'preparing', 'Preparing the footage...'],
+    [/phase 2|silence cut|word-guarded cut/, 'cutting',
       'Removing pauses and tightening the edit...'],
-    [/phase 3/, 42, 'Aligning speech and captions...'],
-    [/phase 4p:/, 55, 'Planning the visual edit...'],
-    [/phase 5\/6:/, 70, 'Adding visuals and graphics...'],
-    [/phase 6:/, 82, 'Building the final format...'],
-    [/phase 7:/, 90, 'Checking video and audio quality...'],
-    [/phase 8:/, 97, 'Saving the finished video...'],
+    [/phase 3/, 'captions', 'Aligning speech and captions...'],
+    [/phase 4p:/, 'planning', 'Planning the visual edit...'],
+    [/phase 5\/6:/, 'visuals', 'Adding visuals and graphics...'],
+    [/phase 6:/, 'encoding', 'Building the final format...'],
+    [/phase 7:/, 'quality-assurance', 'Checking video and audio quality...'],
+    [/phase 8:/, 'saving', 'Saving the finished video...'],
   ];
-  for (const [pattern, progress, message] of rules) {
-    if (pattern.test(text)) return { progress, message };
+  for (const [pattern, stage, message] of rules) {
+    if (pattern.test(text)) return { stage, message, measurable: false };
   }
   return null;
 }

@@ -23,7 +23,8 @@ contextBridge.exposeInMainWorld('helper', Object.freeze({
   cancelLocal: () => ipcRenderer.invoke('helper:cancel-local'),
   chatLocal: (request) => ipcRenderer.invoke('helper:chat-local', request),
   applyLocal: (request) => ipcRenderer.invoke('helper:apply-local', request),
-  openResult: (resultPath) => ipcRenderer.invoke('helper:open-result', resultPath),
+  openResult: (resultPath, action = 'reveal') =>
+    ipcRenderer.invoke('helper:open-result', resultPath, action),
   openResearchSource: (url) => ipcRenderer.invoke(
     'helper:open-research-source', url),
   visionProgress: (value) => ipcRenderer.send('helper:vision-progress', value),

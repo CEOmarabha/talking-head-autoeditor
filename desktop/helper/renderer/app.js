@@ -1,18 +1,20 @@
 const $ = (id) => document.getElementById(id);
+const ChatState = window.AutoEditorChatState;
 
 const app = {
-  videos: [],
-  outputDir: '',
-  resultPath: '',
-  transcript: '',
-  rendering: false,
-  chatting: false,
-  chat: [],
-  proposal: null,
+  videos: [], outputDir: '', resultPath: '', transcript: '', proposal: null,
+  conversation: ChatState.createConversationState(),
+  attachmentsDirty: false, chatQueue: [], currentChat: null,
+  lastRenderPayload: null, proposalTargetResultPath: '', platform: '',
 };
 
 let visionWorker = null;
 let activeVisionId = null;
+
+function asError(error) {
+  const text = error?.message || String(error || 'Something went wrong.');
+  return text.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
+}
 
 function localVisionWorker() {
   if (visionWorker) return visionWorker;
@@ -49,9 +51,7 @@ window.helper.onVisionRequest((request) => {
   if (!Number.isSafeInteger(id) || id < 1 || !Array.isArray(images) ||
       images.length < 1 || images.length > 8) return;
   if (activeVisionId !== null) {
-    window.helper.visionResult({
-      id, status: 'error', error: 'the local vision model is already working',
-    });
+    window.helper.visionResult({ id, status: 'error', error: 'the local vision model is already working' });
     return;
   }
   activeVisionId = id;
@@ -59,16 +59,9 @@ window.helper.onVisionRequest((request) => {
     localVisionWorker().postMessage({ id, images });
   } catch (error) {
     activeVisionId = null;
-    window.helper.visionResult({
-      id, status: 'error', error: asError(error).slice(0, 1000),
-    });
+    window.helper.visionResult({ id, status: 'error', error: asError(error).slice(0, 1000) });
   }
 });
-
-function asError(error) {
-  const text = error?.message || String(error || 'Something went wrong.');
-  return text.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
-}
 
 const CHAT_HISTORY_MAX_ENTRIES = 12;
 const CHAT_HISTORY_MAX_ENTRY_CHARS = 2000;
@@ -76,7 +69,8 @@ const CHAT_HISTORY_MAX_TOTAL_CHARS = 12000;
 
 function boundedChatHistory(messages) {
   const entries = messages
-    .filter((message) => message.content)
+    .filter((message) => message.kind === 'text' && message.content &&
+      (message.role === 'user' || message.role === 'assistant'))
     .slice(-CHAT_HISTORY_MAX_ENTRIES)
     .map(({ role, content }) => ({
       role,
@@ -113,34 +107,47 @@ function normalizePath(value) {
   return value?.path || value?.outputDir || value?.resultPath || '';
 }
 
-function providerSaved(state, name) {
-  const providers = state?.providers || state?.settings || state?.configuredProviders || {};
-  return Boolean(
-    providers[name]
-    || providers[`${name}Configured`]
-    || providers[`${name}Saved`]
-    || providers[`${name}ApiKey`]
-    || (name === 'remotion' && (providers.remotionKey || providers.remotionLicenseKey))
-    || state?.[`${name}Configured`]
-    || state?.[`${name}ApiKey`]
-    || (name === 'remotion' && (state?.remotionKey || state?.remotionLicenseKey))
-  );
-}
-
 function setStatus(label, tone = '') {
   $('status').textContent = label;
   $('status').className = `pill ${tone}`.trim();
+}
+
+function providerSaved(state, name) {
+  const providers = state?.providers || state?.settings || state?.configuredProviders || {};
+  return Boolean(providers[name] || providers[`${name}Configured`] ||
+    providers[`${name}Saved`] || providers[`${name}ApiKey`] ||
+    (name === 'remotion' && (providers.remotionKey || providers.remotionLicenseKey)) ||
+    state?.[`${name}Configured`] || state?.[`${name}ApiKey`] ||
+    (name === 'remotion' && (state?.remotionKey || state?.remotionLicenseKey)));
+}
+
+function renderProviderStates(state) {
+  const inputIds = {
+    deepseek: 'deepseek-key', pexels: 'pexels-key', pixabay: 'pixabay-key',
+    eleven: 'eleven-key', remotion: 'remotion-key',
+  };
+  ['deepseek', 'pexels', 'pixabay', 'eleven', 'remotion'].forEach((name) => {
+    const saved = providerSaved(state, name) ||
+      (name === 'eleven' && providerSaved(state, 'elevenLabs'));
+    const target = $(`${name}-saved`);
+    target.textContent = saved ? 'Saved securely and reused automatically' : '';
+    target.classList.toggle('visible', saved);
+    const input = $(inputIds[name]);
+    if (!input.dataset.emptyPlaceholder) input.dataset.emptyPlaceholder = input.placeholder;
+    input.placeholder = saved
+      ? 'Saved. Paste a new key only if you want to replace it.'
+      : input.dataset.emptyPlaceholder;
+  });
 }
 
 function renderVideos() {
   const hasVideos = app.videos.length > 0;
   $('video-list-wrap').classList.toggle('hidden', !hasVideos);
   $('video-empty').textContent = hasVideos
-    ? `${app.videos.length} ${app.videos.length === 1 ? 'video attached' : 'videos attached'}`
-    : 'Drag footage here, or choose files from this computer.';
-  $('video-count').textContent = `${app.videos.length} ${app.videos.length === 1 ? 'video attached' : 'videos attached'}`;
+    ? `${app.videos.length} ready for your next message`
+    : 'Drag and drop here';
+  $('video-count').textContent = `${app.videos.length} ${app.videos.length === 1 ? 'video' : 'videos'} ready to attach`;
   $('video-list').replaceChildren();
-
   app.videos.forEach((path, index) => {
     const item = document.createElement('li');
     const copy = document.createElement('div');
@@ -153,113 +160,14 @@ function renderVideos() {
     remove.type = 'button';
     remove.className = 'remove-file';
     remove.textContent = 'Remove';
-    remove.setAttribute('aria-label', `Remove ${fileName(path)}`);
     remove.addEventListener('click', () => {
       app.videos.splice(index, 1);
+      app.attachmentsDirty = true;
       renderVideos();
     });
     item.append(copy, remove);
     $('video-list').appendChild(item);
   });
-  renderChat();
-}
-
-function renderProviderStates(state) {
-  const inputIds = {
-    deepseek: 'deepseek-key', pexels: 'pexels-key', pixabay: 'pixabay-key',
-    eleven: 'eleven-key', remotion: 'remotion-key',
-  };
-  ['deepseek', 'pexels', 'pixabay', 'eleven', 'remotion'].forEach((name) => {
-    const saved = providerSaved(state, name)
-      || (name === 'eleven' && providerSaved(state, 'elevenLabs'));
-    const target = $(`${name}-saved`);
-    target.textContent = saved ? 'Saved securely and reused automatically' : '';
-    target.classList.toggle('visible', saved);
-    const input = $(inputIds[name]);
-    if (!input.dataset.emptyPlaceholder) input.dataset.emptyPlaceholder = input.placeholder;
-    input.placeholder = saved
-      ? 'Saved. Paste a new key only if you want to replace it.'
-      : input.dataset.emptyPlaceholder;
-  });
-}
-
-function renderState(state = {}) {
-  const videos = normalizePaths(state.videos || state.videoPaths || state.selectedVideos || []);
-  if (videos.length) app.videos = videos;
-  const outputDir = normalizePath(state.outputDir || state.outputFolder || '');
-  if (outputDir) {
-    app.outputDir = outputDir;
-    $('output-folder').value = outputDir;
-  }
-  if (state.projectType) $('project-type').value = state.projectType;
-  if (typeof state.script === 'string' && !$('script').value) $('script').value = state.script;
-  renderProviderStates(state);
-  renderVideos();
-  const resultPath = normalizePath(state.resultPath || state.latestResult || '');
-  if (resultPath) showResult(resultPath);
-  if (state.error) {
-    setStatus('Needs attention', 'bad');
-    $('render-error').textContent = state.error;
-  } else if (!app.rendering && !app.chatting) {
-    setStatus('Ready');
-  }
-}
-
-function setRendering(value, message = '') {
-  app.rendering = value;
-  $('select-videos').disabled = value;
-  $('select-output').disabled = value;
-  $('apply-changes').disabled = value;
-  $('cancel').classList.toggle('hidden', !value);
-  if (value) $('progress-section').classList.remove('hidden');
-  if (message) $('progress-message').textContent = message;
-  setStatus(value ? 'Rendering' : (app.chatting ? 'Thinking' : 'Ready'),
-    value ? 'on' : '');
-}
-
-function setProgress(value, message) {
-  let progress = Number(value);
-  if (!Number.isFinite(progress)) progress = 0;
-  if (progress > 0 && progress <= 1) progress *= 100;
-  progress = Math.max(0, Math.min(100, Math.round(progress)));
-  $('progress').value = progress;
-  $('progress').textContent = `${progress}%`;
-  $('progress-value').textContent = `${progress}%`;
-  if (message) $('progress-message').textContent = message;
-}
-
-function appendLog(line) {
-  const text = typeof line === 'string' ? line : line?.message || line?.line || '';
-  if (!text) return;
-  $('progress-section').classList.remove('hidden');
-  const current = $('log').textContent === 'Ready. Every edit stage will appear here.'
-    ? '' : $('log').textContent;
-  const suffix = text.endsWith('\n') ? '' : '\n';
-  $('log').textContent = (current + text + suffix).slice(-24000);
-  $('log').scrollTop = $('log').scrollHeight;
-}
-
-function mediaMessage(path, allowReveal) {
-  const wrap = document.createElement('div');
-  const video = document.createElement('video');
-  const footer = document.createElement('div');
-  const name = document.createElement('strong');
-  wrap.className = 'chat-media';
-  video.controls = true;
-  video.preload = 'metadata';
-  video.src = localFileUrl(path);
-  footer.className = 'chat-media-footer';
-  name.textContent = fileName(path);
-  footer.appendChild(name);
-  if (allowReveal) {
-    const reveal = document.createElement('button');
-    reveal.type = 'button';
-    reveal.textContent = 'Show in Finder';
-    reveal.addEventListener('click', () => window.helper.openResult(path));
-    footer.appendChild(reveal);
-  }
-  wrap.append(video, footer);
-  return wrap;
 }
 
 function sourceList(sources) {
@@ -272,8 +180,7 @@ function sourceList(sources) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'source-button';
-    const date = source.date ? `, ${source.date}` : '';
-    button.textContent = `[${index + 1}] ${source.title || source.source || 'Research source'}${date}`;
+    button.textContent = `[${index + 1}] ${source.title || source.source || 'Research source'}${source.date ? `, ${source.date}` : ''}`;
     button.addEventListener('click', async () => {
       try { await window.helper.openResearchSource(source.url); }
       catch (error) { $('chat-error').textContent = asError(error); }
@@ -284,130 +191,169 @@ function sourceList(sources) {
   return list.childElementCount ? list : null;
 }
 
+function mediaMessage(path, allowActions) {
+  const wrap = document.createElement('div');
+  const video = document.createElement('video');
+  const footer = document.createElement('div');
+  const copy = document.createElement('div');
+  const name = document.createElement('strong');
+  const location = document.createElement('span');
+  wrap.className = 'chat-media';
+  video.controls = true;
+  video.preload = 'metadata';
+  video.src = localFileUrl(path);
+  footer.className = 'chat-media-footer';
+  name.textContent = fileName(path);
+  location.textContent = path;
+  copy.append(name, location);
+  footer.appendChild(copy);
+  if (allowActions) {
+    const actions = document.createElement('div');
+    actions.className = 'result-actions';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.textContent = 'Open video';
+    open.addEventListener('click', () => window.helper.openResult(path, 'open'));
+    const reveal = document.createElement('button');
+    reveal.type = 'button';
+    reveal.textContent = app.platform === 'darwin' ? 'Show in Finder' : 'Show in folder';
+    reveal.addEventListener('click', () => window.helper.openResult(path, 'reveal'));
+    actions.append(open, reveal);
+    footer.appendChild(actions);
+  }
+  wrap.append(video, footer);
+  return wrap;
+}
+
+function technicalDetails(logs) {
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  const pre = document.createElement('pre');
+  details.className = 'technical-details';
+  summary.textContent = 'Technical details';
+  pre.textContent = logs.length ? logs.join('\n') : 'Waiting for engine output...';
+  details.append(summary, pre);
+  return details;
+}
+
+function renderActivity(message) {
+  const card = document.createElement('div');
+  const stage = document.createElement('strong');
+  const timing = document.createElement('div');
+  card.className = `activity-card ${message.kind}`;
+  stage.className = 'activity-stage';
+  stage.textContent = message.stage || 'Working...';
+  card.appendChild(stage);
+  if (message.kind === 'render') {
+    const value = ChatState.renderTiming(message, Date.now());
+    if (value.stale) stage.textContent = `Still working, last engine update ${value.lastActivity}.`;
+    timing.className = 'activity-timing';
+    timing.textContent = `Elapsed ${value.elapsed} · Last activity ${value.lastActivity}`;
+    card.appendChild(timing);
+    if (message.measurable && Number.isFinite(message.progress)) {
+      const progress = document.createElement('progress');
+      progress.max = 100;
+      progress.value = message.progress;
+      progress.textContent = `${message.progress}%`;
+      const label = document.createElement('span');
+      label.className = 'progress-label';
+      label.textContent = `${message.progress}%`;
+      card.append(progress, label);
+    } else {
+      const working = document.createElement('div');
+      working.className = 'working-indicator';
+      working.innerHTML = '<i></i><i></i><i></i><span>Working</span>';
+      card.appendChild(working);
+    }
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ghost';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', cancelRender);
+    card.appendChild(cancel);
+  }
+  card.appendChild(technicalDetails(message.logs || []));
+  return card;
+}
+
+function addProposalButton(row, message) {
+  if (!message.canApply || !message.proposal || app.conversation.activeRender) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'primary proposal-button';
+  button.textContent = 'Render these changes';
+  button.addEventListener('click', () => {
+    ChatState.dispatch(app.conversation, {
+      type: 'user_message', content: 'Render it.',
+      targetResultPath: message.targetResultPath || '',
+    });
+    renderChat();
+    startRender(message.proposal, null, message.targetResultPath || '');
+  });
+  row.appendChild(button);
+}
+
 function renderChat() {
-  $('chat-transcript').replaceChildren();
-  if (!app.videos.length && !app.chat.length) {
+  const transcript = $('chat-transcript');
+  transcript.replaceChildren();
+  if (!app.conversation.messages.length) {
     const empty = document.createElement('p');
     empty.id = 'chat-empty';
     empty.className = 'chat-empty';
-    empty.textContent = 'Ask DeepSeek about a video idea, or attach footage and describe the edit you want.';
-    $('chat-transcript').appendChild(empty);
+    empty.textContent = 'Attach a video and tell DeepSeek how you want it edited.';
+    transcript.appendChild(empty);
     return;
   }
-
-  app.videos.forEach((path) => {
+  app.conversation.messages.forEach((message) => {
     const row = document.createElement('div');
     const role = document.createElement('span');
-    row.className = 'chat-message user';
-    role.textContent = 'Attached from this computer';
-    row.append(role, mediaMessage(path, false));
-    $('chat-transcript').appendChild(row);
-  });
-
-  app.chat.forEach((message) => {
-    const row = document.createElement('div');
-    const role = document.createElement('span');
-    row.className = `chat-message ${message.role === 'user' ? 'user' : 'assistant'}`;
+    row.className = `chat-message ${message.role === 'user' ? 'user' : 'assistant'} ${message.kind || 'text'}`;
     role.textContent = message.role === 'user' ? 'You' : 'DeepSeek';
     row.appendChild(role);
     if (message.content) {
       const content = document.createElement('p');
-      content.textContent = message.content;
+      content.textContent = message.kind === 'error' && message.failedStage
+        ? `Failed during ${message.failedStage}: ${message.content}` : message.content;
       row.appendChild(content);
     }
+    (message.attachments || []).forEach((path) => row.appendChild(mediaMessage(path, false)));
+    if (message.kind === 'analysis' || message.kind === 'render') {
+      row.appendChild(renderActivity(message));
+    }
+    if (message.kind === 'warning' && message.warning) {
+      const warning = document.createElement('div');
+      warning.className = 'warning-banner';
+      warning.textContent = `Needs review: ${message.warning}`;
+      row.appendChild(warning);
+    }
     if (message.videoPath) row.appendChild(mediaMessage(message.videoPath, true));
+    if ((message.kind === 'video' || message.kind === 'warning') && (message.logs || []).length) {
+      row.appendChild(technicalDetails(message.logs));
+    }
+    if (message.kind === 'error' && message.retry) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'primary';
+      retry.textContent = 'Retry';
+      retry.disabled = !app.lastRenderPayload;
+      retry.addEventListener('click', () => startRender(null, app.lastRenderPayload));
+      row.appendChild(retry);
+      if ((message.logs || []).length) row.appendChild(technicalDetails(message.logs));
+    }
     const sources = sourceList(message.sources);
     if (sources) row.appendChild(sources);
-    $('chat-transcript').appendChild(row);
+    addProposalButton(row, message);
+    transcript.appendChild(row);
   });
-  $('chat-transcript').scrollTop = $('chat-transcript').scrollHeight;
+  transcript.scrollTop = transcript.scrollHeight;
+  const rendering = !!app.conversation.activeRender;
+  setStatus(rendering ? 'Rendering' : (app.currentChat ? 'Analyzing' : 'Ready'),
+    rendering || app.currentChat ? 'on' : '');
 }
 
-function showProposal(proposal) {
-  app.proposal = proposal;
-  const summary = typeof proposal?.summary === 'string' && proposal.summary.trim()
-    ? proposal.summary.trim() : 'DeepSeek mapped your request to the local editor.';
-  $('proposal-text').textContent = summary;
-  $('proposal').classList.toggle('hidden', !proposal);
-}
-
-function showResult(path) {
-  if (!path) return;
-  app.resultPath = path;
-  if (!app.chat.some((message) => message.videoPath === path)) {
-    app.chat.push({
-      role: 'assistant',
-      content: 'Your edited video is ready. Reply directly below it with anything you want changed.',
-      videoPath: path,
-    });
-  }
+function assistantMessage(content, kind = 'text') {
+  ChatState.dispatch(app.conversation, { type: 'assistant_message', content, kind });
   renderChat();
-  $('ask-deepseek').disabled = false;
-  $('chat-status').textContent = '';
-  setProgress(100, 'Finished, checked, and saved on this computer.');
-  setRendering(false);
-  setStatus('Complete', 'complete');
-}
-
-function handleRenderEvent(event = {}) {
-  if (typeof event === 'string') {
-    appendLog(event);
-    return;
-  }
-  if (event.event === 'local-error') {
-    const message = event.error || 'The action could not finish.';
-    appendLog(`ERROR: ${message}`);
-    app.chatting = false;
-    if (app.rendering) setRendering(false, 'Render stopped.');
-    $('chat-error').textContent = message;
-    $('render-error').textContent = message;
-    $('ask-deepseek').disabled = false;
-    $('chat-status').textContent = '';
-    setStatus('Needs attention', 'bad');
-    return;
-  }
-  if (event.event === 'local-chat') {
-    app.chatting = false;
-    if (typeof event.message === 'string' && event.message.trim()) {
-      app.chat.push({
-        role: 'assistant', content: event.message.trim(),
-        sources: Array.isArray(event.sources) ? event.sources : [],
-      });
-    }
-    const operations = event.proposal?.operations;
-    const applicable = event.canApply === true
-      && Array.isArray(operations) && operations.length > 0;
-    showProposal(applicable ? event.proposal : null);
-    renderChat();
-    $('ask-deepseek').disabled = false;
-    $('chat-status').textContent = '';
-    setStatus('Ready');
-    return;
-  }
-  if (event.event === 'local-result') {
-    app.transcript = typeof event.transcript === 'string' ? event.transcript : '';
-    showResult(event.output || '');
-    return;
-  }
-  if (event.event === 'local-progress') {
-    appendLog(event.log || event.line || event.message || event.stage || 'Working...');
-    if (!app.rendering && event.message) $('chat-status').textContent = event.message;
-  }
-  if (event.event === 'local-progress' && event.stage === 'canceled') {
-    setRendering(false, 'Render canceled.');
-    setStatus('Canceled');
-    return;
-  }
-  if (event.progress !== undefined || event.percent !== undefined) {
-    setProgress(event.progress ?? event.percent, event.message);
-  }
-  const status = String(event.status || event.phase || '').toLowerCase();
-  const path = normalizePath(event.resultPath || event.outputPath || event.path || '');
-  if (path && ['complete', 'completed', 'done', 'success', 'finished'].includes(status)) {
-    showResult(path);
-  } else if (path && !status) {
-    showResult(path);
-  }
 }
 
 function renderRequest() {
@@ -417,19 +363,268 @@ function renderRequest() {
   };
 }
 
+async function startRender(proposal, retryPayload = null, targetResultPath) {
+  if (app.conversation.activeRender) {
+    const state = await window.helper.state();
+    assistantMessage(ChatState.liveStatusReply(
+      app.conversation, Date.now(), state?.activeRender));
+    return;
+  }
+  const payload = retryPayload || (proposal ? {
+    ...renderRequest(), proposal,
+    resultPath: (targetResultPath ?? app.proposalTargetResultPath) || undefined,
+  } : null);
+  if (!payload) {
+    assistantMessage('I need an executable edit plan before I can render. Ask for the changes you want first.');
+    return;
+  }
+  if (!payload.videos?.length && !payload.resultPath) {
+    assistantMessage('Attach at least one video before rendering.', 'error');
+    return;
+  }
+  if (!payload.outputDir) {
+    assistantMessage('Choose a save folder in Optional settings before rendering.', 'error');
+    document.querySelector('.edit-options').open = true;
+    return;
+  }
+  app.lastRenderPayload = payload;
+  ChatState.dispatch(app.conversation, {
+    type: 'render_started', stage: retryPayload
+      ? 'Retrying the local edit...' : 'Starting the local edit...',
+  });
+  app.proposal = null;
+  renderChat();
+  try {
+    await window.helper.applyLocal(payload);
+  } catch (error) {
+    ChatState.dispatch(app.conversation, {
+      type: 'render_error', stage: 'starting the render', error: asError(error),
+    });
+    renderChat();
+  }
+}
+
+async function cancelRender() {
+  try {
+    await window.helper.cancelLocal();
+  } catch (error) {
+    $('render-error').textContent = asError(error);
+  }
+}
+
+async function answerLiveStatus() {
+  let snapshot = null;
+  try { snapshot = (await window.helper.state())?.activeRender || null; }
+  catch (_) { /* mirrored state still gives a truthful last-known answer */ }
+  assistantMessage(ChatState.liveStatusReply(app.conversation, Date.now(), snapshot));
+}
+
+function queueChat(job) {
+  app.chatQueue.push(job);
+  drainChatQueue();
+}
+
+async function drainChatQueue() {
+  if (app.currentChat || !app.chatQueue.length) return;
+  const job = app.chatQueue.shift();
+  app.currentChat = job;
+  ChatState.dispatch(app.conversation, {
+    type: 'analysis_started',
+    stage: job.attachments.length
+      ? 'Inspecting and transcribing the attached video locally...'
+      : 'DeepSeek is reviewing the conversation...',
+  });
+  renderChat();
+  $('chat-status').textContent = app.chatQueue.length
+    ? `${app.chatQueue.length} message(s) queued` : '';
+  try {
+    await window.helper.chatLocal({
+      text: job.text, history: job.history,
+      projectType: $('project-type').value,
+      transcript: (app.transcript || $('script').value.trim()).slice(0, 20000),
+      videoCount: job.attachments.length,
+      ...(job.attachments.length ? { videoPaths: job.attachments } : {}),
+      resultPath: job.targetResultPath || undefined,
+      research: $('live-research').checked,
+    });
+  } catch (error) {
+    ChatState.dispatch(app.conversation, {
+      type: 'analysis_complete', kind: 'error',
+      content: `DeepSeek could not answer: ${asError(error)}`,
+    });
+    app.currentChat = null;
+    renderChat();
+    drainChatQueue();
+  }
+}
+
+async function submitMessage() {
+  const text = $('chat-prompt').value.trim();
+  if (!text) return;
+  $('chat-prompt').value = '';
+  $('chat-error').textContent = '';
+  const before = [...app.conversation.messages];
+  const attachments = app.attachmentsDirty ? [...app.videos] : [];
+  app.attachmentsDirty = false;
+  ChatState.dispatch(app.conversation, {
+    type: 'user_message', content: text, attachments,
+    targetResultPath: app.resultPath,
+  });
+  renderChat();
+  if (ChatState.isStatusQuestion(text)) {
+    await answerLiveStatus();
+    return;
+  }
+  if (ChatState.isRenderCommand(text)) {
+    if (app.conversation.activeRender) await answerLiveStatus();
+    else await startRender(app.proposal);
+    return;
+  }
+  queueChat({
+    text, attachments, history: boundedChatHistory(before),
+    targetResultPath: attachments.length ? '' : app.resultPath,
+  });
+}
+
+function handleRenderEvent(event = {}) {
+  if (typeof event === 'string') {
+    const kind = app.conversation.activeRender ? 'render' : 'chat';
+    handleRawLog({ line: event, kind });
+    return;
+  }
+  const kind = event.kind || (event.event === 'local-chat' ? 'chat'
+    : (app.conversation.activeRender ? 'render' : 'chat'));
+  if (event.event === 'local-error') {
+    if (kind === 'render') {
+      ChatState.dispatch(app.conversation, {
+        type: 'render_error', stage: event.stage || 'rendering',
+        error: event.error || 'The render could not finish.',
+      });
+    } else {
+      ChatState.dispatch(app.conversation, {
+        type: 'analysis_complete', kind: 'error',
+        content: event.error || 'DeepSeek could not finish the analysis.',
+      });
+      app.currentChat = null;
+      drainChatQueue();
+    }
+    renderChat();
+    return;
+  }
+  if (event.event === 'local-chat') {
+    const operations = event.proposal?.operations;
+    const applicable = event.canApply === true && Array.isArray(operations) && operations.length;
+    app.proposal = applicable ? event.proposal : null;
+    app.proposalTargetResultPath = app.currentChat?.targetResultPath || '';
+    ChatState.dispatch(app.conversation, {
+      type: 'analysis_complete', content: event.message || 'Analysis complete.',
+      sources: event.sources, proposal: app.proposal, canApply: !!app.proposal,
+      targetResultPath: app.proposalTargetResultPath,
+    });
+    app.currentChat = null;
+    $('chat-status').textContent = '';
+    renderChat();
+    drainChatQueue();
+    return;
+  }
+  if (event.event === 'local-result') {
+    const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs : {};
+    const output = event.output || Object.values(outputs)[0] || '';
+    app.transcript = typeof event.transcript === 'string' ? event.transcript : app.transcript;
+    app.resultPath = output;
+    ChatState.dispatch(app.conversation, event.qaPass === false ? {
+      type: 'render_warning', videoPath: output, outputs,
+      warning: event.warning || 'The built-in quality checks rejected this draft.',
+      content: 'A playable draft was created, but it needs review. Tell me what you want changed.',
+    } : {
+      type: 'render_complete', videoPath: output, outputs,
+      content: 'Your edited video is ready. Tell me what you want changed.',
+    });
+    renderChat();
+    return;
+  }
+  if (event.event === 'local-progress' && event.stage === 'canceled') {
+    ChatState.dispatch(app.conversation, { type: 'render_cancelled' });
+    renderChat();
+    return;
+  }
+  if (event.event === 'local-progress') {
+    const message = event.message || event.userStage || event.stage || 'Working...';
+    const log = event.log || event.line || '';
+    if (kind === 'chat') {
+      ChatState.dispatch(app.conversation, {
+        type: 'analysis_progress', stage: message, log, engineActivity: true,
+      });
+    } else {
+      const exact = event.measurable === true &&
+        Number.isFinite(Number(event.progress ?? event.percent));
+      ChatState.dispatch(app.conversation, {
+        type: 'render_progress', stage: message, log, engineActivity: true,
+        measurable: exact, progress: exact ? Number(event.progress ?? event.percent) : undefined,
+      });
+    }
+    renderChat();
+  }
+}
+
+function handleRawLog(value) {
+  const line = typeof value === 'string' ? value : value?.line || value?.message || '';
+  if (!line) return;
+  const kind = typeof value === 'object' && value?.kind
+    ? value.kind : (app.conversation.activeRender ? 'render' : 'chat');
+  if (kind === 'render' && app.conversation.activeRender) {
+    ChatState.dispatch(app.conversation, {
+      type: 'render_progress', log: line, engineActivity: true,
+    });
+  } else if (app.conversation.activeAnalysis) {
+    ChatState.dispatch(app.conversation, {
+      type: 'analysis_progress', log: line, engineActivity: true,
+    });
+  }
+  renderChat();
+}
+
+function renderState(state = {}) {
+  const videos = normalizePaths(state.videos || state.videoPaths || state.selectedVideos || []);
+  if (videos.length && !app.videos.length) {
+    app.videos = videos;
+    app.attachmentsDirty = true;
+  }
+  const outputDir = normalizePath(state.outputDir || state.outputFolder || '');
+  if (outputDir) {
+    app.outputDir = outputDir;
+    $('output-folder').value = outputDir;
+  }
+  app.platform = state.platform || app.platform;
+  app.conversation.platform = app.platform;
+  if (state.projectType) $('project-type').value = state.projectType;
+  if (typeof state.script === 'string' && !$('script').value) $('script').value = state.script;
+  renderProviderStates(state);
+  if (state.activeRender && !app.conversation.activeRender) {
+    ChatState.dispatch(app.conversation, {
+      type: 'render_started', id: state.activeRender.id,
+      stage: state.activeRender.message || state.activeRender.stage,
+      startedAt: state.activeRender.startedAt,
+      lastActivityAt: state.activeRender.lastActivityAt,
+    });
+  }
+  renderVideos();
+  renderChat();
+}
+
 async function addPickedVideos(promise) {
   $('render-error').textContent = '';
   try {
     const picked = normalizePaths(await promise);
     app.videos = [...new Set([...app.videos, ...picked])];
+    if (picked.length) app.attachmentsDirty = true;
     renderVideos();
   } catch (error) {
     $('render-error').textContent = asError(error);
   }
 }
 
-$('select-videos').addEventListener('click', () =>
-  addPickedVideos(window.helper.pickVideos()));
+$('select-videos').addEventListener('click', () => addPickedVideos(window.helper.pickVideos()));
 $('drop-zone').addEventListener('keydown', (event) => {
   if ((event.key === 'Enter' || event.key === ' ') && event.target === $('drop-zone')) {
     event.preventDefault();
@@ -438,15 +633,13 @@ $('drop-zone').addEventListener('keydown', (event) => {
 });
 for (const name of ['dragenter', 'dragover']) {
   $('drop-zone').addEventListener(name, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
+    event.preventDefault(); event.stopPropagation();
     $('drop-zone').classList.add('dragging');
   });
 }
 for (const name of ['dragleave', 'drop']) {
   $('drop-zone').addEventListener(name, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
+    event.preventDefault(); event.stopPropagation();
     $('drop-zone').classList.remove('dragging');
   });
 }
@@ -460,106 +653,25 @@ window.addEventListener('drop', (event) => event.preventDefault());
 
 $('clear-videos').addEventListener('click', () => {
   app.videos = [];
+  app.attachmentsDirty = true;
   renderVideos();
 });
 
 $('select-output').addEventListener('click', async () => {
-  $('render-error').textContent = '';
   try {
     const picked = normalizePath(await window.helper.pickOutput());
     if (picked) {
       app.outputDir = picked;
       $('output-folder').value = picked;
     }
-  } catch (error) {
-    $('render-error').textContent = asError(error);
-  }
+  } catch (error) { $('render-error').textContent = asError(error); }
 });
 
-$('ask-deepseek').addEventListener('click', async () => {
-  const text = $('chat-prompt').value.trim();
-  if (!text || app.chatting) return;
-  $('chat-error').textContent = '';
-  $('ask-deepseek').disabled = true;
-  $('chat-status').textContent = 'DeepSeek is reading the editing context...';
-  app.chatting = true;
-  app.chat.push({ role: 'user', content: text });
-  $('chat-prompt').value = '';
-  renderChat();
-  appendLog(`Chat: ${app.videos.length} attached video(s); preparing DeepSeek V4 context.`);
-  setStatus('Thinking', 'on');
-  try {
-    await window.helper.chatLocal({
-      text,
-      history: boundedChatHistory(app.chat.slice(0, -1)),
-      projectType: $('project-type').value,
-      transcript: (app.transcript || $('script').value.trim()).slice(0, 20000),
-      videoCount: app.videos.length,
-      ...(app.videos.length ? { videoPaths: [...app.videos] } : {}),
-      resultPath: app.resultPath || undefined,
-      research: $('live-research').checked,
-    });
-  } catch (error) {
-    app.chatting = false;
-    appendLog(`ERROR: ${asError(error)}`);
-    $('chat-error').textContent = asError(error);
-    $('ask-deepseek').disabled = false;
-    $('chat-status').textContent = '';
-    setStatus('Needs attention', 'bad');
-  }
-});
-
+$('ask-deepseek').addEventListener('click', submitMessage);
 $('chat-prompt').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    $('ask-deepseek').click();
-  }
-});
-
-$('apply-changes').addEventListener('click', async () => {
-  $('chat-error').textContent = '';
-  $('render-error').textContent = '';
-  if (!app.proposal) return;
-  if (!app.videos.length) {
-    $('render-error').textContent = 'Attach at least one video before rendering.';
-    $('drop-zone').focus();
-    return;
-  }
-  if (!app.outputDir) {
-    $('render-error').textContent = 'Choose where to save the finished video before rendering.';
-    document.querySelector('.edit-options').open = true;
-    $('select-output').focus();
-    return;
-  }
-  $('apply-changes').disabled = true;
-  $('log').textContent = 'Starting local render...\n';
-  setProgress(1, 'Starting the local edit...');
-  setRendering(true);
-  try {
-    const request = renderRequest();
-    await window.helper.applyLocal({
-      ...request, proposal: app.proposal, resultPath: app.resultPath || undefined,
-    });
-    showProposal(null);
-  } catch (error) {
-    appendLog(`ERROR: ${asError(error)}`);
-    setRendering(false, 'Render stopped.');
-    $('render-error').textContent = asError(error);
-  } finally {
-    if (!app.rendering) $('apply-changes').disabled = false;
-  }
-});
-
-$('cancel').addEventListener('click', async () => {
-  $('cancel').disabled = true;
-  try {
-    await window.helper.cancelLocal();
-    setRendering(false, 'Render canceled.');
-    setStatus('Canceled');
-  } catch (error) {
-    $('render-error').textContent = asError(error);
-  } finally {
-    $('cancel').disabled = false;
+    submitMessage();
   }
 });
 
@@ -584,15 +696,12 @@ $('save-settings').addEventListener('click', async () => {
   try {
     const state = await window.helper.saveSettings(settings);
     Object.values(fields).forEach((input) => { input.value = ''; });
-    renderProviderStates(state || Object.fromEntries(
-      Object.keys(settings).map((key) => [key, true])));
+    renderProviderStates(state || Object.fromEntries(Object.keys(settings).map((key) => [key, true])));
     $('settings-status').textContent = 'Saved and reused automatically.';
   } catch (error) {
     $('settings-error').textContent = asError(error);
     $('settings-status').textContent = '';
-  } finally {
-    $('save-settings').disabled = false;
-  }
+  } finally { $('save-settings').disabled = false; }
 });
 
 document.querySelectorAll('[data-open]').forEach((button) => {
@@ -600,17 +709,22 @@ document.querySelectorAll('[data-open]').forEach((button) => {
 });
 $('notices').addEventListener('click', () => window.helper.notices());
 window.helper.onState(renderState);
-window.helper.onLog(appendLog);
+window.helper.onLog(handleRawLog);
 window.helper.onRender(handleRenderEvent);
+
+setInterval(() => {
+  if (!app.conversation.activeRender) return;
+  ChatState.dispatch(app.conversation, { type: 'render_heartbeat' });
+  renderChat();
+}, 1000);
 
 async function boot() {
   renderVideos();
   renderChat();
-  const state = await window.helper.state();
-  renderState(state || {});
+  renderState(await window.helper.state() || {});
 }
 
 boot().catch((error) => {
   setStatus('Needs attention', 'bad');
-  $('render-error').textContent = asError(error);
+  assistantMessage(asError(error), 'error');
 });

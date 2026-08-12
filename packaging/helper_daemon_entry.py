@@ -333,6 +333,46 @@ def _join_local_inputs(inputs: list[Path], project_type: str,
     return output
 
 
+def _qa_failure_issue(raw_path: object) -> str:
+    """Return bounded, user-readable failing QA checks for a playable draft."""
+    report = Path(str(raw_path or ""))
+    try:
+        if not report.is_file() or report.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError("missing QA report")
+        value = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return "Built-in quality assurance rejected this draft; review QA_REPORT.json."
+
+    failures: list[str] = []
+
+    def visit(item: object, label: str, depth: int = 0) -> None:
+        if depth > 5 or len(failures) >= 6:
+            return
+        if isinstance(item, dict):
+            failed = item.get("ok") is False or item.get("pass") is False
+            verdict = str(item.get("verdict") or item.get("status") or "").lower()
+            failed = failed or verdict in {"fail", "failed", "rejected", "needs_review"}
+            if failed and label and label != "root":
+                detail = next((str(item.get(key) or "").strip() for key in
+                               ("error", "reason", "message", "detail")
+                               if str(item.get(key) or "").strip()), "")
+                failures.append(f"{label}: {detail}" if detail else label)
+            for key, child in item.items():
+                if key in {"ok", "pass", "verdict", "status", "error",
+                           "reason", "message", "detail"}:
+                    continue
+                visit(child, str(key) if label == "root" else f"{label}.{key}",
+                      depth + 1)
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:20]):
+                visit(child, f"{label}[{index}]", depth + 1)
+
+    visit(value, "root")
+    if not failures:
+        return "Built-in quality assurance rejected this draft; review QA_REPORT.json."
+    return "; ".join(dict.fromkeys(failures))[:1000]
+
+
 def local_render() -> int:
     from webapp.render_worker.project_types import (
         engine_args, revision_engine_args,
@@ -378,8 +418,6 @@ def local_render() -> int:
             code, result = _run_local_engine([*args, "--no-llm"])
         if code != 0 or result is None:
             raise RuntimeError("the editing engine did not finish")
-        if result.get("qa_pass") is not True:
-            raise RuntimeError("the edit did not pass its built-in quality checks")
         outputs = result.get("outputs")
         if not isinstance(outputs, dict) or not outputs:
             raise RuntimeError("the editing engine returned no finished video")
@@ -399,6 +437,9 @@ def local_render() -> int:
             "outputs": finished,
             "output": next(iter(finished.values())),
             "qaReport": str(result.get("qa_report") or ""),
+            "qaPass": result.get("qa_pass") is True,
+            "warning": ("" if result.get("qa_pass") is True else
+                        _qa_failure_issue(result.get("qa_report"))),
             "projectType": request["project_type"],
             "transcript": script[:20_000],
         })
