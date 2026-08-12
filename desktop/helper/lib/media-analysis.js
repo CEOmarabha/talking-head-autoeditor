@@ -239,9 +239,15 @@ async function transcribeVideo(file, output, runtime, env, emit, onChild) {
 
 function sampleTimes(duration, count) {
   if (!(duration > 0)) return [0];
-  const wanted = Math.max(1, Math.min(count, 6));
-  return Array.from({ length: wanted }, (_, index) =>
-    Math.max(0, Math.min(duration - 0.05, duration * ((index + 0.5) / wanted))));
+  const wanted = Math.max(1, Math.min(count, MAX_FRAMES_TOTAL));
+  const limit = Math.max(0, duration - 0.05);
+  const anchors = [0.1, 1.0, 2.5, limit].map((value) =>
+    Math.max(0, Math.min(limit, value)));
+  const spread = Array.from({ length: wanted }, (_, index) =>
+    Math.max(0, Math.min(limit, duration * ((index + 0.5) / wanted))));
+  return [...new Set([...anchors, ...spread].map((value) => value.toFixed(3)))]
+    .map(Number).sort((a, b) => a - b).slice(0, wanted - 1).concat(limit)
+    .slice(0, wanted);
 }
 
 async function extractFrames(file, probe, output, count, runtime, onChild) {
@@ -372,8 +378,10 @@ module.exports = {
   MODEL_REVISION,
   analyzeMedia,
   assistantText,
+  extractFrames,
   fileFingerprint,
   parseSignalReport,
+  probeVideo,
   sampleTimes,
   summarizeProbe,
 };

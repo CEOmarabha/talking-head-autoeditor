@@ -7,6 +7,7 @@ user's computer. The legacy polling mode remains only for older installations.
 from __future__ import annotations
 
 import json
+import hashlib
 import concurrent.futures
 import datetime as dt
 import html
@@ -166,7 +167,11 @@ def _project_type(value: object) -> str:
 
 
 def _local_render_request(value: dict) -> dict:
-    allowed = {"inputs", "outputDir", "projectType", "script", "proposal"}
+    allowed = {
+        "inputs", "outputDir", "projectType", "script", "proposal",
+        "cachedTranscript", "creativeBrief", "creativeBriefSha256",
+        "visionAttempt",
+    }
     extra = sorted(set(value) - allowed)
     if extra:
         raise ValueError("local render request has unsupported fields")
@@ -195,12 +200,34 @@ def _local_render_request(value: dict) -> dict:
     proposal = value.get("proposal")
     if proposal is not None and not isinstance(proposal, dict):
         raise ValueError("the DeepSeek change proposal is invalid")
+    vision_attempt = value.get("visionAttempt", 0)
+    if (not isinstance(vision_attempt, int) or isinstance(vision_attempt, bool)
+            or vision_attempt not in {0, 1}):
+        raise ValueError("vision attempt is invalid")
+    creative_brief = _bounded_text(
+        value.get("creativeBrief"), "creative brief", 8_000)
+    creative_brief_sha256 = value.get("creativeBriefSha256", "")
+    if (not isinstance(creative_brief_sha256, str)
+            or (creative_brief_sha256
+                and not re.fullmatch(r"[0-9a-f]{64}", creative_brief_sha256))):
+        raise ValueError("creative brief digest is invalid")
+    measured_brief_sha256 = (
+        hashlib.sha256(creative_brief.encode("utf-8")).hexdigest()
+        if creative_brief else ""
+    )
+    if creative_brief_sha256 != measured_brief_sha256:
+        raise ValueError("creative brief digest does not match")
     return {
         "inputs": inputs,
         "output": output,
         "project_type": _project_type(value.get("projectType")),
         "script": _bounded_text(
             value.get("script"), "script", MAX_LOCAL_SCRIPT_CHARS),
+        "cached_transcript": _bounded_text(
+            value.get("cachedTranscript"), "cached transcript", 30_000),
+        "creative_brief": creative_brief,
+        "creative_brief_sha256": measured_brief_sha256,
+        "vision_attempt": vision_attempt,
         "proposal": proposal,
     }
 
@@ -385,7 +412,13 @@ def local_render() -> int:
         work = Path(raw)
         source = _join_local_inputs(
             request["inputs"], request["project_type"], work)
-        script = request["script"]
+        script = request["script"] or request["cached_transcript"]
+        if not request["script"] and request["cached_transcript"]:
+            _emit_local({
+                "event": "local-progress",
+                "stage": "transcription-cache",
+                "line": "Reusing the source-bound transcript from local analysis.",
+            })
         if not script:
             transcript_dir = work / "transcript"
             code, _ = _run_local_engine([
@@ -406,18 +439,22 @@ def local_render() -> int:
             str(source), "--script", str(script_file),
             "--out", str(request["output"]), *mapped,
         ]
+        if request["creative_brief"]:
+            brief_file = work / "approved-creative-brief.txt"
+            brief_file.write_text(request["creative_brief"], encoding="utf-8")
+            args.extend(["--creative-brief", str(brief_file)])
         deepseek = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
         if not deepseek and "--no-premium" not in args:
-            args.append("--no-llm")
+            raise RuntimeError(
+                "premium rendering requires the saved DeepSeek key; "
+                "no heuristic draft was substituted"
+            )
         code, result = _run_local_engine(args)
-        if (code != 0 or result is None) and deepseek and "--no-premium" not in args:
-            _emit_local({
-                "event": "local-progress",
-                "line": "DeepSeek was unavailable. Using the deterministic editor.",
-            })
-            code, result = _run_local_engine([*args, "--no-llm"])
         if code != 0 or result is None:
-            raise RuntimeError("the editing engine did not finish")
+            raise RuntimeError(
+                "the premium editing plan or rendering engine did not pass; "
+                "no heuristic draft was substituted"
+            )
         outputs = result.get("outputs")
         if not isinstance(outputs, dict) or not outputs:
             raise RuntimeError("the editing engine returned no finished video")

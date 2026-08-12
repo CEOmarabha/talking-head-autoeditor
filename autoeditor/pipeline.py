@@ -138,6 +138,15 @@ CUT_BOUNDARIES: list = []   # (position_s, removed_s) splices in the output time
 AV_OFFSET_MS = 0
 SUPPORTED_ASPECTS = ("auto", "16x9", "9x16")
 SOURCE_SYNC_MAX_GAP_SECONDS = 30.0
+MAX_CLEANUP_PASSES = 2
+MIN_CLEANUP_SECONDS = 0.35
+DELIVERY_VIDEO_ARGS = (
+    "-g", "60",  # at 30 fps, seek points are never more than two seconds apart
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+    "-colorspace", "bt709",
+    "-movflags", "+faststart",
+)
 # Automatic measurement is retired from decisions. A nonzero value may only
 # come from a human ladder sidecar bound to the exact RAW file.
 
@@ -2194,7 +2203,7 @@ def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
     profile (shorts = bigger cards, fewer words per card)."""
     from PIL import Image, ImageDraw, ImageFont
     size = max(28, int(vid_h * scale))
-    gold, white, outline = (232, 199, 167, 255), (255, 255, 255, 255), (0, 0, 0, 255)
+    gold, white, outline = (255, 205, 45, 255), (255, 255, 255, 255), (0, 0, 0, 255)
     cards = []
 
     def flush(chunk, idx):
@@ -2203,6 +2212,16 @@ def build_caption_pngs(words: list[dict], workdir: Path, font_file: str,
         dr = ImageDraw.Draw(img)
         font, stroke, widths, x, y, layout_safe = _caption_layout(
             dr, chunk, font_file, size, vid_w, img.height, safe_width
+        )
+        stroke = max(stroke, max(3, int(font.size * 0.11)))
+        text_width = sum(widths)
+        pad_x = min(stroke * 2.2, max(0.0, x - _caption_safe_bounds(
+            vid_w, safe_width)[0]))
+        pad_y = stroke * 1.25
+        dr.rounded_rectangle(
+            (x - pad_x, y - pad_y,
+             x + text_width + pad_x, y + font.size + pad_y),
+            radius=max(6, stroke * 2), fill=(0, 0, 0, 172),
         )
         for i, w in enumerate(text_words):
             dr.text((x, y), w, font=font, fill=gold if i == 0 else white,
@@ -2242,7 +2261,7 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
         f_fps, fps = 30.0, "30"
     size = max(28, int(vid_h * scale))
     band_h = int(size * 2.2)
-    gold, white, outline = (232, 199, 167, 255), (255, 255, 255, 255), (0, 0, 0, 255)
+    gold, white, outline = (255, 205, 45, 255), (255, 255, 255, 255), (0, 0, 0, 255)
     chunks = _caption_chunks(
         words, font_file, size, vid_w, max_words, safe_width
     )
@@ -2264,6 +2283,16 @@ def build_caption_band(words: list[dict], workdir: Path, font_file: str,
         dr = ImageDraw.Draw(img)
         font, stroke, widths, x, y, state_safe = _caption_layout(
             dr, ch, font_file, size, vid_w, band_h, safe_width
+        )
+        stroke = max(stroke, max(3, int(font.size * 0.11)))
+        text_width = sum(widths)
+        pad_x = min(stroke * 2.2, max(0.0, x - _caption_safe_bounds(
+            vid_w, safe_width)[0]))
+        pad_y = stroke * 1.25
+        dr.rounded_rectangle(
+            (x - pad_x, y - pad_y,
+             x + text_width + pad_x, y + font.size + pad_y),
+            radius=max(6, stroke * 2), fill=(0, 0, 0, 172),
         )
         layout_safe = layout_safe and state_safe
         for i, c in enumerate(ch):
@@ -2433,8 +2462,10 @@ def render_master(cut: Path, cards: list[dict], music: Path | None,
     ln = ("loudnorm=I=-14:TP=-1:LRA=11:linear=true:"
           f"measured_I={stats.get('input_i','-24')}:measured_TP={stats.get('input_tp','-2')}:"
           f"measured_LRA={stats.get('input_lra','7')}:measured_thresh={stats.get('input_thresh','-34')}")
+    # loudnorm performs true-peak measurement/limiting.  Pin its oversampled
+    # output back to the delivery contract's 48 kHz before derivatives copy it.
     run([FFMPEG, "-y", "-i", graded, "-af", ln, "-c:v", "copy",
-         "-c:a", "aac", "-b:a", "192k", master])
+         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", master])
     return master
 
 def variants(master: Path, outdir: Path, w: int, h: int) -> dict:
@@ -2590,6 +2621,7 @@ def _caption_delivery_check(words: list[dict], burn_requested: bool,
 def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    outdir: Path, retention: float = 1.0,
                    edl: dict | None = None,
+                   approved_creative_brief_sha256: str | None = None,
                    visual_master: Path | None = None,
                    visual_reference: Path | None = None,
                    captions_burn_requested: bool = True,
@@ -2616,9 +2648,19 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     p = run([FFMPEG, "-i", primary, "-af",
              "loudnorm=I=-14:TP=-1:print_format=json", "-f", "null", "-"], check=False)
     m = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", p.stderr.decode(errors="replace"))
-    li = float(json.loads(m.group(0))["input_i"]) if m else None
+    loudness_stats = json.loads(m.group(0)) if m else {}
+    li = (float(loudness_stats["input_i"])
+          if loudness_stats.get("input_i") is not None else None)
+    tp = (float(loudness_stats["input_tp"])
+          if loudness_stats.get("input_tp") is not None else None)
     qa["checks"]["loudness_-14LUFS"] = {"measured": li,
                                         "ok": li is not None and -15.5 <= li <= -12.5}
+    qa["checks"]["audio_true_peak"] = {
+        "measured_dbtp": tp,
+        "ok": tp is not None and tp <= -0.8,
+        "note": "" if tp is not None and tp <= -0.8 else
+                "delivered audio exceeds the -1 dBTP limiter target",
+    }
     bd = run([FFMPEG, "-i", primary, "-vf", "blackdetect=d=0.5:pix_th=0.10",
               "-an", "-f", "null", "-"], check=False)
     runs = [(float(m.group(1)), float(m.group(2))) for m in re.finditer(
@@ -2707,11 +2749,19 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                 and receipt.get("operator_supplied") is True
             )
         )
+        brief_bound = (
+            not approved_creative_brief_sha256
+            or receipt.get("approved_creative_brief_sha256")
+                == approved_creative_brief_sha256
+        )
+        plan_ok = plan_ok and brief_bound
         qa["checks"]["creative_plan_provenance"] = {
             "ok": plan_ok,
             "source": source,
             "model": receipt.get("model"),
             "protocol_version": receipt.get("protocol_version"),
+            "approved_creative_brief_sha256": receipt.get(
+                "approved_creative_brief_sha256"),
             "note": "" if plan_ok else
                     "creative plan lacks a complete trusted production receipt",
         }
@@ -2892,6 +2942,9 @@ def main():
     ap.add_argument("--script", type=Path, default=None,
                     help="the teleprompter script you read (md/txt): ground "
                          "truth for caption text + word-integrity QA")
+    ap.add_argument("--creative-brief", type=Path, default=None,
+                    help="the exact user-approved edit brief; treated as "
+                         "bounded director context, never as transcript data")
     ap.add_argument("--av-offset", type=int, default=None,
                     help="source AV offset correction in ms; positive = delay "
                          "audio (audio leads video). Omit to use a valid "
@@ -2936,7 +2989,7 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
         sys.exit(0)
     try:
-        for attr in ("script", "edl", "music", "background"):
+        for attr in ("script", "creative_brief", "edl", "music", "background"):
             setattr(
                 a, attr,
                 _required_input_file(getattr(a, attr), f"--{attr}")
@@ -3009,7 +3062,7 @@ def main():
     # Runs in AUTO mode only; in director mode (--edl) you owns every cut.
     if not (a.edl and a.edl.exists()):
         converged = False
-        for round_no in range(1, 6):
+        for round_no in range(1, MAX_CLEANUP_PASSES + 1):
             cleanup = (detect_retakes(
                            words,
                            max_gap=cut_settings["retake_max_gap"],
@@ -3034,13 +3087,18 @@ def main():
                 if round_no > 1:
                     log(f"phase 2B: clean after {round_no - 1} pass(es)")
                 break
+            cleanup_seconds = sum(c["e"] - c["s"] for c in merged)
+            if cleanup_seconds < MIN_CLEANUP_SECONDS:
+                log("phase 2B: stopping at diminishing returns; "
+                    f"only {cleanup_seconds:.2f}s remains for final QA")
+                break
             cut = apply_cuts(cut, merged, work)
             info["duration"] = _dur(cut)
             log(f"phase 2B (pass {round_no}): re-transcribing after cleanup")
             words = transcribe(cut, work)
         if not converged:
-            log("phase 2B WARNING: cleanup did not converge in 5 passes; "
-                "gate 4 will judge the survivors")
+            log(f"phase 2B: bounded at {MAX_CLEANUP_PASSES} pass(es); "
+                "gate 4 will judge any survivors")
     if a.script and a.script.exists():
         words = script_correct(words, a.script)
     # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
@@ -3055,6 +3113,10 @@ def main():
     font_file, font_ok = _font_file(CFG.brand, CFG.profile_id)
     # ---- premium layer: DeepSeek EDL -> punch-ins, b-roll, graphic cards
     gfx_layers, broll_lyrs, edl_src = [], [], "off"
+    approved_creative_brief_sha256 = (
+        hashlib.sha256(a.creative_brief.read_bytes()).hexdigest()
+        if a.creative_brief and a.creative_brief.exists() else None
+    )
     if not a.no_premium and words:
         from . import premium as prem
         from .profiles import profile_sha256
@@ -3082,12 +3144,23 @@ def main():
                 words = _retranscribe_post_cut(cut, work, a.script)
                 info["duration"] = _dur(cut)
         else:
+            render_creative = dict(CFG.creative)
+            if a.creative_brief and a.creative_brief.exists():
+                render_creative["approved_edit_brief"] = (
+                    a.creative_brief.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()[:8_000]
+                )
             edl, edl_src = prem.make_edl(words, clips, info["duration"],
                                          use_llm=not a.no_llm, style=style,
                                          profile_id=CFG.profile_id,
-                                         creative=CFG.creative,
+                                         creative=render_creative,
                                          profile_sha256_value=(
                                              active_profile_sha256))
+            if approved_creative_brief_sha256:
+                edl.setdefault("production_receipt", {})[
+                    "approved_creative_brief_sha256"
+                ] = approved_creative_brief_sha256
         log(f"phase 4p: EDL via {edl_src}, {len(edl['punch_ins'])} punch-ins, "
             f"{len(edl['broll'])} b-roll ({len(clips)} clips avail), "
             f"{len(edl['graphics'])} graphics")
@@ -3151,7 +3224,7 @@ def main():
              "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),"
              "scale=1080:1920,setsar=1",
              "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-             "-c:a", "copy", only])
+             *DELIVERY_VIDEO_ARGS, "-c:a", "copy", only])
         outs = {"9x16": only}
     else:
         only = outdir / "PSE_MASTER_16x9.mp4"
@@ -3165,7 +3238,7 @@ def main():
              f"[b]scale={foreground_w}:{foreground_h},setsar=1[fg];"
              "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1",
              "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-             "-c:a", "copy", only])
+             *DELIVERY_VIDEO_ARGS, "-c:a", "copy", only])
         outs = {"16x9": only}
     # Completed is not verified. Quarantine before any gate can raise so an
     # exception cannot strand an ungated artifact under a delivery name.
@@ -3192,6 +3265,8 @@ def main():
     )
     qa = qa_and_release(outs, font_ok, words, outdir, retention=retention,
                         edl=(edl if (not a.no_premium and words) else None),
+                        approved_creative_brief_sha256=(
+                            approved_creative_brief_sha256),
                         visual_master=master,
                         visual_reference=cut,
                         captions_burn_requested=not a.no_burn,
@@ -3285,6 +3360,13 @@ def main():
           "outdir": str(outdir),
           "qa_report": str(outdir / "QA_REPORT.json"),
           "seconds": round(time.time() - t0)})
+    # The desktop consumes the local result directly.  Never spend minutes
+    # building a second watch copy when no Telegram destination can receive it.
+    if (os.environ.get("AUTOEDITOR_PACKAGED") == "1"
+            or not providers.telegram_configured()):
+        log("delivery: Telegram skipped (desktop mode or not configured)")
+        shutil.rmtree(work, ignore_errors=True)
+        sys.exit(0 if qa["pass"] else 2)
     # One Telegram ping per COMPLETED render (full pipeline: master + all
     # variants + QA + hash-lock). Previews/partials never reach this line.
     try:

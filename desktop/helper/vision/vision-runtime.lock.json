@@ -24,9 +24,9 @@
   },
   "vision_worker": {
     "bundle": "vision-worker.bundle.js",
-    "bundle_sha256": "ee86e53b170c00b4eb0c77f6eee39b2c7f472e8473e7168f38ec3a7ff1e08084",
+    "bundle_sha256": "b8c5785088b3b3f69add8b7e41657e0f4eb4eb5d53e6564d14c9a184eaf68edb",
     "builder": "esbuild 0.28.1",
     "entry": "vision-worker.js",
-    "entry_sha256": "87cd55fd7413a905ca6be83187ef129899cacd466e19c9f89bf7d919a63264f7"
+    "entry_sha256": "e19c59bdce4611243a73053ffa78df527f9c890a489195ff689e2fa6cb5cd3df"
   }
 }

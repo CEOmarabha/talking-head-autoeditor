@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const ChatState = require('../helper/renderer/chat-state');
+const ViewState = require('../helper/renderer/view-state');
 const { engineProgress } = require('../helper/lib/local-render');
 
 assert.deepStrictEqual(ChatState.EVENT_TYPES, [
@@ -146,7 +147,69 @@ assert.ok(appSource.includes("openResult(path, 'open')"));
 assert.ok(appSource.includes("openResult(path, 'reveal')"));
 assert.ok(appSource.includes('ChatState.restoreConversation'));
 assert.ok(appSource.includes('window.helper.saveConversation'));
+assert.ok(html.includes('<script src="view-state.js"></script>'));
+const heartbeatBody = appSource.match(/setInterval\(\(\) => \{([\s\S]*?)\}, 1000\);/)?.[1] || '';
+assert.ok(heartbeatBody.includes('refreshActiveRenderClock()'));
+assert.ok(!heartbeatBody.includes('renderChat()'));
 assert.ok(mainSource.includes('videos: [revisionInput]'));
 assert.ok(mainSource.includes('activeRender: activeRenderState()'));
+
+function fakeTranscript({ scrollTop, scrollHeight, clientHeight, details = [], videos = [] }) {
+  return {
+    scrollTop, scrollHeight, clientHeight,
+    querySelectorAll(selector) {
+      if (selector === 'details[data-details-key][open]') {
+        return details.filter((item) => item.open);
+      }
+      if (selector === 'details[data-details-key]') return details;
+      if (selector === 'video[data-media-key]') return videos;
+      return [];
+    },
+  };
+}
+
+const openBefore = { dataset: { detailsKey: 'render-1:activity' }, open: true };
+const closedBefore = { dataset: { detailsKey: 'render-2:activity' }, open: false };
+const playingBefore = {
+  dataset: { mediaKey: 'video-1:result' }, currentTime: 12.5,
+  muted: true, volume: 0.4, playbackRate: 1.25, paused: false, ended: false,
+};
+const scrolledUp = fakeTranscript({
+  scrollTop: 150, scrollHeight: 1000, clientHeight: 300,
+  details: [openBefore, closedBefore], videos: [playingBefore],
+});
+const savedView = ViewState.captureTranscriptView(scrolledUp);
+assert.strictEqual(savedView.followBottom, false);
+assert.deepStrictEqual(savedView.openDetails, ['render-1:activity']);
+assert.strictEqual(savedView.media['video-1:result'].currentTime, 12.5);
+
+const openAfter = { dataset: { detailsKey: 'render-1:activity' }, open: false };
+const closedAfter = { dataset: { detailsKey: 'render-2:activity' }, open: true };
+const playingAfter = {
+  dataset: { mediaKey: 'video-1:result' }, currentTime: 0,
+  muted: false, volume: 1, playbackRate: 1, paused: true, ended: false,
+  readyState: 1, play() { this.playCalled = true; return Promise.resolve(); },
+};
+const rebuilt = fakeTranscript({
+  scrollTop: 0, scrollHeight: 1200, clientHeight: 300,
+  details: [openAfter, closedAfter], videos: [playingAfter],
+});
+ViewState.restoreTranscriptView(rebuilt, savedView);
+assert.strictEqual(rebuilt.scrollTop, 150);
+assert.strictEqual(openAfter.open, true);
+assert.strictEqual(closedAfter.open, false);
+assert.strictEqual(playingAfter.currentTime, 12.5);
+assert.strictEqual(playingAfter.playCalled, true);
+
+const atBottom = fakeTranscript({
+  scrollTop: 690, scrollHeight: 1000, clientHeight: 300,
+});
+const bottomView = ViewState.captureTranscriptView(atBottom);
+assert.strictEqual(bottomView.followBottom, true);
+const tallerTranscript = fakeTranscript({
+  scrollTop: 0, scrollHeight: 1400, clientHeight: 300,
+});
+ViewState.restoreTranscriptView(tallerTranscript, bottomView);
+assert.strictEqual(tallerTranscript.scrollTop, 1100);
 
 console.log('helper chat timeline tests passed');

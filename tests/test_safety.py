@@ -1242,6 +1242,15 @@ class SafetyContracts(unittest.TestCase):
         }, clear=True):
             self.assertEqual(providers._tg(), ("token", "12345"))
 
+    def test_telegram_configuration_is_explicit(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(providers.telegram_configured())
+        with mock.patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_CHAT_ID": "12345",
+        }, clear=True):
+            self.assertTrue(providers.telegram_configured())
+
     def test_creative_contract_keeps_the_complete_transcript(self):
         words = [
             {"w": f"word{i}", "s": i * 0.2, "e": i * 0.2 + 0.1}
@@ -2712,31 +2721,29 @@ class SafetyContracts(unittest.TestCase):
         self.assertNotIn("Hello-world", text)
 
     def test_cleanup_loop_cuts_and_retranscribes_inside_each_pass(self):
-        tree = ast.parse(Path(pipeline.__file__).read_text(encoding="utf-8"))
-        main = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        self.assertEqual(pipeline.MAX_CLEANUP_PASSES, 2)
+        self.assertGreater(pipeline.MIN_CLEANUP_SECONDS, 0)
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "range(1, MAX_CLEANUP_PASSES + 1)", source
         )
-        loops = [
-            node for node in ast.walk(main)
-            if isinstance(node, ast.For)
-            and isinstance(node.iter, ast.Call)
-            and isinstance(node.iter.func, ast.Name)
-            and node.iter.func.id == "range"
-            and any(
-                isinstance(arg, ast.Constant) and arg.value == 6
-                for arg in node.iter.args
-            )
-        ]
-        self.assertEqual(len(loops), 1)
-        calls = {
-            node.func.id
-            for statement in loops[0].body
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        self.assertIn("apply_cuts", calls)
-        self.assertIn("transcribe", calls)
+        self.assertIn("cleanup_seconds < MIN_CLEANUP_SECONDS", source)
+        self.assertIn("cut = apply_cuts(cut, merged, work)", source)
+        self.assertIn("words = transcribe(cut, work)", source)
+
+    def test_delivery_encode_contract_and_desktop_skip_precede_watch_copy(self):
+        arguments = pipeline.DELIVERY_VIDEO_ARGS
+        self.assertEqual(arguments[arguments.index("-g") + 1], "60")
+        for flag in ("-color_primaries", "-color_trc", "-colorspace"):
+            self.assertEqual(arguments[arguments.index(flag) + 1], "bt709")
+        self.assertEqual(arguments[arguments.index("-movflags") + 1], "+faststart")
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertIn('"-ar", "48000", master', source)
+        self.assertIn("loudnorm=I=-14:TP=-1", source)
+        self.assertLess(
+            source.index('or not providers.telegram_configured()'),
+            source.index('tg_file = work / "tg_copy.mp4"'),
+        )
 
     def test_incomplete_semantic_judgment_blocks_cut_implicated_sentence(self):
         with tempfile.TemporaryDirectory() as td:

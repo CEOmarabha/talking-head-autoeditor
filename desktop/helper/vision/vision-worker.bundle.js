@@ -16204,7 +16204,21 @@ ${r}${o}` + n.repeat(t6) + `${r}`, i;
     if (marker >= 0) text = text.slice(marker + "Assistant:".length).trim();
     return text.slice(0, 5e3);
   }
-  async function describe(id2, images) {
+  function artifactPrompt(context) {
+    const value = typeof context === "string" ? context.slice(0, 8e3) : "";
+    return value || [
+      "You are the final visual quality-control gate for a professionally edited video.",
+      "The frames cover the entire finished artifact in chronological order.",
+      "Reject unreadable or face-obscuring captions, unsafe framing, weak contrast,",
+      "bad crops, accidental transitions, unfinished graphics, continuity defects,",
+      "or an amateur and visually repetitive result. Return strict JSON with schema",
+      "autoeditor-artifact-review/v1, boolean pass, score 0-100, checks containing",
+      "captions, framing, visualVariety, graphics, transitions, productionDesign,",
+      "and a specific issues array. pass can be true only at score 92+ with all checks true.",
+      "Return JSON only."
+    ].join(" ");
+  }
+  async function describe(id2, images, mode = "", context = "") {
     if (!Array.isArray(images) || images.length < 1 || images.length > MAX_IMAGES || images.some((image) => typeof image !== "string" || !image.startsWith("data:image/jpeg;base64,") || image.length > MAX_IMAGE_CHARS)) {
       throw new Error("local vision frames were invalid");
     }
@@ -16217,7 +16231,7 @@ ${r}${o}` + n.repeat(t6) + `${r}`, i;
     const frames = await Promise.all(images.map((image) => RA(image)));
     const messages = [{ role: "user", content: [
       ...frames.map(() => ({ type: "image" })),
-      { type: "text", text: [
+      { type: "text", text: mode === "artifact-quality" ? artifactPrompt(context) : [
         "These are chronological frames sampled from one attached video.",
         "Describe only visibly supported people, actions, objects, setting, products,",
         "readable on-screen text, camera framing, composition, and meaningful changes.",
@@ -16231,7 +16245,7 @@ ${r}${o}` + n.repeat(t6) + `${r}`, i;
       ...inputs,
       do_sample: false,
       repetition_penalty: 1.05,
-      max_new_tokens: 220
+      max_new_tokens: mode === "artifact-quality" ? 420 : 220
     });
     const decoded = processor.batch_decode(output, { skip_special_tokens: true });
     const result = cleanResult(decoded.at(-1));
@@ -16242,7 +16256,7 @@ ${r}${o}` + n.repeat(t6) + `${r}`, i;
     const id2 = event.data?.id;
     if (!Number.isSafeInteger(id2) || id2 < 1) return;
     try {
-      const result = await describe(id2, event.data.images);
+      const result = await describe(id2, event.data.images, event.data.mode, event.data.context);
       self.postMessage({ id: id2, status: "complete", result });
     } catch (error) {
       self.postMessage({

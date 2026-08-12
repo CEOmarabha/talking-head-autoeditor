@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import venv
 from pathlib import Path
@@ -78,6 +79,47 @@ class AsrContracts(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "invalid or empty"):
                     asr.decode_audio("input.mp4")
+
+    def test_whisper_cpu_threads_use_bounded_logical_cpu_count(self):
+        with mock.patch.object(asr.os, "cpu_count", return_value=8):
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(asr.whisper_cpu_threads(), 8)
+            with mock.patch.dict(
+                os.environ, {"AUTOEDITOR_WHISPER_CPU_THREADS": "3"}, clear=True
+            ):
+                self.assertEqual(asr.whisper_cpu_threads(), 3)
+            with mock.patch.dict(
+                os.environ, {"AUTOEDITOR_WHISPER_CPU_THREADS": "99"}, clear=True
+            ):
+                self.assertEqual(asr.whisper_cpu_threads(), 8)
+            with mock.patch.dict(
+                os.environ, {"AUTOEDITOR_WHISPER_CPU_THREADS": "invalid"},
+                clear=True,
+            ):
+                self.assertEqual(asr.whisper_cpu_threads(), 8)
+        with mock.patch.object(asr.os, "cpu_count", return_value=64), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                asr.whisper_cpu_threads(), asr.MAX_WHISPER_CPU_THREADS
+            )
+
+    def test_create_model_applies_cpu_threads_only_to_cpu_capable_devices(self):
+        calls = []
+        module = types.ModuleType("faster_whisper")
+        module.WhisperModel = lambda model_path, **kwargs: calls.append(
+            (model_path, kwargs)
+        )
+        with mock.patch.object(asr, "prepare_faster_whisper"), \
+                mock.patch.object(asr, "whisper_cpu_threads", return_value=8), \
+                mock.patch.dict(sys.modules, {"faster_whisper": module}):
+            asr.create_model("small", device="cpu")
+            asr.create_model("medium", device="auto", cpu_threads=3)
+            asr.create_model("large", device="cuda")
+        self.assertEqual(calls[0], ("small", {"device": "cpu", "cpu_threads": 8}))
+        self.assertEqual(
+            calls[1], ("medium", {"device": "auto", "cpu_threads": 3})
+        )
+        self.assertEqual(calls[2], ("large", {"device": "cuda"}))
 
     def test_faster_whisper_audio_is_replaced_before_import(self):
         asr.prepare_faster_whisper()

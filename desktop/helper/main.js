@@ -8,7 +8,13 @@ const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
 const { runEditingChat } = require('./lib/editing-harness');
-const { analyzeMedia } = require('./lib/media-analysis');
+const { analyzeMedia, extractFrames, probeVideo } = require('./lib/media-analysis');
+const {
+  artifactReviewPrompt,
+  parseArtifactReview,
+  reviewIssueText,
+  reviewPasses,
+} = require('./lib/artifact-quality');
 const {
   normalizeApplyRequest,
   normalizeChatRequest,
@@ -43,7 +49,7 @@ const MAX_LINE_BUFFER = 2 * 1024 * 1024;
 const MAX_VISION_FRAME_BYTES = 1536 * 1024;
 const VISION_TIMEOUT_MS = 30 * 60 * 1000;
 const LOCAL_EVENTS = new Set([
-  'local-progress', 'local-result', 'local-chat', 'local-error',
+  'local-progress', 'local-result', 'local-chat', 'local-error', 'local-canceled',
 ]);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.webm']);
 const PROVIDER_LINKS = Object.freeze({
@@ -346,6 +352,11 @@ function send(channel, value) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, value);
 }
 
+function isActiveAction(action) {
+  return !!action && !action.canceled &&
+    (activeChat === action || activeRender === action);
+}
+
 function activeRenderState() {
   if (!activeRender) return null;
   return {
@@ -413,8 +424,10 @@ function readVisionFrame(file) {
   }
 }
 
-function requestVision(framePaths, action) {
-  if (!win || win.isDestroyed() || activeChat !== action || action.canceled) {
+function requestVision(framePaths, action, {
+  mode = 'media-analysis', context = '',
+} = {}) {
+  if (!win || win.isDestroyed() || !isActiveAction(action)) {
     return Promise.reject(new Error('the local vision window is unavailable'));
   }
   if (!Array.isArray(framePaths) || framePaths.length < 1 || framePaths.length > 8) {
@@ -427,8 +440,12 @@ function requestVision(framePaths, action) {
       pendingVision.delete(id);
       reject(new Error('the local vision model exceeded 30 minutes'));
     }, VISION_TIMEOUT_MS);
-    pendingVision.set(id, { action, resolve, reject, timer });
-    send('helper-vision-request', { id, images });
+    pendingVision.set(id, { action, mode, resolve, reject, timer });
+    send('helper-vision-request', {
+      id, images,
+      mode: String(mode).slice(0, 80),
+      context: String(context || '').replace(/\0/g, '').slice(0, 8000),
+    });
   });
 }
 
@@ -449,10 +466,12 @@ function handleVisionProgress(event, value) {
   if (!fromMainRenderer(event) || !value || typeof value !== 'object' ||
       Array.isArray(value) || !Number.isSafeInteger(value.id)) return;
   const pending = pendingVision.get(value.id);
-  if (!pending || activeChat !== pending.action || pending.action.canceled ||
+  if (!pending || !isActiveAction(pending.action) ||
       typeof value.line !== 'string') return;
   processLocalEvent({
-    event: 'local-progress', stage: 'media-analysis',
+    event: 'local-progress',
+    stage: pending.mode === 'artifact-quality'
+      ? 'artifact-quality' : 'media-analysis',
     line: value.line.replace(/\0/g, '').trim().slice(0, 1000),
   }, pending.action);
 }
@@ -464,7 +483,7 @@ function handleVisionResult(event, value) {
   if (!pending) return;
   pendingVision.delete(value.id);
   clearTimeout(pending.timer);
-  if (activeChat !== pending.action || pending.action.canceled) {
+  if (!isActiveAction(pending.action)) {
     pending.reject(new Error('local vision was canceled'));
     return;
   }
@@ -584,12 +603,169 @@ function proposalWasReturned(proposal) {
   return true;
 }
 
+function rejectPendingVisionForAction(action, message) {
+  for (const [id, pending] of pendingVision.entries()) {
+    if (pending.action !== action) continue;
+    pendingVision.delete(id);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+}
+
+function visibleArtifactPath(event, outputDir) {
+  const candidates = [event.output];
+  if (event.outputs && typeof event.outputs === 'object' &&
+      !Array.isArray(event.outputs)) candidates.push(...Object.values(event.outputs));
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    try {
+      const real = realFile(candidate);
+      if (isInside(outputDir, real)) return real;
+    } catch (_) { /* malformed daemon output is not reviewable */ }
+  }
+  throw new Error('the finished artifact is missing or outside the selected folder');
+}
+
+function markRenderFinished(action) {
+  action.qaPending = false;
+  action.terminal = true;
+  if (activeRender === action) activeRender = null;
+  send('helper-state', {
+    running: !!activeRender, rendering: !!activeRender,
+    chatting: !!activeChat, activeRender: activeRenderState(),
+  });
+}
+
+function quarantineRejectedArtifact(artifact) {
+  const parsed = path.parse(artifact);
+  const stamp = `${Date.now()}.${process.pid}`;
+  const rejected = path.join(
+    parsed.dir, `${parsed.name}.VISION-REJECTED.${stamp}${parsed.ext}`);
+  fs.renameSync(artifact, rejected);
+  return rejected;
+}
+
+function stageArtifactForVision(artifact) {
+  const parsed = path.parse(artifact);
+  const pending = path.join(parsed.dir,
+    `${parsed.name}.VISION-PENDING.${Date.now()}.${process.pid}${parsed.ext}`);
+  fs.renameSync(artifact, pending);
+  return { approved: artifact, pending };
+}
+
+function replaceEventArtifactPath(event, previous, next) {
+  if (event.output === previous) event.output = next;
+  if (event.outputs && typeof event.outputs === 'object' &&
+      !Array.isArray(event.outputs)) {
+    for (const [key, value] of Object.entries(event.outputs)) {
+      if (value === previous) event.outputs[key] = next;
+    }
+  }
+}
+
+function retryRejectedRender(action, artifact, issue) {
+  if (action.canceled || activeRender !== action) return false;
+  const priorAttempts = Number(action.payload?.visionAttempt || 0);
+  if (priorAttempts >= 1) return false;
+  const rejected = quarantineRejectedArtifact(artifact);
+  const correction = String(issue || '').replace(/\0/g, '').trim().slice(0, 2000);
+  const payload = {
+    ...action.payload,
+    creativeBrief: [
+      String(action.payload?.creativeBrief || '').trim(),
+      'MANDATORY REPAIR FROM THE INDEPENDENT FINAL VISUAL QA:',
+      correction,
+      'Repair every reported defect. Do not return the same design unchanged.',
+    ].filter(Boolean).join('\n\n').slice(0, 8000),
+    visionAttempt: priorAttempts + 1,
+  };
+  delete payload.creativeBriefSha256;
+  processLocalEvent({
+    event: 'local-progress', stage: 'artifact-repair', measurable: false,
+    message: 'The first draft failed visual QA. Re-editing it automatically...',
+    line: `Quarantined ${path.basename(rejected)}. Repairing: ${correction}`,
+  }, action);
+  action.qaPending = false;
+  if (activeRender === action) activeRender = null;
+  const retryRequest = normalizeApplyRequest(payload);
+  localProcess('--local-render', retryRequest, 'render', action.settings);
+  return true;
+}
+
+async function reviewArtifact(event, action) {
+  let artifact = '';
+  let staged = null;
+  let work = '';
+  try {
+    artifact = visibleArtifactPath(event, action.outputDir);
+    staged = stageArtifactForVision(artifact);
+    replaceEventArtifactPath(event, artifact, staged.pending);
+    artifact = staged.pending;
+    work = fs.mkdtempSync(path.join(app.getPath('userData'), 'artifact-review-'));
+    processLocalEvent({
+      event: 'local-progress', stage: 'artifact-quality', measurable: false,
+      message: 'Watching the finished video for visible quality problems...',
+      line: 'Premium visual QA is inspecting the complete rendered artifact before release.',
+    }, action);
+    const runtime = runtimePaths();
+    const probe = await probeVideo(artifact, runtime, (child) => {
+      if (activeRender === action && !action.canceled) action.proc = child;
+    });
+    const frames = await extractFrames(
+      artifact, probe, work, 8, runtime, (child) => {
+        if (activeRender === action && !action.canceled) action.proc = child;
+      });
+    if (frames.length < 6) {
+      throw new Error('premium visual QA could not sample the complete artifact');
+    }
+    const prompt = artifactReviewPrompt(action.payload?.creativeBrief || '');
+    const raw = await requestVision(frames, action, {
+      mode: 'artifact-quality', context: prompt,
+    });
+    const review = parseArtifactReview(raw);
+    if (action.canceled || activeRender !== action) return;
+    if (!reviewPasses(review)) {
+      const issue = reviewIssueText(review);
+      const receipt = path.join(action.outputDir, 'VISION_QA_REPORT.json');
+      fs.writeFileSync(receipt, `${JSON.stringify({
+        ...review, artifact: path.basename(artifact), reviewedAt: new Date().toISOString(),
+      }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      if (retryRejectedRender(action, artifact, issue)) return;
+      throw new Error(`Premium visual QA rejected the draft: ${issue}`);
+    }
+    event.visionQa = { pass: true, score: review.score };
+    fs.renameSync(staged.pending, staged.approved);
+    replaceEventArtifactPath(event, staged.pending, staged.approved);
+    artifact = staged.approved;
+    rememberResult(event, action.outputDir);
+    send('helper-render', { ...event, actionId: action.id, kind: action.kind });
+    markRenderFinished(action);
+  } catch (error) {
+    if (artifact && fs.existsSync(artifact) &&
+        !/\.VISION-REJECTED(?:\.|$)/i.test(path.basename(artifact))) {
+      try { quarantineRejectedArtifact(artifact); }
+      catch (_) { /* failure is still reported and never registered as a result */ }
+    }
+    if (action.canceled) return;
+    send('helper-render', {
+      event: 'local-error', actionId: action.id, kind: 'render',
+      stage: 'premium visual quality assurance',
+      error: `${error.message || String(error)} The draft was not exposed as a finished video. Retry after the reported issue is corrected.`,
+    });
+    markRenderFinished(action);
+  } finally {
+    if (work) fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
 function processLocalEvent(event, action) {
   if (!LOCAL_EVENTS.has(event.event)) return false;
   if (action.canceled) return true;
   action.lastActivityAt = Date.now();
   let visibleEvent = { ...event, actionId: action.id, kind: action.kind };
-  if (event.event === 'local-progress') {
+  if (event.event === 'local-canceled') {
+    action.terminal = true;
+  } else if (event.event === 'local-progress') {
     const mapped = engineProgress(event.line || event.stage || '');
     if (mapped) {
       visibleEvent = { ...visibleEvent, ...mapped };
@@ -611,8 +787,25 @@ function processLocalEvent(event, action) {
     action.message = String(visibleEvent.message || action.message || 'Working...');
   }
   if (event.event === 'local-result' && action.kind === 'render') {
-    rememberResult(event, action.outputDir);
     action.terminal = true;
+    if (event.qaPass !== true) {
+      try {
+        const rejected = visibleArtifactPath(event, action.outputDir);
+        if (!/\.UNVERIFIED(?:\.|$)/i.test(path.basename(rejected))) {
+          quarantineRejectedArtifact(rejected);
+        }
+      } catch (_) { /* a missing failed artifact is already unavailable */ }
+      visibleEvent = {
+        ...visibleEvent, event: 'local-error',
+        stage: 'built-in quality assurance',
+        error: event.warning ||
+          'Built-in quality assurance rejected the draft. It was not released.',
+      };
+    } else {
+      action.qaPending = true;
+      void reviewArtifact(event, action);
+      return true;
+    }
   } else if (event.event === 'local-chat' && action.kind === 'chat') {
     rememberProposal(event);
     rememberResearchSources(event);
@@ -642,6 +835,9 @@ function localProcess(mode, payload, kind, settings) {
     message: kind === 'render' ? 'Starting the local edit...' : 'Analyzing...',
     startedAt: Date.now(),
     lastActivityAt: Date.now(),
+    qaPending: false,
+    payload: kind === 'render' ? { ...payload } : null,
+    settings: { ...settings },
   };
   const child = spawn(p.daemon, [mode], {
     env: daemonEnv(settings), windowsHide: true, cwd: p.root,
@@ -685,7 +881,7 @@ function localProcess(mode, payload, kind, settings) {
   child.on('close', (code) => {
     stdout.flush();
     stderr.flush();
-    if (kind === 'render' && activeRender === action) activeRender = null;
+    if (kind === 'render' && activeRender === action && !action.qaPending) activeRender = null;
     if (kind === 'chat' && activeChat === action) activeChat = null;
     if (!action.terminal && !action.canceled) {
       send('helper-render', {
@@ -828,6 +1024,11 @@ function chatLocal(raw) {
       { ...request, mediaAnalysis, hasCompletedRender: !!raw?.resultPath },
       settings.deepseekApiKey,
       (progress) => processLocalEvent(progress, action));
+    if (mediaAnalysis?.videos?.length) {
+      event.transcript = mediaAnalysis.videos
+        .map((video) => String(video?.transcript || '').trim())
+        .filter(Boolean).join('\n').slice(0, 30_000);
+    }
     processLocalEvent(event, action);
   })().catch((error) => {
     processLocalEvent({
@@ -877,9 +1078,10 @@ async function cancelLocal() {
   if (!action) return { ok: true, canceled: false };
   action.canceled = true;
   activeRender = null;
+  rejectPendingVisionForAction(action, 'local vision was canceled');
   await stopProcessTree(action.proc);
   send('helper-render', {
-    event: 'local-progress', actionId: action.id, kind: 'render',
+    event: 'local-canceled', actionId: action.id, kind: 'render',
     stage: 'canceled', line: 'Edit canceled',
   });
   send('helper-state', { running: false, rendering: false,

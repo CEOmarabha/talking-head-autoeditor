@@ -1,11 +1,13 @@
 const $ = (id) => document.getElementById(id);
 const ChatState = window.AutoEditorChatState;
+const ViewState = window.AutoEditorViewState;
 
 const app = {
   videos: [], outputDir: '', resultPath: '', transcript: '', proposal: null,
   conversation: ChatState.createConversationState(),
   attachmentsDirty: false, chatQueue: [], currentChat: null,
-  lastRenderPayload: null, proposalTargetResultPath: '', platform: '',
+  lastRenderPayload: null, proposalTargetResultPath: '', proposalBrief: '', platform: '',
+  attachmentRevision: 0,
 };
 
 let visionWorker = null;
@@ -58,7 +60,12 @@ window.helper.onVisionRequest((request) => {
   }
   activeVisionId = id;
   try {
-    localVisionWorker().postMessage({ id, images });
+    localVisionWorker().postMessage({
+      id, images,
+      mode: typeof request.mode === 'string' ? request.mode.slice(0, 80) : '',
+      context: typeof request.context === 'string'
+        ? request.context.slice(0, 8000) : '',
+    });
   } catch (error) {
     activeVisionId = null;
     window.helper.visionResult({ id, status: 'error', error: asError(error).slice(0, 1000) });
@@ -164,6 +171,7 @@ function renderVideos() {
     remove.textContent = 'Remove';
     remove.addEventListener('click', () => {
       app.videos.splice(index, 1);
+      invalidateAttachmentAnalysis();
       app.attachmentsDirty = true;
       renderVideos();
     });
@@ -193,7 +201,7 @@ function sourceList(sources) {
   return list.childElementCount ? list : null;
 }
 
-function mediaMessage(path, allowActions) {
+function mediaMessage(path, allowActions, mediaKey) {
   const wrap = document.createElement('div');
   const video = document.createElement('video');
   const footer = document.createElement('div');
@@ -204,6 +212,7 @@ function mediaMessage(path, allowActions) {
   video.controls = true;
   video.preload = 'metadata';
   video.src = localFileUrl(path);
+  video.dataset.mediaKey = mediaKey;
   footer.className = 'chat-media-footer';
   name.textContent = fileName(path);
   location.textContent = path;
@@ -227,18 +236,19 @@ function mediaMessage(path, allowActions) {
   return wrap;
 }
 
-function technicalDetails(logs) {
+function technicalDetails(logs, detailsKey) {
   const details = document.createElement('details');
   const summary = document.createElement('summary');
   const pre = document.createElement('pre');
   details.className = 'technical-details';
+  details.dataset.detailsKey = detailsKey;
   summary.textContent = 'Technical details';
   pre.textContent = logs.length ? logs.join('\n') : 'Waiting for engine output...';
   details.append(summary, pre);
   return details;
 }
 
-function renderActivity(message) {
+function renderActivity(message, messageKey) {
   const card = document.createElement('div');
   const stage = document.createElement('strong');
   const timing = document.createElement('div');
@@ -275,7 +285,7 @@ function renderActivity(message) {
     cancel.addEventListener('click', cancelRender);
     card.appendChild(cancel);
   }
-  card.appendChild(technicalDetails(message.logs || []));
+  card.appendChild(technicalDetails(message.logs || [], `${messageKey}:details`));
   return card;
 }
 
@@ -296,9 +306,10 @@ function addProposalButton(row, message) {
   row.appendChild(button);
 }
 
-function renderChat() {
+function renderChat(options = {}) {
   scheduleConversationSave();
   const transcript = $('chat-transcript');
+  const viewSnapshot = ViewState.captureTranscriptView(transcript);
   transcript.replaceChildren();
   if (!app.conversation.messages.length) {
     const empty = document.createElement('p');
@@ -306,12 +317,15 @@ function renderChat() {
     empty.className = 'chat-empty';
     empty.textContent = 'Attach a video and tell DeepSeek how you want it edited.';
     transcript.appendChild(empty);
+    ViewState.restoreTranscriptView(transcript, viewSnapshot, options);
     return;
   }
-  app.conversation.messages.forEach((message) => {
+  app.conversation.messages.forEach((message, messageIndex) => {
     const row = document.createElement('div');
     const role = document.createElement('span');
+    const messageKey = message.id || `message-${messageIndex}`;
     row.className = `chat-message ${message.role === 'user' ? 'user' : 'assistant'} ${message.kind || 'text'}`;
+    row.dataset.messageId = messageKey;
     role.textContent = message.role === 'user' ? 'You' : 'DeepSeek';
     row.appendChild(role);
     if (message.content) {
@@ -320,9 +334,10 @@ function renderChat() {
         ? `Failed during ${message.failedStage}: ${message.content}` : message.content;
       row.appendChild(content);
     }
-    (message.attachments || []).forEach((path) => row.appendChild(mediaMessage(path, false)));
+    (message.attachments || []).forEach((path, attachmentIndex) =>
+      row.appendChild(mediaMessage(path, false, `${messageKey}:attachment:${attachmentIndex}`)));
     if (message.kind === 'analysis' || message.kind === 'render') {
-      row.appendChild(renderActivity(message));
+      row.appendChild(renderActivity(message, messageKey));
     }
     if (message.kind === 'warning' && message.warning) {
       const warning = document.createElement('div');
@@ -330,9 +345,11 @@ function renderChat() {
       warning.textContent = `Needs review: ${message.warning}`;
       row.appendChild(warning);
     }
-    if (message.videoPath) row.appendChild(mediaMessage(message.videoPath, true));
+    if (message.videoPath) {
+      row.appendChild(mediaMessage(message.videoPath, true, `${messageKey}:result`));
+    }
     if ((message.kind === 'video' || message.kind === 'warning') && (message.logs || []).length) {
-      row.appendChild(technicalDetails(message.logs));
+      row.appendChild(technicalDetails(message.logs, `${messageKey}:details`));
     }
     if (message.kind === 'error' && message.retry) {
       const retry = document.createElement('button');
@@ -342,18 +359,43 @@ function renderChat() {
       retry.disabled = !app.lastRenderPayload;
       retry.addEventListener('click', () => startRender(null, app.lastRenderPayload));
       row.appendChild(retry);
-      if ((message.logs || []).length) row.appendChild(technicalDetails(message.logs));
+      if ((message.logs || []).length) {
+        row.appendChild(technicalDetails(message.logs, `${messageKey}:details`));
+      }
     }
     const sources = sourceList(message.sources);
     if (sources) row.appendChild(sources);
     addProposalButton(row, message);
     transcript.appendChild(row);
   });
-  transcript.scrollTop = transcript.scrollHeight;
+  ViewState.restoreTranscriptView(transcript, viewSnapshot, options);
   const rendering = !!app.conversation.activeRender;
   const analyzing = !!app.conversation.activeAnalysis;
   setStatus(rendering ? 'Rendering' : (analyzing ? 'Analyzing' : 'Ready'),
     rendering || analyzing ? 'on' : '');
+}
+
+function invalidateAttachmentAnalysis() {
+  app.attachmentRevision += 1;
+  app.transcript = '';
+  app.proposal = null;
+  app.proposalBrief = '';
+  app.proposalTargetResultPath = '';
+  app.lastRenderPayload = null;
+}
+
+function refreshActiveRenderClock(clock = Date.now()) {
+  const render = app.conversation.activeRender;
+  if (!render) return;
+  const messageId = String(render.id || '');
+  const row = Array.from($('chat-transcript').querySelectorAll('[data-message-id]'))
+    .find((candidate) => candidate.dataset.messageId === messageId);
+  const timing = row?.querySelector('.activity-timing');
+  if (!timing) return;
+  const value = ChatState.renderTiming(render, clock);
+  timing.textContent = value.stale
+    ? `Elapsed ${value.elapsed} \u00b7 Still working; last engine update ${value.lastActivity}`
+    : `Elapsed ${value.elapsed} \u00b7 Last activity ${value.lastActivity}`;
 }
 
 function scheduleConversationSave() {
@@ -380,9 +422,12 @@ function assistantMessage(content, kind = 'text') {
 }
 
 function renderRequest() {
+  const script = $('script').value.trim();
   return {
     videos: [...app.videos], outputDir: app.outputDir,
-    projectType: $('project-type').value, script: $('script').value.trim(),
+    projectType: $('project-type').value, script,
+    cachedTranscript: script ? '' : app.transcript.slice(0, 30000),
+    creativeBrief: app.proposalBrief.slice(0, 8000),
   };
 }
 
@@ -506,6 +551,7 @@ async function submitMessage() {
   queueChat({
     text, attachments, history: boundedChatHistory(before),
     targetResultPath: attachments.length ? '' : app.resultPath,
+    attachmentRevision: app.attachmentRevision,
   });
 }
 
@@ -517,6 +563,13 @@ function handleRenderEvent(event = {}) {
   }
   const kind = event.kind || (event.event === 'local-chat' ? 'chat'
     : (app.conversation.activeRender ? 'render' : 'chat'));
+  if (event.event === 'local-canceled') {
+    ChatState.dispatch(app.conversation, {
+      type: 'render_cancelled', content: 'Edit canceled.',
+    });
+    renderChat();
+    return;
+  }
   if (event.event === 'local-error') {
     if (kind === 'render') {
       ChatState.dispatch(app.conversation, {
@@ -535,10 +588,27 @@ function handleRenderEvent(event = {}) {
     return;
   }
   if (event.event === 'local-chat') {
+    if (app.currentChat &&
+        app.currentChat.attachmentRevision !== app.attachmentRevision) {
+      ChatState.dispatch(app.conversation, {
+        type: 'analysis_complete', kind: 'error',
+        content: 'The attached footage changed during analysis. Send the edit request again for the current files.',
+      });
+      app.currentChat = null;
+      renderChat();
+      drainChatQueue();
+      return;
+    }
     const operations = event.proposal?.operations;
     const applicable = event.canApply === true && Array.isArray(operations) && operations.length;
     app.proposal = applicable ? event.proposal : null;
-    app.proposalTargetResultPath = app.currentChat?.targetResultPath || app.resultPath || '';
+    app.proposalBrief = applicable && typeof event.message === 'string'
+      ? event.message.slice(0, 8000) : '';
+    if (typeof event.transcript === 'string' && event.transcript.trim()) {
+      app.transcript = event.transcript.slice(0, 30000);
+    }
+    app.proposalTargetResultPath = app.currentChat
+      ? app.currentChat.targetResultPath : (app.resultPath || '');
     ChatState.dispatch(app.conversation, {
       type: 'analysis_complete', content: event.message || 'Analysis complete.',
       sources: event.sources, proposal: app.proposal, canApply: !!app.proposal,
@@ -650,8 +720,12 @@ async function addPickedVideos(promise) {
   $('render-error').textContent = '';
   try {
     const picked = normalizePaths(await promise);
+    const before = app.videos.length;
     app.videos = [...new Set([...app.videos, ...picked])];
-    if (picked.length) app.attachmentsDirty = true;
+    if (app.videos.length !== before) {
+      invalidateAttachmentAnalysis();
+      app.attachmentsDirty = true;
+    }
     renderVideos();
   } catch (error) {
     $('render-error').textContent = asError(error);
@@ -687,6 +761,7 @@ window.addEventListener('drop', (event) => event.preventDefault());
 
 $('clear-videos').addEventListener('click', () => {
   app.videos = [];
+  invalidateAttachmentAnalysis();
   app.attachmentsDirty = true;
   renderVideos();
 });
@@ -749,7 +824,7 @@ window.helper.onRender(handleRenderEvent);
 setInterval(() => {
   if (!app.conversation.activeRender) return;
   ChatState.dispatch(app.conversation, { type: 'render_heartbeat' });
-  renderChat();
+  refreshActiveRenderClock();
 }, 1000);
 
 async function boot() {

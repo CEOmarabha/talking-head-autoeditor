@@ -1,8 +1,11 @@
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 
 const MAX_INPUTS = 20;
 const MAX_SCRIPT_CHARS = 200000;
+const MAX_CACHED_TRANSCRIPT_CHARS = 30000;
+const MAX_CREATIVE_BRIEF_CHARS = 8000;
 const MAX_KEY_CHARS = 8192;
 const MAX_CHAT_TEXT_CHARS = 4000;
 const MAX_TRANSCRIPT_CHARS = 20000;
@@ -147,11 +150,32 @@ function normalizeLocalRequest(input) {
     'video inputs');
   const outputDir = suppliedAlias(input, ['outputDir', 'outDir'],
     'output directory');
+  const visionAttempt = input.visionAttempt ?? 0;
+  if (!Number.isSafeInteger(visionAttempt) || visionAttempt < 0 || visionAttempt > 1) {
+    throw new Error('vision attempt must be 0 or 1');
+  }
+  const creativeBrief = normalizeString(input.creativeBrief ?? '',
+    'creative brief', MAX_CREATIVE_BRIEF_CHARS).trim();
+  const creativeBriefSha256 = input.creativeBriefSha256 ?? '';
+  if (typeof creativeBriefSha256 !== 'string' ||
+      (creativeBriefSha256 && !/^[0-9a-f]{64}$/.test(creativeBriefSha256))) {
+    throw new Error('creative brief digest is invalid');
+  }
+  const measuredDigest = crypto.createHash('sha256')
+    .update(creativeBrief, 'utf8').digest('hex');
+  if (creativeBriefSha256 && creativeBriefSha256 !== measuredDigest) {
+    throw new Error('creative brief digest does not match');
+  }
   return {
     inputs: normalizeVideoPaths(videos),
     outputDir: normalizeOutputDir(outputDir),
     projectType: normalizeProjectType(input.projectType),
     script: normalizeString(input.script, 'script', MAX_SCRIPT_CHARS),
+    cachedTranscript: normalizeString(input.cachedTranscript ?? '',
+      'cached transcript', MAX_CACHED_TRANSCRIPT_CHARS),
+    creativeBrief,
+    creativeBriefSha256: creativeBrief ? measuredDigest : '',
+    visionAttempt,
   };
 }
 
@@ -175,8 +199,7 @@ function normalizeLocalSettings(input) {
 }
 
 function settingsForLocalRender(input) {
-  const normalized = normalizeLocalSettings(input);
-  return { ...normalized, deepseekApiKey: '' };
+  return normalizeLocalSettings(input);
 }
 
 function normalizeHistory(raw) {

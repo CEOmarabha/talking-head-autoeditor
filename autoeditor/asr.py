@@ -18,6 +18,7 @@ import numpy as np
 
 
 SAMPLE_RATE = 16_000
+MAX_WHISPER_CPU_THREADS = 16
 PYAV_PATH_PARTS = frozenset({"av", "av.libs"})
 PYAV_NATIVE_NAME = re.compile(
     r"^(?:lib)?(?:avcodec|avdevice|avfilter|avformat|avutil|postproc|"
@@ -109,10 +110,32 @@ def prepare_faster_whisper() -> None:
     sys.modules["faster_whisper.audio"] = shim
 
 
+def whisper_cpu_threads() -> int:
+    """Choose bounded CPU parallelism for the local Whisper runtime.
+
+    CTranslate2 otherwise defaults to four intra-op threads, leaving logical
+    CPUs idle on common 8-thread laptops.  An operator can lower the count for
+    thermally constrained systems, but cannot request more threads than this
+    machine exposes or the conservative process-wide ceiling.
+    """
+    logical = max(1, int(os.cpu_count() or 1))
+    ceiling = min(logical, MAX_WHISPER_CPU_THREADS)
+    configured = os.environ.get("AUTOEDITOR_WHISPER_CPU_THREADS", "").strip()
+    if not configured:
+        return ceiling
+    try:
+        requested = int(configured)
+    except ValueError:
+        return ceiling
+    return max(1, min(requested, ceiling))
+
+
 def create_model(model_path: str, **kwargs):
     prepare_faster_whisper()
     from faster_whisper import WhisperModel
 
+    if kwargs.get("device", "auto") in {"auto", "cpu"}:
+        kwargs.setdefault("cpu_threads", whisper_cpu_threads())
     return WhisperModel(model_path, **kwargs)
 
 

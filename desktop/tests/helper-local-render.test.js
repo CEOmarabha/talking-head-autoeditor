@@ -1,4 +1,5 @@
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -48,7 +49,7 @@ try {
     pixabayApiKey: 'pixabay-secret',
   };
   assert.deepStrictEqual(settingsForLocalRender(savedSettings), {
-    deepseekApiKey: '',
+    deepseekApiKey: 'deepseek-secret',
     pexelsApiKey: 'pexels-secret',
     pixabayApiKey: 'pixabay-secret',
   });
@@ -88,6 +89,10 @@ try {
     outputDir: path.resolve(outputDir),
     projectType: 'commercial',
     script: 'Keep this script exactly.\n',
+    cachedTranscript: '',
+    creativeBrief: '',
+    creativeBriefSha256: '',
+    visionAttempt: 0,
   });
   assert.ok(!JSON.stringify(normalized).includes('do-not-return-this'));
   assert.deepStrictEqual(normalizeLocalRequest({
@@ -199,8 +204,32 @@ try {
   }, (value) => { validatedProposal = value; });
   assert.deepStrictEqual(apply, {
     inputs: [path.resolve(first)], outputDir: path.resolve(outputDir),
-    projectType: 'long', script: 'Approved script', proposal,
+    projectType: 'long', script: 'Approved script', cachedTranscript: '',
+    creativeBrief: '', creativeBriefSha256: '', visionAttempt: 0, proposal,
   });
+
+  const withCreativeContext = normalizeLocalRequest({
+    videos: [first], outputDir, projectType: 'short', script: '',
+    cachedTranscript: 'A fingerprint-bound local transcript.',
+    creativeBrief: 'Use the approved cold open and high-contrast captions.',
+  });
+  assert.strictEqual(withCreativeContext.cachedTranscript,
+    'A fingerprint-bound local transcript.');
+  assert.match(withCreativeContext.creativeBrief, /approved cold open/);
+  assert.strictEqual(withCreativeContext.creativeBriefSha256,
+    crypto.createHash('sha256').update(withCreativeContext.creativeBrief).digest('hex'));
+  assert.throws(() => normalizeLocalRequest({
+    videos: [first], outputDir, projectType: 'short', script: '',
+    creativeBrief: 'approved', creativeBriefSha256: '0'.repeat(64),
+  }), /digest does not match/);
+  assert.throws(() => normalizeLocalRequest({
+    videos: [first], outputDir, projectType: 'short', script: '',
+    cachedTranscript: 'x'.repeat(30001),
+  }), /cached transcript.*30000/);
+  assert.throws(() => normalizeLocalRequest({
+    videos: [first], outputDir, projectType: 'short', script: '',
+    visionAttempt: 2,
+  }), /vision attempt/);
   assert.deepStrictEqual(validatedProposal, proposal);
   assert.notStrictEqual(apply.proposal, proposal);
   assert.throws(() => normalizeApplyRequest({
