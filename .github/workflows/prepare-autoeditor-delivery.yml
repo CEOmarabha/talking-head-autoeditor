@@ -42,6 +42,7 @@ jobs:
           WIN_RENDER_DIR=$(find windows-asar -type d -path '*/renderer' -print -quit)
           MAC_RENDER_DIR=$(find mac-asar -type d -path '*/renderer' -print -quit)
           test -n "$WIN_RENDER_DIR" && test -n "$MAC_RENDER_DIR"
+          find "$WIN_RENDER_DIR" "$MAC_RENDER_DIR" -type f -exec sed -i 's/\r$//' {} +
           diff -qr "$WIN_RENDER_DIR" "$MAC_RENDER_DIR"
           WIN_RENDERER=$(cd "$WIN_RENDER_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
           MAC_RENDERER=$(cd "$MAC_RENDER_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
