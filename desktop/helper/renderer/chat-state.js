@@ -12,12 +12,6 @@
     'render_complete', 'render_warning', 'render_error', 'render_cancelled',
   ]);
   const EVENT_TYPE_SET = new Set(EVENT_TYPES);
-  const SNAPSHOT_SCHEMA = 'autoeditor-chat/v1';
-  const MAX_SNAPSHOT_MESSAGES = 500;
-  const MAX_SNAPSHOT_LOGS = 200;
-  const MAX_SNAPSHOT_TEXT = 20000;
-  const MAX_SNAPSHOT_LOG_CHARS = 40000;
-  const MAX_SNAPSHOT_CHARS = 450000;
 
   function createConversationState(options = {}) {
     return {
@@ -230,118 +224,8 @@
       .test(String(text || '').trim());
   }
 
-  function limitedText(value, limit = MAX_SNAPSHOT_TEXT) {
-    return typeof value === 'string' ? value.slice(0, limit) : '';
-  }
-
-  function snapshotMessage(message) {
-    if (!message || typeof message !== 'object' ||
-        (message.role !== 'user' && message.role !== 'assistant')) return null;
-    const saved = {
-      id: limitedText(message.id, 100), role: message.role,
-      kind: limitedText(message.kind || 'text', 40),
-      content: limitedText(message.content), at: nowValue(message.at),
-    };
-    for (const key of ['stage', 'status', 'warning', 'videoPath',
-      'targetResultPath', 'failedStage']) {
-      if (typeof message[key] === 'string') saved[key] = limitedText(message[key]);
-    }
-    for (const key of ['startedAt', 'lastActivityAt', 'completedAt']) {
-      if (Number.isFinite(Number(message[key]))) saved[key] = Number(message[key]);
-    }
-    if (Array.isArray(message.attachments)) {
-      saved.attachments = message.attachments
-        .filter((value) => typeof value === 'string').slice(0, 20)
-        .map((value) => limitedText(value, 4096));
-    }
-    if (Array.isArray(message.logs)) {
-      saved.logs = message.logs.slice(-MAX_SNAPSHOT_LOGS)
-        .filter((value) => typeof value === 'string')
-        .map((value) => limitedText(value, 4000));
-      let logChars = saved.logs.reduce((sum, value) => sum + value.length, 0);
-      while (saved.logs.length && logChars > MAX_SNAPSHOT_LOG_CHARS) {
-        logChars -= saved.logs.shift().length;
-      }
-    }
-    if (message.outputs && typeof message.outputs === 'object' &&
-        !Array.isArray(message.outputs)) {
-      saved.outputs = Object.fromEntries(Object.entries(message.outputs).slice(0, 20)
-        .filter(([, value]) => typeof value === 'string')
-        .map(([key, value]) => [limitedText(key, 100), limitedText(value, 4096)]));
-    }
-    if (Array.isArray(message.sources)) {
-      saved.sources = message.sources.slice(0, 12).map((source) => ({
-        title: limitedText(source?.title || source?.source, 500),
-        url: limitedText(source?.url, 2048), date: limitedText(source?.date, 100),
-      })).filter((source) => source.url);
-    }
-    if (message.measurable === true && Number.isFinite(Number(message.progress))) {
-      saved.measurable = true;
-      saved.progress = Math.max(0, Math.min(100, Math.round(Number(message.progress))));
-    } else if (message.kind === 'render') {
-      saved.measurable = false;
-      saved.progress = null;
-    }
-    if (message.retry === true) saved.retry = true;
-    // Main-process proposal authorization lasts for one launch. Preserve the
-    // readable plan, but require a fresh plan before applying after relaunch.
-    if (message.canApply === true) saved.canApply = false;
-    return saved;
-  }
-
-  function conversationSnapshot(state) {
-    const sourceMessages = Array.isArray(state?.messages) ? state.messages : [];
-    const candidates = sourceMessages.slice(-MAX_SNAPSHOT_MESSAGES)
-      .map(snapshotMessage).filter(Boolean);
-    const messages = [];
-    let snapshotChars = 0;
-    for (let index = candidates.length - 1; index >= 0; index -= 1) {
-      const candidateChars = JSON.stringify(candidates[index]).length;
-      if (messages.length && snapshotChars + candidateChars > MAX_SNAPSHOT_CHARS) break;
-      messages.unshift(candidates[index]);
-      snapshotChars += candidateChars;
-    }
-    const offset = Math.max(0, sourceMessages.length - messages.length);
-    const activeAnalysisIndex = state?.activeAnalysis
-      ? sourceMessages.indexOf(state.activeAnalysis) - offset : -1;
-    const activeRenderIndex = state?.activeRender
-      ? sourceMessages.indexOf(state.activeRender) - offset : -1;
-    return {
-      schema: SNAPSHOT_SCHEMA,
-      platform: limitedText(state?.platform, 20), messages,
-      activeAnalysisIndex: activeAnalysisIndex >= 0 ? activeAnalysisIndex : -1,
-      activeRenderIndex: activeRenderIndex >= 0 ? activeRenderIndex : -1,
-      latestResultPath: limitedText(state?.latestResultPath, 4096),
-      sequence: Number.isSafeInteger(state?.sequence) ? state.sequence : messages.length,
-    };
-  }
-
-  function restoreConversation(value, options = {}) {
-    if (!value || typeof value !== 'object' || value.schema !== SNAPSHOT_SCHEMA ||
-        !Array.isArray(value.messages)) return createConversationState(options);
-    const state = createConversationState({ platform: options.platform || value.platform });
-    state.messages = value.messages.slice(-MAX_SNAPSHOT_MESSAGES)
-      .map(snapshotMessage).filter(Boolean);
-    const offset = Math.max(0, value.messages.length - state.messages.length);
-    const analysisIndex = Number(value.activeAnalysisIndex) - offset;
-    const renderIndex = Number(value.activeRenderIndex) - offset;
-    if (Number.isSafeInteger(analysisIndex) && analysisIndex >= 0 &&
-        state.messages[analysisIndex]?.kind === 'analysis') {
-      state.activeAnalysis = state.messages[analysisIndex];
-    }
-    if (Number.isSafeInteger(renderIndex) && renderIndex >= 0 &&
-        state.messages[renderIndex]?.kind === 'render') {
-      state.activeRender = state.messages[renderIndex];
-    }
-    state.latestResultPath = limitedText(value.latestResultPath, 4096);
-    state.sequence = Number.isSafeInteger(value.sequence)
-      ? Math.max(value.sequence, state.messages.length) : state.messages.length;
-    return state;
-  }
-
   return Object.freeze({
-    EVENT_TYPES, SNAPSHOT_SCHEMA, createConversationState, dispatch, formatDuration,
+    EVENT_TYPES, createConversationState, dispatch, formatDuration,
     renderTiming, liveStatusReply, isRenderCommand, isStatusQuestion,
-    conversationSnapshot, restoreConversation,
   });
 });

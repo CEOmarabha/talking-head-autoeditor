@@ -120,9 +120,6 @@ assert.ok(!helperMain.includes('AUTOEDITOR_WEB_API:'));
 assert.ok(!helperMain.includes('WORKER_TOKEN:'));
 assert.ok(helperWorkflow.includes('windows-2022'));
 assert.ok(!helperWorkflow.includes('macos-15-intel'));
-assert.ok(helperWorkflow.includes(
-  'Package and smoke-test the Windows x64 portable build'));
-assert.ok(helperWorkflow.includes('*-portable.zip'));
 assert.ok(helperWorkflow.includes('Render real HyperFrames and Remotion probes'));
 assert.ok(helperWorkflow.includes('STAGE=$(realpath "$STAGE")'));
 assert.ok(helperWorkflow.includes(
@@ -274,4 +271,917 @@ for (const releaseSource of [workflow, helperWorkflow]) {
   assert.ok(releaseSource.includes(
     'test "${BREW_VERSION%%$\'\\n\'*}" = \'Homebrew 6.0.12\''));
   assert.ok(releaseSource.indexOf('HOMEBREW_NO_AUTO_UPDATE=1') <
-   ×]6òÚ$z{-®éÜj×æ–æ6ÇVFW2‚v6öçFVçG3¢w&—FRr’“°Ð Ð¢òòg&÷¦VâVæv–æW2&R'V–ÇBöæÇ’g&öÒF†RÆFf÷&ÒæB&6†—FV7GW&R†6‚Æö6²àÐ¦f÷"†6öç7B·Vç6–væVD¦ö"Âff×Vu7FWÒöb°Ð¢¶†VÇW%Vç6–væVBÂu7FvR66WFVB6÷W&6RÖ'V–ÇBv–æF÷w2df×VruÒÀÐ¢·6UVç6–væVBÂt'VæFÆRfW&–f–VBdf×VræBdg&ö&RuÒÀÐ¥Ò’°Ð¢76W'Bæö²‡Vç6–væVD¦ö"æ–æ6ÇVFW2€Ð¢w&WV—&VÖVçG2ÒG·²ÖG&—‚çF&vWEö÷2×ÒÒG·²ÖG&—‚æ&6‚×ÒçG‡Br’“°Ð¢76W'Bæö²‡Vç6–væVD¦ö"æ–æ6ÇVFW2‚w—F†öâÖÒ—–ç7FÆÂÒ×&WV—&RÖ†6†W2r’“°Ð¢76W'Bæö²‡Vç6–væVD¦ö"æ–æ6ÇVFW2‚w—F†öâÖÒ—6†V6²r’“°Ð¢76W'Bæö²‚Vç6–væVD¦ö"æ–æ6ÇVFW2‚w—–ç7FÆÂÒ×Ww&FR—r’“°Ð¢6öç7B6fWG”BÒVç6–væVD¦ö"æ–æFW„öb€Ð¢rÒæÖS¢'Vâ6fWG’FW7G2v–ç7BF†RfW&–f–VBÆFf÷&Òdf×Vrr“°Ð¢6öç7Bff×VtBÒVç6–væVD¦ö"æ–æFW„öb†ff×Vu7FW“°Ð¢6öç7BFW6·F÷–ç7FÆÄBÒVç6–væVD¦ö"æ–æFW„öb‚vçÒ6’Ò×&Vf—‚FW6·F÷r“°Ð¢76W'Bæö²†ff×VtBâ“°Ð¢76W'Bæö²†FW6·F÷–ç7FÆÄBâff×VtB“°Ð¢76W'Bæö²‡6fWG”BâFW6·F÷–ç7FÆÄB“°Ð¢76W'Bæö²‡6fWG”Bâff×VtB“°Ð¢6öç7B6fWG•7FWÒVç6–væVD¦ö"ç6Æ–6R‡6fWG”BÀÐ¢Vç6–væVD¦ö"æ–æFW„öb‚uÆâÒrÂ6fWG”B²‚’“°Ð¢76W'Bæö²‡6fWG•7FWæ–æ6ÇVFW2‚vW‡÷'BUDôTD•Dõ%ôddÕTsÒ"DddÕTr"r’“°Ð¢76W'Bæö²‡6fWG•7FWæ–æ6ÇVFW2‚vW‡÷'BUDôTD•Dõ%ôde$ô$SÒ"Dde$ô$R"r’“°Ð¢76W'Bæö²‡6fWG•7FWæ–æ6ÇVFW2‚w—F†öâÖÒVæ—GFW7BFW7G2çFW7E÷6fWG’r’“°Ð§ÐÐ¦76W'Bæö²†Ö–âæ–æ6ÇVFW2‚&Vçbå•D„ôåUDc‚Òsr"’“°Ð¦76W'Bæö²†Ö–âæ–æ6ÇVFW2‚&Vçbå•D„ôä”ôTä4ôD”ärÒwWFbÓ‚r"’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚u•D„ôåUDcƒ¢#"r’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚u•D„ôä”ôTä4ôD”äs¢WFbÓ‚r’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2€Ð¢s†SC†C6S†FF6“33&c3V36ƒS#&#Cƒ“CcF&c363c#sCcs33r’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚s…ÅÂãÅÂã%ó…µ³§76S¥Õ×ÂB’r’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚s&CƒVS#C“#ƒ“Vf#v6Cc#s&Cc33“cƒVFc#ƒ#r’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2€Ð¢scv#3#&c3#s–SFVVc–#&c“c†&6F&#fS#†cFFV#cC–cFc#s†“&&6Cƒ&crr’“°Ð¦76W'Bæö²‚v÷&¶fÆ÷ræ–æ6ÇVFW2‚r÷&röÖ7FW"òr’“°Ð Ð¢òò&VÆV6R76WG27F’&—fFR2G&gBVçF–ÂF†R6ö×ÆWFR&VÖ÷FR6WBæ@Ð¢òò—G26†V6·7V×2ÖF6‚â6ö×ÆWFVB&W'VâfW&–f–W2v—F†÷WB×WFF–ærV&Æ–2&—G2àÐ¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚u4„#Se5TÕ2çG‡Br’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚vv‚&VÆV6R7&VFR"EDr"r’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚rÒ×fW&–g’×Frr’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚rÒÖG&gBr’“°Ð¦76W'Bæö²‚‡&VÆV6Uv÷&¶fÆ÷ræÖF6‚‚÷fW&–g•÷&VÖ÷FUö76WG2G'VRör’ÇÂµÒ’æÆVæwF‚ãÒ"“°Ð¦76W'Bæö²‚&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚wfW&–g•÷&VÖ÷FUö76WG2fÇ6Rr’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚vv‚&VÆV6RF÷væÆöB"EDr"r’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚w6†#Sg7VÒÖ24„#Se5TÕ2çG‡Br’“°Ð¦76W'Bæö²‡&VÆV6Uv÷&¶fÆ÷ræ–æ6ÇVFW2‚rÒÖG&gCÖfÇ6Rr’“°Ð¦6öç7B7&VFTG&gDBÒ&VÆV6Uv÷&¶fÆ÷ræ–æFW„öb‚vv‚&VÆV6R7&VFR"EDr"r“°Ð¦6öç7BWÆöD76WG4BÒ&VÆV6Uv÷&¶fÆ÷ræ–æFW„öb‚vv‚&VÆV6RWÆöB"EDr"r“°Ð¦6öç7Bf–æÅ&VÖ÷FUfW&–g”BÒ&VÆV6Uv÷&¶fÆ÷ræ–æFW„öb€Ð¢wfW&–g•÷&VÖ÷FUö76WG2G'VRrÂWÆöD76WG4B“°Ð¦6öç7BV&Æ—6„BÒ&VÆV6Uv÷&¶fÆ÷ræ–æFW„öb‚rÒÖG&gCÖfÇ6Rr“°Ð¦76W'Bæö²†7&VFTG&gDBâ“°Ð¦76W'Bæö²‡WÆöD76WG4Bâ7&VFTG&gDB“°Ð¦76W'Bæö²†f–æÅ&VÖ÷FUfW&–g”BâWÆöD76WG4B“°Ð¦76W'Bæö²‡V&Æ—6„Bâf–æÅ&VÖ÷FUfW&–g”B“°Ð Ð¢òò†VÇW"Fw2&öGV6R6–væVB6æF–FFW2öæÇ’âÆ—fRV&Æ–6F–öâ&WV—&W2Ð¢òò6W&FR÷væW"F—7F6‚F†B&–æG2F†R66WFVBFrÂ6öÖÖ—BÂ'VâÂGFV×BÀÐ¢òò&V6V—G2ÂæBâW‡Æ–6—B‡—6–6ÂÖ66WFæ6R6†V6¶&÷‚àÐ¦76W'Bæö²‚†VÇW%v÷&¶fÆ÷ræ–æ6ÇVFW2‚uÆâV&Æ—6ƒ¢r’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2€Ð¢uWÆöBF†R6–væVBv–æF÷w26æF–FFRf÷"‡—6–6Â66WFæ6Rr’“°Ð¦76W'Bæö²††VÇW$Ö2æ–æ6ÇVFW2€Ð¢uWÆöBF†R6–væVBÖ26æF–FFRf÷"‡—6–6Â66WFæ6Rr’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2‚w6–væVBÖ6æF–FFRÖ†VÇW"×v–æF÷w2×ƒcBr’“°Ð¦76W'Bæö²††VÇW$Ö2æ–æ6ÇVFW2‚w6–væVBÖ6æF–FFRÖ†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×Òr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷F–öâæ–æ6ÇVFW2‚w‡—6–6Åö66WFæ6S¢r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢t&–æB÷væW"66WFæ6RFòF†RW†7B7V66W76gVÂ6–væVBÖ6æF–FFR'Vâr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢r'F‚#¢"æv—F‡V"÷v÷&¶fÆ÷w2ö†VÇW"×&VÆV6Rç–ÖÂ"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚r&WfVçB#¢'W6‚"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚r&6öæ6ÇW6–öâ#¢'7V66W72"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚r&†VEö'&æ6‚#¢÷2æVçf—&öå²$44UDTEõDr%Òr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚r&†VE÷6†#¢÷2æVçf—&öå²$44UDTEô4ôÔÔ•B%Òr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚w'VâÖ–C¢G·²–çWG2æ'V–ÆE÷'Våö–B×Òr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚vv—F‡V"×Fö¶Vã¢G·²v—F‡V"çFö¶Vâ×Òr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚rÒÖ6öÖÖ—B"D44UDTEô4ôÔÔ•B"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚rÒ×'VâÖ–B"D44UDTEõ%Tåô”B"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚rÒ×'VâÖGFV×B"D44UDTEõ%TåôEDTÕB"r’“°Ð¦6öç7B†VÇW$6†V6¶÷WDBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢v7F–öç2ö6†V6¶÷WD6C63C&SV3V&ƒSƒ#VFscC3ƒ#s6&“#r“°Ð¦6öç7B†VÇW$6†V6¶÷WEfW&–g”BÒ†VÇW%&öÖ÷FRæ–æFW„öb‚vv—B&Wb×'6R„TBr“°Ð¦6öç7B†VÇW%&÷fVææ6TBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢t&–æB÷væW"66WFæ6RFòF†RW†7B7V66W76gVÂ6–væVBÖ6æF–FFR'Vâr“°Ð¦6öç7B†VÇW$çÔ–ç7FÆÄBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢vçÒ6’Ò×&Vf—‚FW6·F÷ÒÖ–væ÷&R×67&—G2r“°Ð¦6öç7B†VÇW%&W÷6—F÷'”6öFTBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢w—F†öâ6¶v–ærö†VÇW%÷&VÆV6UöÖWFFFç’76VÖ&ÆRr“°Ð¦76W'Bæö²††VÇW$6†V6¶÷WDBâ“°Ð¦76W'Bæö²††VÇW$6†V6¶÷WEfW&–g”Bâ†VÇW$6†V6¶÷WDB“°Ð¦76W'Bæö²††VÇW%&÷fVææ6TBâ†VÇW$6†V6¶÷WEfW&–g”B“°Ð¦76W'Bæö²††VÇW$çÔ–ç7FÆÄBâ†VÇW%&÷fVææ6TB“°Ð¦76W'Bæö²††VÇW%&W÷6—F÷'”6öFTBâ†VÇW$6†V6¶÷WEfW&–g”B“°Ð¦76W'Bæö²††VÇW%&VÆV6TÖWFFFæ–æ6ÇVFW2€Ð¢r'Fr"Â'fW'6–öâ"Â'6÷W&6R"Â&6†V6·7V×2"Â'ÆFf÷&×2"Âr’“°Ð¦76W'Bæö²††VÇW%&VÆV6TÖWFFFæ–æ6ÇVFW2€Ð¢r'&VÆV6RfW'6–öâÇ&VG’W†—7G2v—F‚F–ffW&VçB&÷fVææ6R÷""r’“°Ð Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚rÒ×fW&–g’×FrÒÖG&gBr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢w—F†öâ6¶v–ærö†VÇW%÷&VÆV6UöÖWFFFç’v—F‡V"Ö76WG2r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢rÒ×Æâ&VÆV6RÖÖWFFFöv—F‡V"Ö76WG2æ§6öâr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢sâ&VÆV6RÖÖWFFFöv—F‡V"Ö76WG2æçVÂr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢&Öf–ÆRÖBrrd”ÄU2Â&VÆV6RÖÖWFFFöv—F‡V"Ö76WG2æçVÂ"’“°Ð¦76W'Bæö²‚†VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢&Öf–ÆRÖBrrd”ÄU2ÂÂ‚"’“°Ð¦76W'Bæö²‚†VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢"ÖæÖRw'VçF–ÖRÖÖæ–fW7BÒ¢æ§6öâr"’“°Ð¦76W'Bæö²††VÇW%&VÆV6TÖWFFFæ–æ6ÇVFW2€Ð¢w&VÆV6R6öçF–ç2âVç&VfW&Væ6VB÷"Ö—76–ær'VçF–ÖRÖæ–fW7Br’“°Ð¦76W'Bæö²††VÇW%&VÆV6TÖWFFFæ–æ6ÇVFW2€Ð¢tv—D‡V"76WBÆâ×W7B6öçF–âW†7FÇ’6—‚76WG2r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚wfW&–g•öv—F‡V%÷&VÆV6Rr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2€Ð¢tv—D‡V"ÖWFFF76WG2Fòæ÷BW†7FÇ’ÖF6‚F†RW‡V7FVB6WBr’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚v6××2"Ff–ÆR"r’“°Ð¦76W'Bæö²††VÇW%&öÖ÷FRæ–æ6ÇVFW2‚rÒ×6†#Sb"D4„T4µ5TÕõ4„"ÒÖ–bÖæöæRÖÖF6‚r’“°Ð¦6öç7B†VÇW$G&gDBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢vv‚&VÆV6R7&VFR"D44UDTEõDr"r“°Ð¦6öç7B†VÇW%WÆöDBÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢vv‚&VÆV6RWÆöB"D44UDTEõDr"r“°Ð¦6öç7B†VÇW%fW&–g”BÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢wfW&–g•öv—F‡V%÷&VÆV6RrÂ†VÇW%WÆöDB“°Ð¦6öç7B†VÇW%V&Æ—6„BÒ†VÇW%&öÖ÷FRæ–æFW„öb‚rÒÖG&gCÖfÇ6Rr“°Ð¦6öç7B†VÇW%ö–çFW$BÒ†VÇW%&öÖ÷FRæ–æFW„öb€Ð¢tFöÖ–6ÆÇ’W‡÷6RF†R‡—6–6ÆÇ’66WFVB&VÆV6RFò&—fFRF÷væÆöG2r“°Ð¦76W'Bæö²††VÇW$G&gDBâ“°Ð¦76W'Bæö²††VÇW%WÆöDBâ†VÇW$G&gDB“°Ð¦76W'Bæö²††VÇW%fW&–g”Bâ†VÇW%WÆöDB“°Ð¦76W'Bæö²††VÇW%V&Æ—6„Bâ†VÇW%fW&–g”B“°Ð¦76W'Bæö²††VÇW%ö–çFW$Bâ†VÇW%V&Æ—6„B“°Ð Ð¢òòWfW'’†VÇW"'F–f7BW†V7WFW2—G2–ç7FÆÆVB÷"Ö÷VçFVBg&÷¦VâVæv–æRæ@Ð¢òò&÷fW2F†BF†Ræ÷&ÖÂÆö6ÂÖöæÇ’VÆV7G&öâ&VæFW&W"6â–çB&VÂäràÐ¢òòF†R67&VVç6†÷BFöW2æ÷BæVVB&÷f–FW"66÷VçG2&V6W6RF†RÆö6ÂVF—F÷ Ð¢òò÷Vç2v—F†÷WBvV'6—FR6öææV7F–öâ÷"6WGW6öFRàÐ¦76W'Bæö²††VÇW$Ö–âæ–æ6ÇVFW2€Ð¢&6öç7B6GW&UF‚Ò&ö6W72æVçbäUDôTD•Dõ%õ45$TTå4„õEõD‚ÇÂrr"’“°Ð¦76W'Bæö²‚†VÇW$Ö–âæ–æ6ÇVFW2‚tUDôTD•Dõ%õ45$TTå4„õEõ4´•ô44õTåE2r’“°Ð¦76W'Bæö²††VÇW$Ö–âæ–æ6ÇVFW2€Ð¢'v–âæÆöDf–ÆR‡F‚æ¦ö–â…õöF—&æÖRÂw&VæFW&W"rÂv–æFW‚æ‡FÖÂr’’"’“°Ð Ð¦gVæ7F–öâ76W'Ev–æF÷w4†VÇW$66WFæ6R†vFR’°Ð¢6öç7BÖæ–fW7DBÒvFRæ–æFW„öb‚wfW&–g•ö†VÇW%öÖæ–fW7Bç’r“°Ð¢6öç7BÖæ–fW7DW†—DBÒvFRæ–æFW„öb€Ð¢w'VçF–ÖRÖæ–fW7BfW&–f–6F–öâf–ÆVBrÂÖæ–fW7DB“°Ð¢6öç7B6VÆeFW7DBÒvFRæ–æFW„öb‚rbFVæv–æRÒ×6VÆb×FW7Br“°Ð¢6öç7B67&VVç6†÷DBÒvFRæ–æFW„öb€Ð¢rFVçc¤UDôTD•Dõ%õ45$TTå4„õEõD‚ÒG67&VVç6†÷Br“°Ð¢6öç7B6¶—66÷VçG4BÒvFRæ–æFW„öb€Ð¢rFVçc¤UDôTD•Dõ%õ45$TTå4„õEõ4´•ô44õTåE2Ò#"r“°Ð¢6öç7B6GW&TBÒvFRæ–æFW„öb€Ð¢rF6GW&RÒ7F'BÕ&ö6W72FÕv—BÕ75F‡'Rr“°Ð¢6öç7BFV6öFTBÒvFRæ–æFW„öb€Ð¢uµ7—7FVÒäG&v–ærä–ÖvUÓ£¤g&öÕ7G&VÒ‚G7G&VÒÂFfÇ6RÂGG'VR’r“°Ð¢6öç7BfÆ–FFVDBÒvFRæ–æFW„öb€Ð¢rF–ÖvRåv–GF‚ÖÆRÖ÷"F–ÖvRä†V–v‡BÖÆRr“°Ð¢6öç7BFV6öFW$6Æ÷6VDBÒvFRæ–æFW„öb‚rG7G&VÒäF—7÷6R‚’r“°Ð¢6öç7B6Öö¶TBÒvFRæ–æFW„öb‚rFVçc¤UDôTD•Dõ%õ4Ôô´UõDU5BÒ#"r“°Ð¢6öç7BVæ–ç7FÆÄBÒvFRæ–æFW„öb‚rG&VÖ÷fRÒ7F'BÕ&ö6W72GVæ–ç7FÆÆW"r“°Ð¢6öç7B&Vv—7G'”BÒvFRæ–æFW„öb€Ð¢t„´5S¥ÅÅ6ögGv&UÅÃ3VS3FC†2ÓƒBÓS63Ö#bÓSFccƒv#Sc“‚r“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢rFVæv–æRÒ¦ö–âÕF‚G&ö÷B'&W6÷W&6W2öVæv–æRöWFöVF—F÷"ÖVæv–æRæW†R"r’“°Ð¢76W'Bæö²‡&Vv—7G'”BãÒ“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢rÔÆ—FW&ÅF‚F–ç7FÆÅ&Vv—7G'”¶W’ÔæÖR–ç7FÆÄÆö6F–öâr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢uµ7—7FVÒä”òåF…Ó£¤vWE&VÆF—fUF‚‚G&öw&×5&ö÷BÂG&ö÷B’r’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚v÷WG6–FRW"×W6W"&öw&×2r’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢rÖ÷"…FW7BÕF‚ÔÆ—FW&ÅF‚F–ç7FÆÅ&Vv—7G'”¶W’’r’“°Ð¢76W'Bæö²‚vFRæ–æ6ÇVFW2‚u&öw&×2ôWFôVF—F÷"†VÇW"r’“°Ð¢76W'Bæö²†Öæ–fW7DBâ&Vv—7G'”B“°Ð¢76W'Bæö²†Öæ–fW7DW†—DBâÖæ–fW7DB“°Ð¢76W'Bæö²†vFRç6Æ–6R†Öæ–fW7DBÂÖæ–fW7DW†—DB’æ–æ6ÇVFW2€Ð¢rDÄ5DU„•D4ôDRÖæRr’“°Ð¢76W'Bæö²‡6VÆeFW7DBâÖæ–fW7DW†—DB“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚rG67&VVç6†÷BÒ¦ö–âÕF‚FVçc¥%TääU%õDTÕr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚rF6GW&RÒ7F'BÕ&ö6W72FÕv—BÕ75F‡'Rr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢u&VÖ÷fRÔ—FVÒVçc¤UDôTD•Dõ%õ45$TTå4„õEõD‚ÔW'&÷$7F–öâ6–ÆVçFÇ”6öçF–çVRr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢u&VÖ÷fRÔ—FVÒVçc¤UDôTD•Dõ%õ45$TTå4„õEõ4´•ô44õTåE2ÔW'&÷$7F–öâ6–ÆVçFÇ”6öçF–çVRr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚r„vWBÔ—FVÒG67&VVç6†÷B’äÆVæwF‚ÖWr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚tFBÕG—RÔ76VÖ&Ç”æÖR7—7FVÒäG&v–ærr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢uµ7—7FVÒäG&v–ærä–Öv–ærä–ÖvTf÷&ÖEÓ£¥æräwV–Br’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚rF–ÖvRåv–GF‚ÖÆRÖ÷"F–ÖvRä†V–v‡BÖÆRr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚w67&VVç6†÷B—2æ÷BFV6öF&ÆRärr’“°Ð¢76W'Bæö²‡67&VVç6†÷DBâ6VÆeFW7DB“°Ð¢76W'Bæö²‡6¶—66÷VçG4Bâ67&VVç6†÷DB“°Ð¢76W'Bæö²†6GW&TBâ6¶—66÷VçG4B“°Ð¢76W'Bæö²†FV6öFTBâ6GW&TB“°Ð¢76W'Bæö²‡fÆ–FFVDBâFV6öFTB“°Ð¢76W'Bæö²†FV6öFW$6Æ÷6VDBâfÆ–FFVDB“°Ð¢76W'Bæö²‡6Öö¶TBâFV6öFW$6Æ÷6VDB“°Ð¢76W'Bæö²‡Væ–ç7FÆÄBâ6Öö¶TB“°Ð§ÐÐ Ð¦gVæ7F–öâ76W'DÖ4†VÇW$66WFæ6R†vFR’°Ð¢6öç7B6VÆeFW7DBÒvFRæ–æFW„öb€Ð¢t6öçFVçG2õ&W6÷W&6W2öVæv–æRöWFöVF—F÷"ÖVæv–æR"Ò×6VÆb×FW7Br“°Ð¢6öç7B67&VVç6†÷DBÒvFRæ–æFW„öb€Ð¢tUDôTD•Dõ%õ45$TTå4„õEõDƒÒ"E45$TTå4„õB"r“°Ð¢6öç7B6¶—66÷VçG4BÒvFRæ–æFW„öb€Ð¢tUDôTD•Dõ%õ45$TTå4„õEõ4´•ô44õTåE3Ór“°Ð¢6öç7BæöæV×G”BÒvFRæ–æFW„öb‚wFW7B×2"E45$TTå4„õB"r“°Ð¢6öç7BFV6öFTBÒvFRæ–æFW„öb‚r÷W7"ö&–â÷6—2×2f÷&ÖBærr“°Ð¢6öç7BF–ÖVç6–öç4BÒvFRæ–æFW„öb€Ð¢wFW7B"Et”ED‚"ÖwBbbFW7B"D„T”t…B"ÖwBr“°Ð¢6öç7B6Öö¶TBÒvFRæ–æFW„öb‚tUDôTD•Dõ%õ4Ôô´UõDU5CÓrÂ6¶—66÷VçG4B“°Ð¢6öç7BÖæ–fW7DBÒvFRæ–æFW„öb‚wfW&–g•ö†VÇW%öÖæ–fW7Bç’r“°Ð¢6öç7B6–væGW&TBÒvFRæ–æFW„öb‚v6öFW6–vâÒ×fW&–g’ÒÖFVWÒ×7G&–7Br“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚u45$TTå4„õCÒ"E%TääU%õDTÕòr’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚wFW7B×2"E45$TTå4„õB"r’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚r÷W7"ö&–â÷6—2Ör—†VÅv–GF‚r’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2‚r÷W7"ö&–â÷6—2Ör—†VÄ†V–v‡Br’“°Ð¢76W'Bæö²†vFRæ–æ6ÇVFW2€Ð¢wFW7B"Et”ED‚"ÖwBbbFW7B"D„T”t…B"ÖwBr’“°Ð¢76W'Bæö²‡6VÆeFW7DBãÒ“°Ð¢76W'Bæö²‡6–væGW&TBãÒbb6–væGW&TBÂ6VÆeFW7DB“°Ð¢76W'Bæö²‡67&VVç6†÷DBâ6VÆeFW7DB“°Ð¢76W'Bæö²‡6¶—66÷VçG4Bâ67&VVç6†÷DB“°Ð¢76W'Bæö²†æöæV×G”Bâ6¶—66÷VçG4B“°Ð¢76W'Bæö²†FV6öFTBâæöæV×G”B“°Ð¢76W'Bæö²†F–ÖVç6–öç4BâFV6öFTB“°Ð¢76W'Bæö²‡6Öö¶TBâF–ÖVç6–öç4B“°Ð¢76W'Bæö²†Öæ–fW7DBâ6Öö¶TB“°Ð§ÐÐ Ð¦f÷"†6öç7BvFRöb°Ð¢†VÇW%Vç6–væVEv–æF÷w4vFRÀÐ¢†VÇW%6–væVEv–æF÷w4vFRÀÐ¥Ò’°Ð¢76W'Ev–æF÷w4†VÇW$66WFæ6R†vFR“°Ð§ÐÐ¦f÷"†6öç7BvFRöb¶†VÇW%Vç6–væVDÖ4vFRÂ†VÇW%6–væVDÖ4vFUÒ’°Ð¢76W'DÖ4†VÇW$66WFæ6R†vFR“°Ð§ÐÐ Ð¢òò–ç7FÆÆVBv–æF÷w2&W6÷W&6W2æBF†Rg&W6‚Ö÷VçFVBÖ2&÷F‚fÆ–FFPÐ¢òòF&vWB÷fW'6–öâ&V6V—G2æB'—FRÖ&–æB&öGV7Bæ§6öâFò7Fv–æràÐ¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚vWFöVF—F÷"ÖFW6·F÷×'VçF–ÖR÷cr’“°Ð¦76W'Bæö²‡v÷&¶fÆ÷ræ–æ6ÇVFW2‚w'VçF–ÖTÖæ–fW7Br’“°Ð¦6öç7Bv–æF÷w56Öö¶TBÒ6UVç6–væVBæ–æFW„öb€Ð¢rÒæÖS¢6Öö¶R×FW7Bv–æF÷w2–ç7FÆÆW"r“°Ð¦6öç7BÖ56Öö¶TBÒ6UVç6–væVBæ–æFW„öb‚rÒæÖS¢6Öö¶R×FW7BÖ4õ2æBDÔrr“°Ð¦6öç7B'F–f7EWÆöDBÒ6UVç6–væVBæ–æFW„öb€Ð¢rÒæÖS¢6VÂ&W&VB4R'VçF–ÖRrÂÖ56Öö¶TB“°Ð¦76W'Bæö²‡v–æF÷w56Öö¶TBâ“°Ð¦76W'Bæö²†Ö56Öö¶TBâv–æF÷w56Öö¶TB“°Ð¦76W'Bæö²†'F–f7EWÆöDBâÖ56Öö¶TB“°Ð¦6öç7Bv–æF÷w56Öö¶RÒ6UVç6–væVBç6Æ–6R‡v–æF÷w56Öö¶TBÂÖ56Öö¶TB“°Ð¦6öç7BÖ56Öö¶RÒ6UVç6–væVBç6Æ–6R†Ö56Öö¶TBÂ'F–f7EWÆöDB“°Ð¦f÷"†6öç7B·6Öö¶RÂ'—FT&–æDf–ÇW&UÒöb°Ð¢·v–æF÷w56Öö¶RÂt–ç7FÆÆVB&öGV7BÖæ–fW7B—2æ÷B'—FRÖ–FVçF–6ÂFò7Fv–æruÒÀÐ¢¶Ö56Öö¶RÂtÖ÷VçFVB&öGV7BÖæ–fW7B—2æ÷B'—FRÖ–FVçF–6ÂFò7Fv–æruÒÀÐ¥Ò’°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2†'—FT&–æDf–ÇW&R’“°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2‚vWFöVF—F÷"ÖFW6·F÷×'VçF–ÖR÷cr’“°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2‚v6ö×öæVçG2ÓÒ7GVÂr’“°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2‚w'VçF–ÖRævWB‚'fW'6–öâ"’ÓÒfW'6–öâr’“°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2‚w'VçF–ÖRævWB‚'F&vWB"’ÓÒF&vWBr’“°Ð¢76W'Bæö²‡6Öö¶Ræ–æ6ÇVFW2‚rÒ×6VÆb×FW7Br’“°Ð§ÐÐ¦76W'Bæö²‡6Uv–æF÷w2æ–æ6ÇVFW2‚tvWBÔWF†VçF–6öFU6–væGW&Rr’“°Ð¦76W'Bæö²‡6Uv–æF÷w2æ–æ6ÇVFW2‚v6ö×öæVçG2ÓÒ7GVÂr’“°Ð¦76W'Bæö²‡6TÖ2æ–æ6ÇVFW2‚tWF†÷&—G“ÔFWfVÆ÷W"”BÆ–6F–öâr’“°Ð¦76W'Bæö²‡6TÖ2æ–æ6ÇVFW2‚w†7'Vâ7FÆW"fÆ–FFR"DDÔr"r’“°Ð¦76W'Bæö²‡6TÖ2æ–æ6ÇVFW2‚v6ö×öæVçG2ÓÒ7GVÂr’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2‚tvWBÔWF†VçF–6öFU6–væGW&Rr’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2€Ð¢tvWBÔ6†–ÆD—FVÒG&W6÷W&6W2Õ&V7W'6RÔf–ÇFW"¢æW†RÔf–ÆRr’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2€Ð¢rFf–ÆRägVÆÄæÖRFf–ÆUF‡VÖ'&–çBF&÷fVD–FVçF—G”V·Rr’“°Ð¦76W'Bæö²††VÇW%v–æF÷w2æ–æ6ÇVFW2‚wfW&–g•ö†VÇW%öÖæ–fW7Bç’r’“°Ð¦76W'Bæö²††VÇW$Ö2æ–æ6ÇVFW2‚tWF†÷&—G“ÔFWfVÆ÷W"”BÆ–6F–öâr’“°Ð¦76W'Bæö²††VÇW$Ö2æ–æ6ÇVFW2‚w†7'Vâ7FÆW"fÆ–FFR"DDÔr"r’“°Ð¦76W'Bæö²††VÇW$Ö2æ–æ6ÇVFW2‚wfW&–g•ö†VÇW%öÖæ–fW7Bç’r’“°Ð¦76W'Bæö²‡6Uv–æF÷w2æ–æ6ÇVFW2€Ð¢tvWBÔ6†–ÆD—FVÒG&W6÷W&6W2Õ&V7W'6RÔf–ÇFW"¢æW†RÔf–ÆRr’“°Ð¦76W'Bæö²‡6Uv–æF÷w2æ–æ6ÇVFW2€Ð¢væ÷&ÖÆ—¦U÷v–æF÷w5öW†V7WF&ÆW3ÕG'VRr’“°Ð¦76W'Bæö²‡6TÖ2æ–æ6ÇVFW2€Ð¢w'VçF–ÖRævWB‚'&V6V—DÆv÷&—F†Ò"’ÓÒ'&r×6†#Sb×c"r’“°Ð¦6öç6öÆRæÆör‚wÆFf÷&Ò6öçG&7G2ö²r“°Ð
+    releaseSource.indexOf('brew install ffmpeg'));
+  assert.ok(releaseSource.indexOf('BREW_VERSION=$(brew --version)') <
+    releaseSource.indexOf('brew install ffmpeg'));
+  assert.ok(!releaseSource.includes('| head'));
+  assert.ok(releaseSource.includes(
+    'brew reinstall --force-bottle "$FORMULA"'));
+  assert.ok(releaseSource.includes('brew reinstall --force-bottle ffmpeg'));
+  assert.ok(releaseSource.includes('--expected-arch "${{ matrix.arch }}"'));
+  assert.ok(releaseSource.includes('8\\.1\\.2_1([[:space:]]|$)'));
+  assert.ok(!releaseSource.includes('FORMULAE=('));
+  assert.ok(!releaseSource.includes('8\\.1\\.2(_[0-9]+)?'));
+  assert.ok(releaseSource.includes('ffmpeg-components'));
+  assert.ok(releaseSource.includes('INSTALL_RECEIPT.json'));
+  assert.ok(releaseSource.includes('FFMPEG_BUILDCONF.txt'));
+}
+assert.ok(ffmpegFormulaVerifier.includes('otool_dependencies'));
+assert.ok(ffmpegFormulaVerifier.includes('compare_inventories'));
+assert.ok(ffmpegFormulaVerifier.includes('verify_bottle_archive'));
+assert.ok(ffmpegFormulaVerifier.includes('verify_cached_bottles'));
+assert.ok(ffmpegFormulaVerifier.includes('poured_from_bottle'));
+assert.ok(ffmpegFormulaVerifier.includes('outside Homebrew Cellar'));
+for (const inventory of ffmpegFormulaInventories) {
+  assert.ok(inventory.includes('ffmpeg 8.1.2_1'));
+  assert.ok(inventory.includes('x264 r3222'));
+  const rows = inventory.trim().split(/\r?\n/);
+  assert.strictEqual(rows.length, 11);
+  assert.ok(rows.every((row) =>
+    /^[^ ]+ [^ ]+ [^ ]+ \d+ [0-9a-f]{64}$/.test(row)));
+}
+assert.ok(ffmpegFormulaInventories[0].includes('arm64_sequoia'));
+assert.ok(ffmpegFormulaInventories[1].includes(' sonoma '));
+assert.ok(ffmpegFormulaInventories[0].includes(
+  'openssl@3 3.6.3 arm64_sequoia 1'));
+assert.ok(ffmpegFormulaInventories[1].includes(
+  'openssl@3 3.6.3 sequoia 1'));
+assert.ok(thirdPartyNotices.includes('Before any third-party handoff'));
+assert.ok(!thirdPartyNotices.includes('private acceptance testers'));
+assert.ok(helperWorkflow.includes('r2-release-storage.js upload'));
+assert.ok(helperWorkflow.includes('R2_CANDIDATE_ACCESS_KEY_ID'));
+assert.ok(!helperWorkflow.includes('R2_RELEASE_ACCESS_KEY_ID'));
+assert.ok(helperPromotion.includes('R2_RELEASE_ACCESS_KEY_ID'));
+assert.ok(helperWorkflow.includes('"$ENGINE" --self-test'));
+assert.ok(helperWorkflow.includes('"$ENGINE" --audio-decoder-self-test'));
+assert.ok(workflow.includes('"$ENGINE" --audio-decoder-self-test'));
+assert.ok(helperWorkflow.includes(
+  'python -m unittest tests.test_safety tests.test_asr'));
+assert.ok(workflow.includes(
+  'python -m unittest tests.test_safety tests.test_asr'));
+for (const nativeMediaRuntime of ['Electron', 'Remotion compositor']) {
+  assert.ok(thirdPartyNotices.includes(nativeMediaRuntime));
+}
+assert.ok(thirdPartyNotices.includes('PyAV remains a build-environment dependency'));
+assert.ok(thirdPartyNotices.includes('excluded from the frozen engine'));
+// Remotion 4.0.507's Windows package carries one active FFmpeg 7.1 runtime
+// plus seven stale FFmpeg 6.1 DLLs. The release gate recognizes the complete
+// published npm payload and its PE imports before deleting exact paths.
+assert.ok(remotionWindowsPruner.includes(
+  'f0e006a1b84d7ac3caf6970ea6cfa4c0419371db230a2bd593996e86db197749'));
+assert.ok(remotionWindowsPruner.includes(
+  'sha512-FCkZDLcPBCO2WO/MyrtMB5tpsIuqqkc7E1nY2lfY6WmRX2quGfykcsz4S9inYx/'));
+for (const [stale, active] of [
+  ['avcodec-60.dll', 'avcodec-61.dll'],
+  ['avdevice-60.dll', 'avdevice-61.dll'],
+  ['avfilter-9.dll', 'avfilter-10.dll'],
+  ['avformat-60.dll', 'avformat-61.dll'],
+  ['avutil-58.dll', 'avutil-59.dll'],
+  ['swresample-4.dll', 'swresample-5.dll'],
+  ['swscale-7.dll', 'swscale-8.dll'],
+]) {
+  assert.ok(remotionWindowsPruner.includes(`"${stale}"`));
+  assert.ok(remotionWindowsPruner.includes(`"${active}"`));
+}
+assert.ok(remotionWindowsPruner.includes('machine != 0x8664'));
+assert.ok(remotionWindowsPruner.includes(
+  '_descriptor_imports(layout, 13, 32, 4, "delay-import"'));
+assert.ok(remotionWindowsPruner.includes('imports stale FFmpeg runtime'));
+assert.ok(remotionWindowsPruner.includes('candidate.unlink()'));
+assert.ok(!remotionWindowsPruner.includes('.glob('));
+assert.ok(!remotionWindowsPruner.includes('--expected-digest'));
+assert.ok(!remotionWindowsPruner.includes('--policy'));
+assert.ok(!remotionWindowsPruner.includes('parser.add_argument("--receipt"'));
+assert.ok(remotionWindowsPruner.includes(
+  'licenses/REMOTION_WINDOWS_RUNTIME_PRUNE.json'));
+
+const helperCreativeBundleAt = helperWorkflow.indexOf(
+  '- name: Bundle pinned Node, HyperFrames, Remotion and rendering browser');
+const helperOnnxPruneAt = helperWorkflow.indexOf(
+  '- name: Keep only the target ONNX Runtime native payload');
+const helperRemotionPruneAt = helperWorkflow.indexOf(
+  '- name: Prune the exact stale Windows Remotion FFmpeg runtime');
+const helperCreativeProbeAt = helperWorkflow.indexOf(
+  '- name: Render real HyperFrames and Remotion probes');
+const helperRuntimeManifestAt = helperWorkflow.indexOf(
+  '- name: Write exact runtime manifest');
+const helperOnnxVerifyAt = helperWorkflow.indexOf(
+  'prune_onnxruntime_node.py --verify-only');
+assert.ok(helperCreativeBundleAt >= 0);
+assert.ok(helperOnnxPruneAt > helperCreativeBundleAt);
+assert.ok(helperRemotionPruneAt > helperOnnxPruneAt);
+assert.ok(helperCreativeProbeAt > helperRemotionPruneAt);
+assert.ok(helperRuntimeManifestAt > helperCreativeProbeAt);
+assert.ok(helperOnnxVerifyAt > helperCreativeProbeAt);
+assert.ok(helperOnnxVerifyAt < helperManifestGenerationAt);
+const helperOnnxPruneBlock = helperWorkflow.slice(
+  helperOnnxPruneAt, helperRemotionPruneAt);
+assert.ok(helperOnnxPruneBlock.includes('prune_onnxruntime_node.py'));
+assert.ok(helperOnnxPruneBlock.includes('--transaction-parent "$RUNNER_TEMP"'));
+assert.ok(helperOnnxPruneBlock.includes('--target-os "${{ matrix.target_os }}"'));
+assert.ok(helperOnnxPruneBlock.includes('--target-arch "${{ matrix.arch }}"'));
+assert.ok(onnxRuntimeNodePruner.includes('onnxruntime-node-1.21.1.tgz'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'ONNXRUNTIME_NODE_TARGET_PRUNE.json'));
+assert.ok(onnxRuntimeNodePruner.includes('win32/x64/onnxruntime.dll'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'darwin/arm64/libonnxruntime.1.21.1.dylib'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'darwin/x64/libonnxruntime.1.21.1.dylib'));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'autoeditor-onnxruntime-node-target-prune/v2'));
+assert.ok(onnxRuntimeNodePruner.includes('shutil.copytree'));
+assert.ok(onnxRuntimeNodePruner.includes('published-package'));
+assert.ok(onnxRuntimeNodePruner.includes('NtSetInformationFile'));
+assert.ok(onnxRuntimeNodePruner.includes('FILE_RENAME_INFORMATION = 10'));
+assert.ok(!onnxRuntimeNodePruner.includes('SetFileInformationByHandle'));
+assert.ok(onnxRuntimeNodePruner.includes('NtCreateFile'));
+assert.ok(onnxRuntimeNodePruner.includes('dir_fd=self.transaction_fd'));
+assert.ok(onnxRuntimeNodePruner.includes('def verify_gate('));
+assert.ok(onnxRuntimeNodePruner.includes(
+  'safe handle-relative directory operations are unavailable'));
+assert.ok(!onnxRuntimeNodePruner.includes('_verify_fallback_parents'));
+assert.ok(!onnxRuntimeNodePruner.includes('shutil.rmtree'));
+assert.ok(!onnxRuntimeNodePruner.includes('.glob('));
+assert.ok(!onnxRuntimeNodePruner.includes('.unlink('));
+assert.ok(!onnxRuntimeNodePruner.includes('.rmdir('));
+const helperRemotionPruneBlock = helperWorkflow.slice(
+  helperRemotionPruneAt, helperCreativeProbeAt);
+assert.ok(helperRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
+assert.ok(!helperRemotionPruneBlock.includes('--receipt'));
+assert.ok(helperRemotionPruneBlock.includes('--require-package'));
+
+const pseRemotionPruneAt = workflow.indexOf(
+  '- name: Gate the Windows Remotion compositor staging payload');
+const pseRuntimeManifestAt = workflow.indexOf(
+  '- name: Generate byte-verifiable product runtime manifest');
+assert.ok(pseRemotionPruneAt >= 0);
+assert.ok(pseRuntimeManifestAt > pseRemotionPruneAt);
+const pseRemotionPruneBlock = workflow.slice(
+  pseRemotionPruneAt, pseRuntimeManifestAt);
+assert.ok(pseRemotionPruneBlock.includes("if: runner.os == 'Windows'"));
+assert.ok(!pseRemotionPruneBlock.includes('--receipt'));
+assert.ok(!pseRemotionPruneBlock.includes('--require-package'));
+assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/client-s3'],
+  '3.1106.0');
+assert.strictEqual(desktopPackage.devDependencies['@aws-sdk/lib-storage'],
+  '3.1106.0');
+assert.ok(releaseStorage.includes('request.IfMatch = ifMatch'));
+assert.ok(releaseStorage.includes('request.IfNoneMatch = ifNoneMatch'));
+assert.ok(releaseStorage.includes('conditional pointer write blocked'));
+assert.ok(ignoreRules.includes('!packaging/helper-runtime/package-lock.json'));
+assert.ok(ignoreRules.includes('!templates/remotion-viz/package-lock.json'));
+assert.ok(ignoreRules.includes('!webapp/worker/package-lock.json'));
+const helperHtml = fs.readFileSync(
+  path.join(desktop, 'helper', 'renderer', 'index.html'), 'utf8');
+assert.ok(helperHtml.includes('Built by Omar Marabha'));
+
+// 2026-08 Mac acceptance regressions must stay fixed.
+// The creative runtime's node_modules ships as an explicit file set so
+// electron-builder cannot prune HyperFrames/Remotion out of the installer.
+assert.ok(helperBuilder.includes(
+  'from: helper-staging/creative-runtime/node_modules'));
+// The DMG stays plain. Null selects dmg-builder's bundled image, while an
+// explicit color is its supported no-background-image path.
+assert.ok(helperBuilder.includes('backgroundColor: "#0b0d10"'));
+assert.ok(!helperBuilder.includes('background: null'));
+// Both products ship a real icon, not the default Electron one.
+assert.ok(helperBuilder.includes('icon: build/icon.icns'));
+// Windows remains one friend-facing EXE, with the multi-gigabyte required
+// runtime carried as an immutable external package because NSIS cannot embed it.
+assert.ok(helperBuilder.includes('- target: nsis-web'));
+assert.ok(helperBuilder.includes('differentialPackage: false'));
+assert.ok(helperBuilder.includes('include: helper-installer.nsh'));
+assert.ok(helperInstaller.includes('!macro customUnInstall'));
+assert.ok(helperInstaller.includes('${ifNot} ${isUpdated}'));
+assert.ok(helperInstaller.includes(
+  'Delete "$LOCALAPPDATA\\${APP_PACKAGE_STORE_FILE}"'));
+assert.ok(helperInstaller.includes(
+  'RMDir "$LOCALAPPDATA\\autoeditor-desktop-updater"'));
+assert.ok(nsisWebPrepare.includes('INETC_VERSION = "1.0.5.7"'));
+assert.ok(nsisWebPrepare.includes(
+  '447625a39809f1df19ddeba9cb1c30e26ca741be'));
+assert.ok(nsisWebPrepare.includes(
+  'b01077e56ebb19c005b45d40f837958ca6a92f51a5a937dc1bb497c7c7f2aa93'));
+assert.ok(nsisWebPatch.includes('ELECTRON_BUILDER_VERSION = "26.15.3"'));
+assert.ok(nsisWebPatch.includes('APP_64_HASH'));
+assert.ok(nsisWebPatch.includes('AutoEditorINetC::get'));
+assert.ok(nsisWebPatch.includes('write_bytes('));
+assert.ok(!nsisWebPatch.includes('installer.write_text('));
+assert.ok(helperManifestVerifier.includes('empty_directory_receipt'));
+assert.ok(helperManifestVerifier.includes(
+  'component path is not a directory'));
+assert.ok(fs.existsSync(path.join(desktop, 'build', 'icon.icns')));
+assert.ok(fs.existsSync(path.join(desktop, 'build', 'icon.ico')));
+// CI inspects the PACKED app for the creative runtime and verifies the app
+// from a fresh DMG mount, resolving the executable from Info.plist.
+assert.ok(helperWorkflow.includes(
+  'Verify the packed app ships the complete creative runtime'));
+assert.ok(helperWorkflow.includes('CFBundleExecutable'));
+assert.ok(helperWorkflow.includes('hdiutil attach'));
+assert.ok(helperWorkflow.includes(
+  '--config.directories.output="$HELPER_DIST"'));
+assert.ok(helperWorkflow.includes('verify_helper_manifest.py'));
+assert.ok(helperManifestGenerator.includes('pe-authenticode-content-v1'));
+assert.ok(helperManifestGenerator.includes('macho-codesign-content-v1'));
+assert.ok(helperManifestVerifier.includes('macho-codesign-content-v1'));
+assert.ok(workflow.includes('pe-authenticode-content-v1'));
+assert.ok(workflow.includes(
+  'normalize_windows_executables=normalize_windows'));
+assert.ok(!helperWorkflow.includes('dist/helper/current.json'));
+assert.ok(helperPromotion.includes('dist/helper/current.json'));
+assert.ok(helperPromotion.includes('release-receipt-helper-*'));
+assert.ok(helperPromotion.includes('--if-match "$ETAG"'));
+assert.ok(helperPromotion.includes("--if-none-match '*'"));
+assert.ok(!helperWorkflow.includes('wrangler r2 object put'));
+assert.ok(!helperWorkflow.includes('aws s3 cp'));
+assert.ok(!helperPromotion.includes('wrangler r2 object put'));
+assert.ok(!helperPromotion.includes('aws s3 cp'));
+assert.ok(workflow.includes('CFBundleExecutable'));
+
+const ciWorkflow = readNormalized(
+  path.join(desktop, '..', '.github', 'workflows', 'ci.yml'));
+for (const candidate of [workflow, helperWorkflow, helperPromotion, ciWorkflow]) {
+  assert.ok(!/uses:\s+actions\/[^@\s]+@v\d/.test(candidate));
+  const actionRefs = [...candidate.matchAll(
+    /uses:\s+actions\/[^@\s]+@([^\s#]+)/g)].map((match) => match[1]);
+  assert.ok(actionRefs.length > 0);
+  assert.ok(actionRefs.every((ref) => /^[0-9a-f]{40}$/.test(ref)));
+}
+assert.ok(ciWorkflow.includes('Run desktop platform contracts'));
+assert.ok(ciWorkflow.includes('Run Worker integration contracts'));
+assert.ok(ciWorkflow.includes('npm ci --prefix webapp/worker'));
+assert.ok(ciWorkflow.includes('npm test --prefix webapp/worker'));
+assert.ok(ciWorkflow.includes('webapp/worker/package-lock.json'));
+assert.ok(ciWorkflow.includes('persist-credentials: false'));
+assert.ok(ciWorkflow.includes('packaging/requirements-linux-x64.txt'));
+assert.ok(ciWorkflow.includes('--require-hashes --only-binary=:all:'));
+assert.ok(ciWorkflow.includes('python -m pytest -q tests webapp/tests'));
+const ciDesktopInstallAt = ciWorkflow.indexOf('npm ci --prefix desktop');
+const ciPythonSafetyAt = ciWorkflow.indexOf(
+  'python -m pytest -q tests webapp/tests');
+assert.ok(ciDesktopInstallAt >= 0);
+assert.ok(ciPythonSafetyAt > ciDesktopInstallAt);
+assert.ok(ciWorkflow.includes('npm test --prefix desktop'));
+assert.ok(!ciWorkflow.includes('pip install -r requirements.txt'));
+
+// The generic Helper is the sole friend product. The creator-specific Ryan
+// release trigger/default is retired, while PSE remains its own channel.
+assert.ok(!workflow.includes('ryan-v'));
+assert.ok(!workflow.includes('Ryan Reels'));
+assert.ok(workflow.includes('tags: ["pse-v*"]'));
+assert.ok(workflow.includes('product=pse'));
+assert.ok(helperWorkflow.includes('AutoEditor Helper'));
+assert.ok(!legacyBuilder.includes('\npublish:'));
+assert.ok(!workflow.includes("-name '*.yml'"));
+assert.ok(!workflow.includes("-name '*.blockmap'"));
+
+function jobSlice(source, start, end) {
+  const startAt = source.indexOf(start);
+  assert.ok(startAt >= 0, `missing workflow marker: ${start}`);
+  const endAt = end ? source.indexOf(end, startAt + start.length) : source.length;
+  assert.ok(endAt > startAt, `missing workflow marker: ${end}`);
+  return source.slice(startAt, endAt);
+}
+
+const helperUnsigned = jobSlice(helperWorkflow, '\n  build:', '\n  sign-windows:');
+const helperWindows = jobSlice(
+  helperWorkflow, '\n  sign-windows:', '\n  sign-macos:');
+const helperMac = jobSlice(helperWorkflow, '\n  sign-macos:', null);
+const helperPromotionPreflight = jobSlice(
+  helperPromotion, '\n  preflight:', '\n  promote:');
+const helperPromote = jobSlice(helperPromotion, '\n  promote:', null);
+const pseUnsigned = jobSlice(workflow, '\n  build:', '\n  sign-windows:');
+const pseWindows = jobSlice(workflow, '\n  sign-windows:', '\n  sign-macos:');
+const pseMac = jobSlice(workflow, '\n  sign-macos:', '\n  release:');
+const releaseWorkflow = jobSlice(workflow, '\n  release:', null);
+
+for (const packagingJob of [
+  helperUnsigned, helperWindows, helperMac, pseUnsigned, pseWindows, pseMac,
+]) {
+  const stageAt = packagingJob.indexOf(
+    'stage_electron_chromium_provenance.py stage');
+  const distAt = packagingJob.indexOf(
+    'stage_electron_chromium_provenance.py electron-dist');
+  const prepareAt = Math.max(stageAt, distAt);
+  const buildAt = packagingJob.indexOf('electron-builder --config');
+  const builds = (packagingJob.match(
+    /npx (?:--no-install )?electron-builder /g) || []).length;
+  const pinned = (packagingJob.match(
+    /--config\.electronDist="\$RUNNER_TEMP\/electron-dist"/g) || []).length;
+  assert.ok(prepareAt >= 0);
+  assert.ok(buildAt > prepareAt);
+  assert.strictEqual(pinned, builds);
+}
+
+for (const windowsInstallerJob of [helperUnsigned, helperWindows]) {
+  const prepareAt = windowsInstallerJob.indexOf('prepare_nsis_web.py');
+  const patchAt = windowsInstallerJob.indexOf('patch_nsis_web_integrity.py');
+  const buildAt = windowsInstallerJob.indexOf('electron-builder --config');
+  assert.ok(prepareAt >= 0);
+  assert.ok(patchAt > prepareAt);
+  assert.ok(buildAt > patchAt);
+  assert.ok(windowsInstallerJob.includes(
+    '/download/helper/runtime/windows-x64/'));
+  assert.ok(windowsInstallerJob.includes('/$GITHUB_SHA'));
+  assert.ok(windowsInstallerJob.includes('nsis-web/*.exe'));
+  assert.ok(windowsInstallerJob.includes('nsis-web/*.nsis.7z'));
+  assert.ok(windowsInstallerJob.includes('[uint64]4294967295'));
+  assert.ok(windowsInstallerJob.includes('--package-file=$corrupt'));
+  assert.ok(windowsInstallerJob.includes(
+    'autoeditor-desktop-updater/package.7z'));
+  assert.ok(windowsInstallerJob.includes('(Test-Path $runtimeCache)'));
+}
+assert.ok(helperWindows.includes('--runtime-package "$RUNTIME_PACKAGE"'));
+assert.ok(helperWindows.includes('["runtime_package"]["key"]'));
+assert.ok(helperWindows.includes('["runtime_package"]["sha256"]'));
+assert.ok(helperWindows.includes('["runtime_package"]["content_type"]'));
+assert.ok(helperPromotion.includes('release-metadata/copy-plan.tsv'));
+assert.ok(helperPromotion.includes(
+  'test "$(wc -l < release-metadata/copy-plan.tsv'));
+assert.ok(helperPromotion.includes('if package is not None:'));
+assert.ok(helperReleaseMetadata.includes(
+  'SCHEMA = "autoeditor-helper-candidate/v2"'));
+assert.ok(helperReleaseMetadata.includes(
+  'RELEASE_SCHEMA = "autoeditor-helper-release/v2"'));
+assert.ok(helperReleaseMetadata.includes('MAX_NSIS_WEB_PACKAGE_BYTES'));
+assert.ok(helperReleaseMetadata.includes('"runtime_package"'));
+assert.ok(workerSource.includes(
+  "const HELPER_RELEASE_SCHEMA = 'autoeditor-helper-release/v2'"));
+assert.ok(workerSource.includes('HELPER_RUNTIME_ROUTE'));
+assert.ok(workerSource.includes("release.platforms['windows-x64'].runtime_package"));
+assert.ok(workerSource.includes('route[1] !== release.tag'));
+assert.ok(workerSource.includes('route[2] !== release.commit'));
+
+// A tagged build must upload its sealed stage before electron-builder creates
+// another multi-gigabyte unpacked payload and installer. Standard hosted
+// runners have limited disk, so the local tar is removed before packaging.
+const helperManifestAt = helperUnsigned.indexOf(
+  '- name: Write exact runtime manifest');
+const helperSealAt = helperUnsigned.indexOf(
+  '- name: Seal prepared runtime for tag-only signing jobs');
+const helperStageUploadAt = helperUnsigned.indexOf(
+  '- name: Upload prepared runtime to isolated signing job');
+const helperArchiveReleaseAt = helperUnsigned.indexOf(
+  '- name: Release local signing archive before packaging');
+const helperBuildAt = helperUnsigned.indexOf('- name: Build installer');
+const helperPackedAt = helperUnsigned.indexOf(
+  '- name: Verify the packed app ships the complete creative runtime');
+const helperStagePruneAt = helperUnsigned.indexOf(
+  '- name: Release duplicate staging bytes before artifact acceptance');
+assert.ok(helperManifestAt >= 0);
+assert.ok(helperSealAt > helperManifestAt);
+assert.ok(helperStageUploadAt > helperSealAt);
+assert.ok(helperArchiveReleaseAt > helperStageUploadAt);
+assert.ok(helperBuildAt > helperArchiveReleaseAt);
+assert.ok(helperPackedAt > helperBuildAt);
+assert.ok(helperStagePruneAt > helperPackedAt);
+const helperStageUpload = jobSlice(
+  helperUnsigned,
+  '\n      - name: Upload prepared runtime to isolated signing job',
+  '\n      - name: Release local signing archive before packaging');
+assert.ok(helperStageUpload.includes('compression-level: 0'));
+assert.ok(helperStageUpload.includes('retention-days: 1'));
+
+// The runner context is unavailable while GitHub evaluates job-level env.
+// Resolve native temp paths from RUNNER_TEMP at runtime so the workflows are
+// accepted by GitHub and still build outside File Provider workspaces.
+assert.ok(!workflow.includes('DESKTOP_DIST: ${{ runner.temp }}'));
+assert.ok(!helperWorkflow.includes('HELPER_DIST: ${{ runner.temp }}'));
+assert.ok(pseUnsigned.includes(
+  'echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-dist" >> "$GITHUB_ENV"'));
+for (const signedJob of [pseWindows, pseMac]) {
+  assert.ok(signedJob.includes(
+    'echo "DESKTOP_DIST=$RUNNER_TEMP/desktop-signed-dist" >> "$GITHUB_ENV"'));
+}
+assert.ok(helperUnsigned.includes(
+  'echo "HELPER_DIST=$RUNNER_TEMP/helper-dist" >> "$GITHUB_ENV"'));
+for (const signedJob of [helperWindows, helperMac]) {
+  assert.ok(signedJob.includes(
+    'echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"'));
+}
+
+const helperUnsignedWindowsGate = jobSlice(
+  helperUnsigned,
+  '\n      - name: Smoke-test installed Windows app and signature',
+  '\n      - name: Smoke-test macOS app, DMG, signing and notarization');
+const helperUnsignedMacGate = jobSlice(
+  helperUnsigned,
+  '\n      - name: Smoke-test macOS app, DMG, signing and notarization',
+  '\n      - name: Upload unsigned acceptance artifact');
+const helperSignedWindowsGate = jobSlice(
+  helperWindows,
+  '\n      - name: Verify installed Windows signatures and exact runtime',
+  '\n      - name: Upload the verified Windows candidate');
+const helperSignedMacGate = jobSlice(
+  helperMac,
+  '\n      - name: Verify the final mounted Mac artifact',
+  '\n      - name: Upload the verified Mac candidate');
+
+// Helper ships only generic profiles. PSE and creator-specific profiles stay
+// outside the friend installer even when they exist in the source tree.
+const helperProfileBlock = helperUnsigned.match(
+  /HELPER_PROFILES=\(\n([\s\S]*?)\n\s*\)/);
+assert.ok(helperProfileBlock, 'missing Helper profile allowlist');
+const stagedHelperProfiles = helperProfileBlock[1]
+  .split('\n').map((line) => line.trim()).filter(Boolean);
+assert.deepStrictEqual(stagedHelperProfiles, [
+  'generic_short',
+  'generic_long',
+  'generic_commercial',
+  'generic_podcast',
+  'generic_course',
+  'generic_custom',
+]);
+assert.ok(!helperUnsigned.includes('cp -R profiles/.'));
+assert.ok(helperUnsigned.includes(
+  'test -f "profiles/$PROFILE/profile.yaml" || {'));
+assert.ok(helperUnsigned.includes(
+  'Helper profile allowlist did not stage exactly'));
+for (const creatorProfile of [
+  'pse', 'ryan_duffy', 'ryan_humes', 'shared_skit',
+]) {
+  assert.ok(!stagedHelperProfiles.includes(creatorProfile));
+}
+
+// Manual acceptance jobs never receive signing or publication credentials.
+// Tag-only signing jobs receive only their platform's credential family.
+for (const unsignedJob of [helperUnsigned, pseUnsigned]) {
+  assert.ok(!unsignedJob.includes('secrets.'));
+  assert.ok(!unsignedJob.includes('GH_TOKEN'));
+  assert.ok(unsignedJob.includes('CSC_IDENTITY_AUTO_DISCOVERY: false'));
+  assert.ok(unsignedJob.includes('persist-credentials: false'));
+}
+const helperTagPushGuard =
+  "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')";
+const pseTagPushGuard =
+  "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pse-v')";
+for (const taggedJob of [helperWindows, helperMac]) {
+  assert.ok(taggedJob.includes(helperTagPushGuard));
+}
+assert.ok(helperWindows.includes('environment: helper-windows-signing'));
+assert.ok(helperMac.includes('environment: helper-macos-signing'));
+assert.ok(!helperWindows.includes('secrets.CSC_LINK'));
+assert.ok(!helperWindows.includes('APPLE_'));
+assert.ok(!helperMac.includes('WIN_CSC'));
+assert.ok(!helperMac.includes('WIN_AZURE'));
+assert.ok(!helperMac.includes('AZURE_'));
+for (const taggedJob of [pseWindows, pseMac, releaseWorkflow]) {
+  assert.ok(taggedJob.includes(pseTagPushGuard));
+}
+assert.ok(pseWindows.includes('environment: pse-windows-signing'));
+assert.ok(pseMac.includes('environment: pse-macos-signing'));
+assert.ok(!pseWindows.includes('secrets.CSC_LINK'));
+assert.ok(!pseWindows.includes('APPLE_'));
+assert.ok(pseWindows.includes('WIN_PFX_CERT_THUMBPRINT'));
+assert.ok(pseWindows.includes('Assert-ApprovedSigner'));
+assert.ok(pseWindows.includes('1.3.6.1.5.5.7.3.3'));
+assert.ok(pseWindows.includes(
+  'signer does not match the approved PSE certificate'));
+assert.ok(!pseMac.includes('WIN_CSC'));
+assert.ok(!pseMac.includes('WIN_AZURE'));
+assert.ok(!pseMac.includes('AZURE_'));
+for (const signingJob of [helperWindows, helperMac, pseWindows, pseMac]) {
+  assert.ok(signingJob.includes('needs: build'));
+  assert.ok(!signingJob.includes('GH_TOKEN'));
+}
+assert.ok(helperPromotion.includes('workflow_dispatch:'));
+assert.ok(!helperPromotion.includes('\n  push:'));
+assert.ok(helperPromote.includes('environment: helper-live-release'));
+assert.ok(helperPromotion.includes('\npermissions: {}\n'));
+assert.ok(helperPromotionPreflight.includes('permissions: {}'));
+assert.ok(!helperPromotionPreflight.includes('environment:'));
+assert.ok(!helperPromotionPreflight.includes('actions/checkout'));
+assert.ok(!helperPromotionPreflight.includes('contents: write'));
+assert.ok(helperPromotionPreflight.includes(
+  'Require dispatch from the protected default branch'));
+assert.ok(helperPromotionPreflight.includes(
+  'DISPATCH_REF: ${{ github.ref }}'));
+assert.ok(helperPromotionPreflight.includes(
+  'DISPATCH_REF_TYPE: ${{ github.ref_type }}'));
+assert.ok(helperPromotionPreflight.includes(
+  'DISPATCH_REF_PROTECTED: ${{ github.ref_protected }}'));
+assert.ok(helperPromotionPreflight.includes(
+  'DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}'));
+assert.ok(helperPromotionPreflight.includes(
+  'test "$DISPATCH_REF" = "$EXPECTED_REF"'));
+assert.ok(helperPromotionPreflight.includes(
+  'test "$DISPATCH_REF_PROTECTED" = true'));
+assert.ok(helperPromote.includes('needs: preflight'));
+assert.ok(helperPromote.includes(
+  'permissions:\n      actions: read\n      contents: write'));
+assert.ok(helperPromote.includes(
+  'LIVE_WORKER_CONTRACT_URL: https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/contract'));
+assert.ok(helperPromote.includes(
+  '"schema": "autoeditor-helper-runtime-route/v2"'));
+assert.ok(helperPromote.includes(
+  '"release_schema": "autoeditor-helper-release/v2"'));
+assert.ok(helperPromote.includes(
+  '"route": "/download/helper/runtime/windows-x64/{tag}/{commit}"'));
+assert.ok(helperPromote.includes('"max_package_bytes": 4_294_967_294'));
+assert.ok(helperPromote.includes(
+  '/r2/buckets/autoeditor-releases/lock'));
+assert.ok(helperPromote.includes(
+  'CLOUDFLARE_R2_LOCKS_READ_TOKEN: ${{ secrets.CLOUDFLARE_R2_LOCKS_READ_TOKEN }}'));
+assert.strictEqual((helperPromotion.match(
+  /secrets\.CLOUDFLARE_R2_LOCKS_READ_TOKEN/g) || []).length, 2);
+assert.ok(!helperWorkflow.includes('CLOUDFLARE_R2_LOCKS_READ_TOKEN'));
+assert.ok(helperPromote.includes('len(rules) != 2'));
+assert.ok(helperPromote.includes('rule.get("enabled") is not True'));
+assert.ok(helperPromote.includes(
+  'condition.get("type") != "Indefinite"'));
+assert.ok(helperPromote.includes('"dist/helper/objects/"'));
+assert.ok(helperPromote.includes('"dist/helper/checksums/"'));
+assert.ok(!helperPromote.includes(
+  'print(os.environ["CLOUDFLARE_R2_LOCKS_READ_TOKEN"]'));
+assert.ok(!helperPromote.includes('print(token)'));
+
+// Live compatibility and immutable-storage checks are read-only and must run
+// before the first R2, GitHub Release, or live-pointer mutation.
+const liveContractAt = helperPromote.indexOf(
+  '- name: Verify the live Worker v2 runtime contract before any mutation');
+const bucketLocksAt = helperPromote.indexOf(
+  '- name: Verify immutable live R2 bucket locks before any mutation');
+const candidateCopyAt = helperPromote.indexOf(
+  'r2-release-storage.js copy');
+const checksumPutAt = helperPromote.indexOf(
+  '--bucket autoeditor-releases --key "$CHECKSUM_KEY"');
+const githubReleaseAt = helperPromote.indexOf('gh release create');
+const livePointerAt = helperPromote.indexOf(
+  '- name: Atomically expose the physically accepted release');
+assert.ok(liveContractAt > 0);
+assert.ok(bucketLocksAt > liveContractAt);
+for (const mutationAt of [
+  candidateCopyAt, checksumPutAt, githubReleaseAt, livePointerAt,
+]) {
+  assert.ok(mutationAt > bucketLocksAt);
+}
+for (const doc of [ownerSigning, launchChecklist]) {
+  assert.ok(doc.includes('CLOUDFLARE_R2_LOCKS_READ_TOKEN'));
+  assert.ok(doc.includes('Workers R2 Storage Read'));
+  assert.ok(doc.includes('/download/helper/runtime/contract'));
+}
+assert.ok(releaseGateStatus.includes('CLOUDFLARE_R2_LOCKS_READ_TOKEN'));
+assert.ok(helperPromote.includes('ref: ${{ inputs.expected_commit }}'));
+assert.ok(helperPromote.includes('fetch-depth: 1'));
+assert.ok(helperPromote.includes('git rev-parse HEAD'));
+assert.ok(helperPromote.includes(
+  'test "$ACTUAL_COMMIT" = "$ACCEPTED_COMMIT"'));
+assert.ok(ownerSigning.includes('**Selected branches and tags**'));
+assert.ok(ownerSigning.includes('only the exact protected default'));
+assert.ok(ownerSigning.includes('Omar as a required reviewer'));
+for (const signingSecret of [
+  'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_TEAM_ID',
+  'WIN_CSC_LINK', 'WIN_AZURE', 'AZURE_TENANT_ID',
+  'R2_CANDIDATE_ACCESS_KEY_ID',
+]) {
+  assert.ok(!helperPromotion.includes(signingSecret));
+}
+
+// workflow_dispatch accepts a tag ref, so release classification and every
+// secret-bearing signing/publish job must also require the push event.
+const taggedPushClassifier =
+  'if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF_TYPE" == "tag" ]]; then';
+assert.ok(helperUnsigned.includes(taggedPushClassifier));
+assert.ok(pseUnsigned.includes(taggedPushClassifier));
+assert.ok(!helperWorkflow.includes(
+  "\n    if: startsWith(github.ref, 'refs/tags/helper-v')"));
+assert.ok(!workflow.includes(
+  "\n    if: startsWith(github.ref, 'refs/tags/pse-v')"));
+
+// A signing tag must be created from the protected default-branch head. Live
+// promotion rechecks ancestry so a later main commit does not invalidate an
+// already accepted release while an unmerged release commit still fails.
+for (const [unsignedJob, tagPrefix, failure] of [
+  [helperUnsigned, 'helper-v', 'A Helper release tag must point'],
+  [pseUnsigned, 'pse-v', 'A PSE release tag must point'],
+]) {
+  assert.ok(unsignedJob.includes(
+    `startsWith(github.ref, 'refs/tags/${tagPrefix}')`));
+  assert.ok(unsignedJob.includes('TAG_REF_PROTECTED: ${{ github.ref_protected }}'));
+  assert.ok(unsignedJob.includes('test "$TAG_REF_PROTECTED" = true'));
+  assert.ok(unsignedJob.includes(
+    'git ls-remote --exit-code origin'));
+  assert.ok(unsignedJob.includes('test "$TAG_COMMIT" = "$DEFAULT_COMMIT"'));
+  assert.ok(unsignedJob.includes(failure));
+}
+assert.ok(helperPromote.includes(
+  '"repos/$GITHUB_REPOSITORY/compare/$ACCEPTED_COMMIT...$DEFAULT_BRANCH"'));
+assert.ok(helperPromote.includes('identical|ahead'));
+assert.ok(helperPromote.includes(
+  'Accepted release commit is not on the protected default branch'));
+const helperAncestryAt = helperPromote.indexOf(
+  'compare/$ACCEPTED_COMMIT...$DEFAULT_BRANCH');
+const helperCandidateDownloadAt = helperPromote.indexOf(
+  'actions/download-artifact@');
+assert.ok(helperAncestryAt > 0);
+assert.ok(helperCandidateDownloadAt > helperAncestryAt);
+
+// A failed version regex must terminate before any output can mask its status.
+const hardVersionGuard =
+  '[[ "$VERSION" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {';
+assert.ok(helperUnsigned.includes(hardVersionGuard));
+assert.ok(pseUnsigned.includes(hardVersionGuard));
+
+// Tagged builds cannot publish. Repository write access exists only in the
+// separate, manually dispatched, physically accepted Helper promotion.
+assert.ok(helperWorkflow.includes('permissions:\n  contents: read'));
+assert.ok(workflow.includes('permissions:\n  contents: read'));
+assert.strictEqual((helperWorkflow.match(/contents: write/g) || []).length, 0);
+assert.strictEqual((helperPromotion.match(/contents: write/g) || []).length, 1);
+assert.strictEqual((workflow.match(/contents: write/g) || []).length, 1);
+assert.ok(helperPromotion.includes('actions: read'));
+assert.ok(releaseWorkflow.includes('contents: write'));
+
+// Frozen engines are built only from the platform and architecture hash lock.
+for (const [unsignedJob, ffmpegStep] of [
+  [helperUnsigned, 'Stage accepted source-built Windows FFmpeg'],
+  [pseUnsigned, 'Bundle verified FFmpeg and FFprobe'],
+]) {
+  assert.ok(unsignedJob.includes(
+    'requirements-${{ matrix.target_os }}-${{ matrix.arch }}.txt'));
+  assert.ok(unsignedJob.includes('python -m pip install --require-hashes'));
+  assert.ok(unsignedJob.includes('python -m pip check'));
+  assert.ok(!unsignedJob.includes('pip install --upgrade pip'));
+  const safetyAt = unsignedJob.indexOf(
+    '- name: Run safety tests against the verified platform FFmpeg');
+  const ffmpegAt = unsignedJob.indexOf(ffmpegStep);
+  const desktopInstallAt = unsignedJob.indexOf('npm ci --prefix desktop');
+  assert.ok(ffmpegAt > 0);
+  assert.ok(desktopInstallAt > ffmpegAt);
+  assert.ok(safetyAt > desktopInstallAt);
+  assert.ok(safetyAt > ffmpegAt);
+  const safetyStep = unsignedJob.slice(safetyAt,
+    unsignedJob.indexOf('\n      - ', safetyAt + 8));
+  assert.ok(safetyStep.includes('export AUTOEDITOR_FFMPEG="$FFMPEG"'));
+  assert.ok(safetyStep.includes('export AUTOEDITOR_FFPROBE="$FFPROBE"'));
+  assert.ok(safetyStep.includes('python -m unittest tests.test_safety'));
+}
+assert.ok(main.includes("env.PYTHONUTF8 = '1'"));
+assert.ok(main.includes("env.PYTHONIOENCODING = 'utf-8'"));
+assert.ok(workflow.includes('PYTHONUTF8: "1"'));
+assert.ok(workflow.includes('PYTHONIOENCODING: utf-8'));
+assert.ok(workflow.includes(
+  '8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331'));
+assert.ok(workflow.includes('8\\.1\\.2_1([[:space:]]|$)'));
+assert.ok(workflow.includes('2d85e20401920891efb7cd6272d6339685df2820'));
+assert.ok(workflow.includes(
+  '0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7'));
+assert.ok(!workflow.includes('/raw/master/'));
+
+// Release assets stay private as a draft until the complete remote set and
+// its checksums match. A completed rerun verifies without mutating public bits.
+assert.ok(releaseWorkflow.includes('SHA256SUMS.txt'));
+assert.ok(releaseWorkflow.includes('gh release create "$TAG"'));
+assert.ok(releaseWorkflow.includes('--verify-tag'));
+assert.ok(releaseWorkflow.includes('--draft'));
+assert.ok((releaseWorkflow.match(/verify_remote_assets true/g) || []).length >= 2);
+assert.ok(!releaseWorkflow.includes('verify_remote_assets false'));
+assert.ok(releaseWorkflow.includes('gh release download "$TAG"'));
+assert.ok(releaseWorkflow.includes('sha256sum -c SHA256SUMS.txt'));
+assert.ok(releaseWorkflow.includes('--draft=false'));
+const createDraftAt = releaseWorkflow.indexOf('gh release create "$TAG"');
+const uploadAssetsAt = releaseWorkflow.indexOf('gh release upload "$TAG"');
+const finalRemoteVerifyAt = releaseWorkflow.indexOf(
+  'verify_remote_assets true', uploadAssetsAt);
+const publishAt = releaseWorkflow.indexOf('--draft=false');
+assert.ok(createDraftAt > 0);
+assert.ok(uploadAssetsAt > createDraftAt);
+assert.ok(finalRemoteVerifyAt > uploadAssetsAt);
+assert.ok(publishAt > finalRemoteVerifyAt);
+
+// Helper tags produce signed candidates only. Live publication requires a
+// separate owner dispatch that binds the accepted tag, commit, run, attempt,
+// receipts, and an explicit physical-acceptance checkbox.
+assert.ok(!helperWorkflow.includes('\n  publish:'));
+assert.ok(helperWindows.includes(
+  'Upload the signed Windows candidate for physical acceptance'));
+assert.ok(helperMac.includes(
+  'Upload the signed Mac candidate for physical acceptance'));
+assert.ok(helperWindows.includes('signed-candidate-helper-windows-x64'));
+assert.ok(helperMac.includes('signed-candidate-helper-mac-${{ matrix.arch }}'));
+assert.ok(helperPromotion.includes('physical_acceptance:'));
+assert.ok(helperPromote.includes(
+  'Bind owner acceptance to the exact successful signed-candidate run'));
+assert.ok(helperPromote.includes(
+  '"path": ".github/workflows/helper-release.yml"'));
+assert.ok(helperPromote.includes('"event": "push"'));
+assert.ok(helperPromote.includes('"conclusion": "success"'));
+assert.ok(helperPromote.includes('"head_branch": os.environ["ACCEPTED_TAG"]'));
+assert.ok(helperPromote.includes('"head_sha": os.environ["ACCEPTED_COMMIT"]'));
+assert.ok(helperPromote.includes('run-id: ${{ inputs.build_run_id }}'));
+assert.ok(helperPromote.includes('github-token: ${{ github.token }}'));
+assert.ok(helperPromote.includes('--commit "$ACCEPTED_COMMIT"'));
+assert.ok(helperPromote.includes('--run-id "$ACCEPTED_RUN_ID"'));
+assert.ok(helperPromote.includes('--run-attempt "$ACCEPTED_RUN_ATTEMPT"'));
+const helperCheckoutAt = helperPromote.indexOf(
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1');
+const helperCheckoutVerifyAt = helperPromote.indexOf('git rev-parse HEAD');
+const helperProvenanceAt = helperPromote.indexOf(
+  'Bind owner acceptance to the exact successful signed-candidate run');
+const helperNpmInstallAt = helperPromote.indexOf(
+  'npm ci --prefix desktop --ignore-scripts');
+const helperRepositoryCodeAt = helperPromote.indexOf(
+  'python packaging/helper_release_metadata.py assemble');
+assert.ok(helperCheckoutAt > 0);
+assert.ok(helperCheckoutVerifyAt > helperCheckoutAt);
+assert.ok(helperProvenanceAt > helperCheckoutVerifyAt);
+assert.ok(helperNpmInstallAt > helperProvenanceAt);
+assert.ok(helperRepositoryCodeAt > helperCheckoutVerifyAt);
+assert.ok(helperReleaseMetadata.includes(
+  '"tag", "version", "source", "checksums", "platforms",'));
+assert.ok(helperReleaseMetadata.includes(
+  '"release version already exists with different provenance or "'));
+
+assert.ok(helperPromote.includes('--verify-tag --draft'));
+assert.ok(helperPromote.includes(
+  'python packaging/helper_release_metadata.py github-assets'));
+assert.ok(helperPromote.includes(
+  '--plan release-metadata/github-assets.json'));
+assert.ok(helperPromote.includes(
+  '> release-metadata/github-assets.nul'));
+assert.ok(helperPromote.includes(
+  "mapfile -d '' FILES < release-metadata/github-assets.nul"));
+assert.ok(!helperPromote.includes(
+  "mapfile -d '' FILES < <("));
+assert.ok(!helperPromote.includes(
+  "-name 'runtime-manifest-*.json'"));
+assert.ok(helperReleaseMetadata.includes(
+  'release contains an unreferenced or missing runtime manifest'));
+assert.ok(helperReleaseMetadata.includes(
+  'GitHub asset plan must contain exactly six assets'));
+assert.ok(helperPromote.includes('verify_github_release'));
+assert.ok(helperPromote.includes(
+  'GitHub metadata assets do not exactly match the expected set'));
+assert.ok(helperPromote.includes('cmp -s "$file"'));
+assert.ok(helperPromote.includes('--sha256 "$CHECKSUM_SHA" --if-none-match'));
+const helperDraftAt = helperPromote.indexOf(
+  'gh release create "$ACCEPTED_TAG"');
+const helperUploadAt = helperPromote.indexOf(
+  'gh release upload "$ACCEPTED_TAG"');
+const helperVerifyAt = helperPromote.indexOf(
+  'verify_github_release', helperUploadAt);
+const helperPublishAt = helperPromote.indexOf('--draft=false');
+const helperPointerAt = helperPromote.indexOf(
+  'Atomically expose the physically accepted release to private downloads');
+assert.ok(helperDraftAt > 0);
+assert.ok(helperUploadAt > helperDraftAt);
+assert.ok(helperVerifyAt > helperUploadAt);
+assert.ok(helperPublishAt > helperVerifyAt);
+assert.ok(helperPointerAt > helperPublishAt);
+
+// Every Helper artifact executes its installed or mounted frozen engine and
+// proves that the normal local-only Electron renderer can paint a real PNG.
+// The screenshot does not need provider accounts because the local editor
+// opens without a website connection or setup code.
+assert.ok(helperMain.includes(
+  "const capturePath = process.env.AUTOEDITOR_SCREENSHOT_PATH || ''"));
+assert.ok(!helperMain.includes('AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS'));
+assert.ok(helperMain.includes(
+  "win.loadFile(path.join(__dirname, 'renderer', 'index.html'))"));
+
+function assertWindowsHelperAcceptance(gate) {
+  const manifestAt = gate.indexOf('verify_helper_manifest.py');
+  const manifestExitAt = gate.indexOf(
+    'runtime manifest verification failed', manifestAt);
+  const selfTestAt = gate.indexOf('& $engine --self-test');
+  const screenshotAt = gate.indexOf(
+    '$env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot');
+  const skipAccountsAt = gate.indexOf(
+    '$env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS = "1"');
+  const captureAt = gate.indexOf(
+    '$capture = Start-Process $app -Wait -PassThru');
+  const decodeAt = gate.indexOf(
+    '[System.Drawing.Image]::FromStream($stream, $false, $true)');
+  const validatedAt = gate.indexOf(
+    '$image.Width -le 0 -or $image.Height -le 0');
+  const decoderClosedAt = gate.indexOf('$stream.Dispose()');
+  const smokeAt = gate.indexOf('$env:AUTOEDITOR_SMOKE_TEST = "1"');
+  const uninstallAt = gate.indexOf('$remove = Start-Process $uninstaller');
+  const registryAt = gate.indexOf(
+    'HKCU:\\Software\\35e34d8c-801d-53c1-a216-54f6187b5698');
+  assert.ok(gate.includes(
+    '$engine = Join-Path $root "resources/engine/autoeditor-engine.exe"'));
+  assert.ok(registryAt >= 0);
+  assert.ok(gate.includes(
+    '-LiteralPath $installRegistryKey -Name InstallLocation'));
+  assert.ok(gate.includes(
+    '[System.IO.Path]::GetRelativePath($programsRoot, $root)'));
+  assert.ok(gate.includes('outside per-user Programs'));
+  assert.ok(gate.includes(
+    '-or (Test-Path -LiteralPath $installRegistryKey)'));
+  assert.ok(!gate.includes('Programs/AutoEditor Helper'));
+  assert.ok(manifestAt > registryAt);
+  assert.ok(manifestExitAt > manifestAt);
+  assert.ok(gate.slice(manifestAt, manifestExitAt).includes(
+    '$LASTEXITCODE -ne 0'));
+  assert.ok(selfTestAt > manifestExitAt);
+  assert.ok(gate.includes('$screenshot = Join-Path $env:RUNNER_TEMP'));
+  assert.ok(gate.includes('$capture = Start-Process $app -Wait -PassThru'));
+  assert.ok(gate.includes(
+    'Remove-Item Env:AUTOEDITOR_SCREENSHOT_PATH -ErrorAction SilentlyContinue'));
+  assert.ok(gate.includes(
+    'Remove-Item Env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS -ErrorAction SilentlyContinue'));
+  assert.ok(gate.includes('(Get-Item $screenshot).Length -eq 0'));
+  assert.ok(gate.includes('Add-Type -AssemblyName System.Drawing'));
+  assert.ok(gate.includes(
+    '[System.Drawing.Imaging.ImageFormat]::Png.Guid'));
+  assert.ok(gate.includes('$image.Width -le 0 -or $image.Height -le 0'));
+  assert.ok(gate.includes('screenshot is not a decodable PNG'));
+  assert.ok(screenshotAt > selfTestAt);
+  assert.ok(skipAccountsAt > screenshotAt);
+  assert.ok(captureAt > skipAccountsAt);
+  assert.ok(decodeAt > captureAt);
+  assert.ok(validatedAt > decodeAt);
+  assert.ok(decoderClosedAt > validatedAt);
+  assert.ok(smokeAt > decoderClosedAt);
+  assert.ok(uninstallAt > smokeAt);
+}
+
+function assertMacHelperAcceptance(gate) {
+  const selfTestAt = gate.indexOf(
+    'Contents/Resources/engine/autoeditor-engine" --self-test');
+  const screenshotAt = gate.indexOf(
+    'AUTOEDITOR_SCREENSHOT_PATH="$SCREENSHOT"');
+  const skipAccountsAt = gate.indexOf(
+    'AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS=1');
+  const nonemptyAt = gate.indexOf('test -s "$SCREENSHOT"');
+  const decodeAt = gate.indexOf('/usr/bin/sips -s format png');
+  const dimensionsAt = gate.indexOf(
+    'test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0');
+  const smokeAt = gate.indexOf('AUTOEDITOR_SMOKE_TEST=1', skipAccountsAt);
+  const manifestAt = gate.indexOf('verify_helper_manifest.py');
+  const signatureAt = gate.indexOf('codesign --verify --deep --strict');
+  assert.ok(gate.includes('SCREENSHOT="$RUNNER_TEMP/'));
+  assert.ok(gate.includes('test -s "$SCREENSHOT"'));
+  assert.ok(gate.includes('/usr/bin/sips -g pixelWidth'));
+  assert.ok(gate.includes('/usr/bin/sips -g pixelHeight'));
+  assert.ok(gate.includes(
+    'test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0'));
+  assert.ok(selfTestAt >= 0);
+  assert.ok(signatureAt >= 0 && signatureAt < selfTestAt);
+  assert.ok(screenshotAt > selfTestAt);
+  assert.ok(skipAccountsAt > screenshotAt);
+  assert.ok(nonemptyAt > skipAccountsAt);
+  assert.ok(decodeAt > nonemptyAt);
+  assert.ok(dimensionsAt > decodeAt);
+  assert.ok(smokeAt > dimensionsAt);
+  assert.ok(manifestAt > smokeAt);
+}
+
+for (const gate of [
+  helperUnsignedWindowsGate,
+  helperSignedWindowsGate,
+]) {
+  assertWindowsHelperAcceptance(gate);
+}
+for (const gate of [helperUnsignedMacGate, helperSignedMacGate]) {
+  assertMacHelperAcceptance(gate);
+}
+
+// Installed Windows resources and the fresh mounted Mac app both validate
+// target/version receipts and byte-bind product.json to staging.
+assert.ok(workflow.includes('autoeditor-desktop-runtime/v1'));
+assert.ok(workflow.includes('runtimeManifest'));
+const windowsSmokeAt = pseUnsigned.indexOf(
+  '- name: Smoke-test Windows installer');
+const macSmokeAt = pseUnsigned.indexOf('- name: Smoke-test macOS app and DMG');
+const artifactUploadAt = pseUnsigned.indexOf(
+  '- name: Seal prepared PSE runtime', macSmokeAt);
+assert.ok(windowsSmokeAt > 0);
+assert.ok(macSmokeAt > windowsSmokeAt);
+assert.ok(artifactUploadAt > macSmokeAt);
+const windowsSmoke = pseUnsigned.slice(windowsSmokeAt, macSmokeAt);
+const macSmoke = pseUnsigned.slice(macSmokeAt, artifactUploadAt);
+for (const [smoke, byteBindFailure] of [
+  [windowsSmoke, 'Installed product manifest is not byte-identical to staging'],
+  [macSmoke, 'Mounted product manifest is not byte-identical to staging'],
+]) {
+  assert.ok(smoke.includes(byteBindFailure));
+  assert.ok(smoke.includes('autoeditor-desktop-runtime/v1'));
+  assert.ok(smoke.includes('components == actual'));
+  assert.ok(smoke.includes('runtime.get("version") == version'));
+  assert.ok(smoke.includes('runtime.get("target") == target'));
+  assert.ok(smoke.includes('--self-test'));
+}
+assert.ok(pseWindows.includes('Get-AuthenticodeSignature'));
+assert.ok(pseWindows.includes('components == actual'));
+assert.ok(pseMac.includes('Authority=Developer ID Application'));
+assert.ok(pseMac.includes('xcrun stapler validate "$DMG"'));
+assert.ok(pseMac.includes('components == actual'));
+assert.ok(helperWindows.includes('Get-AuthenticodeSignature'));
+assert.ok(helperWindows.includes(
+  'Get-ChildItem $resources -Recurse -Filter *.exe -File'));
+assert.ok(helperWindows.includes(
+  '$file.FullName $fileThumbprint $approvedIdentityEku'));
+assert.ok(helperWindows.includes('verify_helper_manifest.py'));
+assert.ok(helperMac.includes('Authority=Developer ID Application'));
+assert.ok(helperMac.includes('xcrun stapler validate "$DMG"'));
+assert.ok(helperMac.includes('verify_helper_manifest.py'));
+assert.ok(pseWindows.includes(
+  'Get-ChildItem $resources -Recurse -Filter *.exe -File'));
+assert.ok(pseWindows.includes(
+  'normalize_windows_executables=True'));
+assert.ok(pseMac.includes(
+  'runtime.get("receiptAlgorithm") == "raw-sha256-v1"'));
+console.log('platform contracts ok');

@@ -39,7 +39,7 @@ assert.ok(helperMain.includes('preflight({ checkKeystore: !screenshotMode })'));
 for (const api of [
   'pickVideos', 'pickOutput', 'saveSettings', 'renderLocal', 'cancelLocal',
   'attachDroppedVideos', 'chatLocal', 'applyLocal', 'openResult',
-  'openResearchSource', 'onRender', 'saveConversation',
+  'openResearchSource', 'onRender',
 ]) {
   assert.ok(helperPreload.includes(`${api}:`), api);
 }
@@ -75,9 +75,6 @@ assert.ok(helperRenderer.includes('function localFileUrl'));
 assert.ok(helperRenderer.includes('Saved securely and reused automatically'));
 assert.ok(helperMain.includes('settingsForLocalRender(settings)'));
 assert.ok(helperRenderer.includes("button.textContent = 'Render these changes'"));
-assert.ok(helperMain.includes("return path.join(app.getPath('userData'), 'conversation.enc')"));
-assert.ok(helperMain.includes('MAX_ENCRYPTED_CONVERSATION_BYTES'));
-assert.ok(helperRenderer.includes('ChatState.conversationSnapshot'));
 assert.ok(helperRenderer.includes("research: $('live-research').checked"));
 assert.ok(helperMain.includes('returnedResearchSources'));
 assert.ok(helperMain.includes("require('./lib/editing-harness')"));

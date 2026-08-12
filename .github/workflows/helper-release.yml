@@ -325,4 +325,1510 @@ jobs:
           WINDOWS_FFMPEG_ARTIFACT_ID: ${{ needs.windows_ffmpeg.outputs.artifact_id }}
           WINDOWS_FFMPEG_ARTIFACT_NAME: ${{ needs.windows_ffmpeg.outputs.artifact_name }}
           WINDOWS_FFMPEG_ARTIFACT_DIGEST: ${{ needs.windows_ffmpeg.outputs.artifact_digest }}
-  Ûm{öÚ$z{-®éÜj××VrÖ6÷'&W7öæF–ær×6÷W&6RÒG·²ÖG&—‚æ&6‚×ÒçF""ÀÐ¢ÒÖÖæ–fW7B"D44UDTBöÖ6÷2Öff×VrÖ6÷'&W7öæF–ær×6÷W&6RÒG·²ÖG&—‚æ&6‚×ÒæÖæ–fW7Bæ§6öâ"ÀÐ¢Ò×&W÷6—F÷'’Ö6öÖÖ—B"Dt•D…T%õ4„ Ð Ð¢ÒW6W3¢7F–öç2÷6WGW×—F†öäVfF6#“VFV“#“–3FSƒ“CSƒ633ƒc#S6SF#“r2crãã Ð¢v—Fƒ Ð¢—F†öâ×fW'6–öã¢#2ã" Ð Ð¢ÒW6W3¢7F–öç2÷6WGWÖæöFTƒ#sc#sƒc#csC3sfc3cƒV#Vf3Cv3fSS#2crãã Ð¢v—Fƒ Ð¢æöFR×fW'6–öã¢G·²VçbääôDUõdU%4”ôâ×ÐÐ¢66†S¢çÐÐ¢66†RÖFWVæFVæ7’×Fƒ¢FW6·F÷÷6¶vRÖÆö6²æ§6öàÐ Ð¢ÒæÖS¢–ç7FÆÂÆö6¶VB6¶v–ærFWVæFVæ6–W2v—F†÷WB6–væ–ær7&VFVçF–Ç0Ð¢v÷&¶–ærÖF—&V7F÷'“¢FW6·F÷ Ð¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢çÒ6Ð¢—F†öâââ÷6¶v–ær÷7FvUöVÆV7G&öåö6‡&öÖ—VÕ÷&÷fVææ6Rç’VÆV7G&öâÖF—7BÀÐ¢ÒÖÆö6²ââ÷6¶v–æröVÆV7G&öâÖ6‡&öÖ—VÒ×&÷fVææ6RæÆö6²æ§6öâÀÐ¢ÒÖFW6·F÷×6¶vRÖÆö6²6¶vRÖÆö6²æ§6öâÀÐ¢ÒÖVÆV7G&öâ×&ö÷BæöFUöÖöGVÆW2öVÆV7G&öâÀÐ¢ÒÖ÷WGWBÖF—""E%TääU%õDTÕöVÆV7G&öâÖF—7B"ÀÐ¢Ò×F&vWBÖ÷2Ö2Ò×F&vWBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò Ð Ð¢ÒæÖS¢&W7F÷&RW†7BÖ2df×Vr&V6V—B6÷W&6RVçf—&öæÖVç@Ð¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢W‡÷'B„ôÔT%$UuôäõôUDõõUDDSÓÐ¢W‡÷'B„ôÔT%$Uuôäõô”å5DÄÅô4ÄTåUÓÐ¢%$UuõdU%4”ôãÒB†'&WrÒ×fW'6–öâÐ¢FW7B"G´%$UuõdU%4”ôâRRBuÆâr§Ò"Òt†öÖV'&Wrbãã"pÐ¢'&Wr–ç7FÆÂff×VpÐ¢U…T5DTCÖFW6·F÷ö†VÇW"×7Fv–æröÆ–6Vç6W2ôddÕTuôdõ$ÕTÄRçG‡@Ð¢v†–ÆR”e3Òrr&VB×"dõ$ÕTÄdU%4”ôâ$õEDÄUõDrÀÐ¢$õEDÄUõ$T%T”ÄB$õEDÄUõ4„U…E$²FðÐ¢µ²Öâ"Ddõ$ÕTÄ"bbÖâ"EdU%4”ôâ"bbÖâ"D$õEDÄUõDr"ÕÐÐ¢µ²Öâ"D$õEDÄUõ$T%T”ÄB"bbÖâ"D$õEDÄUõ4„"bb×¢"DU…E$"ÕÐÐ¢'&WrfWF6‚ÒÖf÷&6R"Ddõ$ÕTÄ Ð¢FöæRÂ"DU…T5DTB Ð¢v†–ÆR”e3Òrr&VB×"dõ$ÕTÄó²FðÐ¢µ²"Ddõ$ÕTÄ"ÓÒ&ff×Vr"ÕÒbb6öçF–çVPÐ¢'&Wr&V–ç7FÆÂÒÖf÷&6RÖ&÷GFÆR"Ddõ$ÕTÄ Ð¢FöæRÂ"DU…T5DTB Ð¢'&Wr&V–ç7FÆÂÒÖf÷&6RÖ&÷GFÆRff×VpÐ¢ô%4U%dTCÒ"E%TääU%õDTÕ÷6–væVBÖÖ2Öff×VrÖf÷&×VÆRÒG·²ÖG&—‚æ&6‚×ÒçG‡B Ð¢—F†öâ6¶v–ær÷fW&–g•öÖ6÷5öff×Vuöf÷&×VÆRç’ÀÐ¢ÒÖff×Vr"B†'&WrÒ×&Vf—‚ff×Vr’ö&–âöff×Vr"ÀÐ¢ÒÖfg&ö&R"B†'&WrÒ×&Vf—‚ff×Vr’ö&–âöfg&ö&R"ÀÐ¢ÒÖ6VÆÆ""B†'&WrÒÖ6VÆÆ"’"ÒÖW‡V7FVB"DU…T5DTB"ÀÐ¢ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò"ÒÖ÷WGWB"Dô%4U%dTB Ð¢6×"DU…T5DTB""Dô%4U%dTB Ð Ð¢ÒæÖS¢'V–ÆBF†R6–væVBæBæ÷F&—¦VBÖ4õ2–ç7FÆÆW Ð¢6†VÆÃ¢&6€Ð¢v÷&¶–ærÖF—&V7F÷'“¢FW6·F÷ Ð¢Vçc Ð¢545ôÄ”ä³¢G·²6V7&WG2ä545ôÄ”ä²×ÐÐ¢545ô´U•õ55tõ$C¢G·²6V7&WG2ä545ô´U•õ55tõ$B×ÐÐ¢545ô”DTåD•E•ôUDõôD•44õdU%“¢fÇ6PÐ¢ÄUô”C¢G·²6V7&WG2äÄUô”B×ÐÐ¢ÄUôõ5T4”d”5õ55tõ$C¢G·²6V7&WG2äÄUôõ5T4”d”5õ55tõ$B×ÐÐ¢ÄUõDTÕô”C¢G·²6V7&WG2äÄUõDTÕô”B×ÐÐ¢'Vã¢ÀÐ¢FW7BÖâ"D545ôÄ”ä²"bbFW7BÖâ"D545ô´U•õ55tõ$B"bbÀÐ¢FW7BÖâ"DÄUô”B"bbFW7BÖâ"DÄUôõ5T4”d”5õ55tõ$B"bbÀÐ¢FW7BÖâ"DÄUõDTÕô”B"ÇÂ°Ð¢V6†ò$FvvVBÖ2&VÆV6R&WV—&W2FWfVÆ÷W"”BæBæ÷F&—¦F–öâ6V7&WG2"âc Ð¢W†—BÐ¢ÐÐ¢dU%4”ôãÒ"G´t•D…T%õ$TeôäÔR6†VÇW"×gÒ Ð¢çÒfW'6–öâ"EdU%4”ôâ"ÒÖæòÖv—B×Fr×fW'6–öâÒÖÆÆ÷r×6ÖR×fW'6–öàÐ¢ç‚VÆV7G&öâÖ'V–ÆFW"ÒÖ6öæf–rVÆV7G&öâÖ'V–ÆFW"æ†VÇW"ç–ÖÂÀÐ¢ÒÖÖ2ÒÒG·²ÖG&—‚æ&6‚×ÒÒ×V&Æ—6‚æWfW"ÀÐ¢ÒÖ6öæf–ræVÆV7G&öäF—7CÒ"E%TääU%õDTÕöVÆV7G&öâÖF—7B"ÀÐ¢ÒÖ6öæf–ræF—&V7F÷&–W2æ÷WGWCÒ"D„TÅU%ôD•5B Ð Ð¢ÒæÖS¢7&VFRæBfW&–g’W†7B6–væVBÖ2df×VræB&VÖ÷F–öâ&V6V—G0Ð¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢ô4õTåCÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚2×G—RBÀÐ¢ÖæÖRtWFôVF—F÷"†VÇW"ærÂv2ÖÂÂG"ÖBrrÐ¢FW7B"Dô4õTåB"ÒÐ¢õ$ôõCÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚2×G—RBÀÐ¢ÖæÖRtWFôVF—F÷"†VÇW"ær×&–çB×V—BÐ¢44UDTCÒ"E%TääU%õDTÕö66WFVBÖÖ2ÖæF—fR Ð¢4”täTCÒ"E%TääU%õDTÕöÖ2ÖæF—fR×6–væVBÒG·²ÖG&—‚æ&6‚×Ò Ð¢Ö¶F—"×"E4”täTB Ð¢ddÕTuõ$T4T•CÒ"E4”täTBöÖ6÷2Öff×Vr×6–væVBÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢$TÔõD”ôåõ$T4T•CÒ"E4”täTBöÖ6÷2×&VÖ÷F–öâ×6–væVBÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢Äô4µõ4„ÒB‡6†7VÒÖ#Sb6¶v–ærö†VÇW"×'VçF–ÖR÷6¶vRÖÆö6²æ§6öâÂv²w·&–çBCÒrÐ¢—F†öâ6¶v–æröÖ6÷5öff×Vu÷&V6V—Bç’vVæW&FRÀÐ¢ÒÖ×&ö÷B"Dõ$ôõB"ÀÐ¢ÒÖff×Vr×6÷W&6R"B†'&WrÒ×&Vf—‚ff×Vr’ö&–âöff×Vr"ÀÐ¢ÒÖfg&ö&R×6÷W&6R"B†'&WrÒ×&Vf—‚ff×Vr’ö&–âöfg&ö&R"ÀÐ¢ÒÖ6VÆÆ""B†'&WrÒÖ6VÆÆ"’"ÀÐ¢ÒÖf÷&×VÆÖ–çfVçF÷'’FW6·F÷ö†VÇW"×7Fv–æröÆ–6Vç6W2ôddÕTuôdõ$ÕTÄRçG‡BÀÐ¢ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò"ÒÖ÷WGWB"DddÕTuõ$T4T•B Ð¢—F†öâ6¶v–æröÖ6÷5÷&VÖ÷F–öå÷&V6V—Bç’vVæW&FRÀÐ¢ÒÖ×&ö÷B"Dõ$ôõB"ÀÐ¢Ò×6¶vRÖÆö6²6¶v–ærö†VÇW"×'VçF–ÖR÷6¶vRÖÆö6²æ§6öâÀÐ¢Ò×6¶vRÖÆö6²×6†#Sb"DÄô4µõ4„"ÀÐ¢Ò×F&&ÆÂ"D44UDTB÷&VÖ÷F–öâÖ6ö×÷6—F÷"ÖF'v–âÒG·²ÖG&—‚æ&6‚×ÒÒE$TÔõD”ôåõdU%4”ôâçFw¢"ÀÐ¢ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò"ÒÖ÷WGWB"E$TÔõD”ôåõ$T4T•B Ð¢ddÕTuõ4„ÒB‡6†7VÒÖ#Sb"DddÕTuõ$T4T•B"Âv²w·&–çBCÒrÐ¢$TÔõD”ôåõ4„ÒB‡6†7VÒÖ#Sb"E$TÔõD”ôåõ$T4T•B"Âv²w·&–çBCÒrÐ¢—F†öâ6¶v–æröÖ6÷5öff×Vu÷&V6V—Bç’fW&–g’ÀÐ¢ÒÖ×&ö÷B"Dõ$ôõB"Ò×&V6V—B"DddÕTuõ$T4T•B"ÀÐ¢Ò×&V6V—B×6†#Sb"DddÕTuõ4„"ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò Ð¢—F†öâ6¶v–æröÖ6÷5÷&VÖ÷F–öå÷&V6V—Bç’fW&–g’ÀÐ¢ÒÖ×&ö÷B"Dõ$ôõB"Ò×&V6V—B"E$TÔõD”ôåõ$T4T•B"ÀÐ¢Ò×&V6V—B×6†#Sb"E$TÔõD”ôåõ4„"ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò Ð Ð¢ÒæÖS¢7&VFRW†7B6–væVB6¶VBVÆV7G&öâæF—fR&öGV6W"&V6V—@Ð¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢ô4õTåCÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚2×G—RBÀÐ¢ÖæÖRtWFôVF—F÷"†VÇW"ærÂv2ÖÂÂG"ÖBrrÐ¢FW7B"Dô4õTåB"ÒÐ¢õ$ôõCÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚2×G—RBÀÐ¢ÖæÖRtWFôVF—F÷"†VÇW"ær×&–çB×V—BÐ¢dU%4”ôãÒ"G´t•D…T%õ$TeôäÔR6†VÇW"×gÒ Ð¢—F†öâ6¶v–æröVÆV7G&öåöæF—fU÷&V6V—Bç’7&VFRÀÐ¢ÒÖ×&ö÷B"Dõ$ôõB"Ò×F&vWB&Ö2ÒG·²ÖG&—‚æ&6‚×Ò"ÀÐ¢ÒÖVÆV7G&öâÖ&6†—fR"E%TääU%õDTÕöVÆV7G&öâÖF—7BöVÆV7G&öâ×cC2ã2ãÖF'v–âÒG·²ÖG&—‚æ&6‚×Òç¦—"ÀÐ¢Ò×6÷W&6RÖÆö6²6¶v–æröVÆV7G&öâÖ6‡&öÖ—VÒ×&÷fVææ6RæÆö6²æ§6öâÀÐ¢ÒÖ'V–ÆFW"Ö6öæf–rFW6·F÷öVÆV7G&öâÖ'V–ÆFW"æ†VÇW"ç–ÖÂÀÐ¢Ò×6¶vRÖ§6öâFW6·F÷÷6¶vRæ§6öâÀÐ¢ÒÖ–6öâFW6·F÷ö'V–ÆBö–6öâæ–6òÒ×fW'6–öâ"EdU%4”ôâ"ÀÐ¢ÒÖ÷WGWB"E%TääU%õDTÕöVÆV7G&öâÖæF—fRÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð Ð¢ÒæÖS¢&VÆV6RGWÆ–6FR6–væVB7Fv–ær'—FW2&Vf÷&R66WFæ6PÐ¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢7FW6·F÷ö†VÇW"×7Fv–ær÷'VçF–ÖRÖÖæ–fW7Bæ§6öâÀÐ¢"E%TääU%õDTÕ÷'VçF–ÖRÖÖæ–fW7Bæ§6öâ Ð¢&Ò×&bFW6·F÷ö†VÇW"×7Fv–æpÐ¢Ö¶F—"×FW6·F÷ö†VÇW"×7Fv–æpÐ¢7"E%TääU%õDTÕ÷'VçF–ÖRÖÖæ–fW7Bæ§6öâ"ÀÐ¢FW6·F÷ö†VÇW"×7Fv–ær÷'VçF–ÖRÖÖæ–fW7Bæ§6öàÐ Ð¢ÒæÖS¢fW&–g’F†Rf–æÂÖ÷VçFVBÖ2'F–f7@Ð¢6†VÆÃ¢&6€Ð¢'Vã¢ÀÐ¢DÔuô4õTåCÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚×G—RbÖæÖRr¢æFÖrrÂv2ÖÂÂG"ÖBrrÐ¢FW7B"DDÔuô4õTåB"ÒÐ¢DÔsÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚×G—RbÖæÖRr¢æFÖrr×&–çB×V—BÐ¢†F—WF–ÂfW&–g’"DDÔr Ð¢ÔõTåCÒB†Ö·FV×ÖB"E%TääU%õDTÕö†VÇW"ÖFÖrå……………‚"Ð¢†F—WF–ÂGF6‚"DDÔr"ÖÖ÷VçGö–çB"DÔõTåB"Öæö'&÷w6R×&VFöæÇ’ÖæöWFö÷VàÐ¢G&v†F—WF–ÂFWF6‚"DÔõTåB"Öf÷&6RâöFWböçVÆÂ#âcÇÂG'VRrU„•@Ð¢ÒB†f–æB"DÔõTåB"ÖÖ†FWF‚×G—RBÖæÖRr¢ær×&–çB×V—BÐ¢ô4õTåCÒB†f–æB"DÔõTåB"ÖÖ†FWF‚×G—RBÀÐ¢ÖæÖRr¢ærÂv2ÖÂÂG"ÖBrrÐ¢FW7B"Dô4õTåB"ÒÐ¢FW7B×¢"B†f–æB"D"Â‚ÖæÖRräE5õ7F÷&RrÖòÖæÖRråò¢rÂ’×&–çB×V—B’ Ð¢–b†GG"ÖÇ""D"#âöFWböçVÆÂÂÀÐ¢w&WÔWv6öÕÂæÆUÂâ„f–æFW$–æf÷Å&W6÷W&6Tf÷&²’s²F†VàÐ¢V6†ò$f–æFW"ÖWFFF—2GF6†VB–ç6–FRF†R6–væVB"âc Ð¢W†—BÐ¢fÐ¢6öFW6–vâÒ×fW&–g’ÒÖFVWÒ×7G&–7BÒ×fW&&÷6SÓB"D Ð¢TÄT5E$ôåõ$T4T•CÒ"E%TääU%õDTÕöVÆV7G&öâÖæF—fRÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢TÄT5E$ôåõ$T4T•Eõ4„ÒB‡6†7VÒÖ#Sb"DTÄT5E$ôåõ$T4T•B"Âv²w·&–çBCÒrÐ¢—F†öâ6¶v–æröVÆV7G&öåöæF—fU÷&V6V—Bç’fW&–g’ÀÐ¢ÒÖ×&ö÷B"D"Ò×F&vWB&Ö2ÒG·²ÖG&—‚æ&6‚×Ò"ÀÐ¢ÒÖVÆV7G&öâÖ&6†—fR"E%TääU%õDTÕöVÆV7G&öâÖF—7BöVÆV7G&öâ×cC2ã2ãÖF'v–âÒG·²ÖG&—‚æ&6‚×Òç¦—"ÀÐ¢Ò×6÷W&6RÖÆö6²6¶v–æröVÆV7G&öâÖ6‡&öÖ—VÒ×&÷fVææ6RæÆö6²æ§6öâÀÐ¢ÒÖ'V–ÆFW"Ö6öæf–rFW6·F÷öVÆV7G&öâÖ'V–ÆFW"æ†VÇW"ç–ÖÂÀÐ¢Ò×6¶vRÖ§6öâFW6·F÷÷6¶vRæ§6öâÀÐ¢ÒÖ–6öâFW6·F÷ö'V–ÆBö–6öâæ–6òÀÐ¢Ò×fW'6–öâ"G´t•D…T%õ$TeôäÔR6†VÇW"×gÒ"ÀÐ¢Ò×&V6V—B"DTÄT5E$ôåõ$T4T•B"ÀÐ¢ÒÖW‡V7FVB×&V6V—B×6†#Sb"DTÄT5E$ôåõ$T4T•Eõ4„ Ð¢4”täTEôäD•dSÒ"E%TääU%õDTÕöÖ2ÖæF—fR×6–væVBÒG·²ÖG&—‚æ&6‚×Ò Ð¢ddÕTuõ$T4T•CÒ"E4”täTEôäD•dRöÖ6÷2Öff×Vr×6–væVBÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢$TÔõD”ôåõ$T4T•CÒ"E4”täTEôäD•dRöÖ6÷2×&VÖ÷F–öâ×6–væVBÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢ddÕTuõ4„ÒB‡6†7VÒÖ#Sb"DddÕTuõ$T4T•B"Âv²w·&–çBCÒrÐ¢$TÔõD”ôåõ4„ÒB‡6†7VÒÖ#Sb"E$TÔõD”ôåõ$T4T•B"Âv²w·&–çBCÒrÐ¢—F†öâ6¶v–æröÖ6÷5öff×Vu÷&V6V—Bç’fW&–g’ÀÐ¢ÒÖ×&ö÷B"D"Ò×&V6V—B"DddÕTuõ$T4T•B"ÀÐ¢Ò×&V6V—B×6†#Sb"DddÕTuõ4„"ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò Ð¢—F†öâ6¶v–æröÖ6÷5÷&VÖ÷F–öå÷&V6V—Bç’fW&–g’ÀÐ¢ÒÖ×&ö÷B"D"Ò×&V6V—B"E$TÔõD”ôåõ$T4T•B"ÀÐ¢Ò×&V6V—B×6†#Sb"E$TÔõD”ôåõ4„"ÒÖW‡V7FVBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò Ð¢6öFW6–vâÖGbÒ×fW&&÷6SÓB"D"#âcÂÀÐ¢w&W×tWF†÷&—G“ÔFWfVÆ÷W"”BÆ–6F–öâpÐ¢77FÂÒÖ76W72Ò×G—RW†V7WFRÒ×fW&&÷6SÓ""D Ð¢†7'Vâ7FÆW"fÆ–FFR"D Ð¢†7'Vâ7FÆW"fÆ–FFR"DDÔr Ð¢$”ãÒB‚÷W7"öÆ–&W†V2õÆ—7D'VFG’Ö2u&–çB¤4d'VæFÆTW†V7WF&ÆRrÀÐ¢"Dô6öçFVçG2ô–æfòçÆ—7B"Ð¢FW7B×‚"Dô6öçFVçG2õ&W6÷W&6W2öVæv–æRöWFöVF—F÷"ÖVæv–æR Ð¢"Dô6öçFVçG2õ&W6÷W&6W2öVæv–æRöWFöVF—F÷"ÖVæv–æR"Ò×6VÆb×FW7@Ð¢45$TTå4„õCÒ"E%TääU%õDTÕö†VÇW"×6–væVBÖÖ2ÒG·²ÖG&—‚æ&6‚×Òçær Ð¢UDôTD•Dõ%õ45$TTå4„õEõDƒÒ"E45$TTå4„õB"ÀÐ¢UDôTD•Dõ%õ45$TTå4„õEõ4´•ô44õTåE3ÓÀÐ¢"Dô6öçFVçG2ôÖ4õ2òD$”â Ð¢FW7B×2"E45$TTå4„õB Ð¢DT4ôDTEõ45$TTå4„õCÒ"E%TääU%õDTÕö†VÇW"×6–væVBÖÖ2ÒG·²ÖG&—‚æ&6‚×ÒÖFV6öFVBçær Ð¢÷W7"ö&–â÷6—2×2f÷&ÖBær"E45$TTå4„õB"ÀÐ¢ÒÖ÷WB"DDT4ôDTEõ45$TTå4„õB"âöFWböçVÆÀÐ¢FW7B×2"DDT4ôDTEõ45$TTå4„õB Ð¢t”EDƒÒB‚÷W7"ö&–â÷6—2Ör—†VÅv–GF‚"DDT4ôDTEõ45$TTå4„õB"ÂÀÐ¢v²r÷—†VÅv–GF‚ò·&–çBC'ÒrÐ¢„T”t…CÒB‚÷W7"ö&–â÷6—2Ör—†VÄ†V–v‡B"DDT4ôDTEõ45$TTå4„õB"ÂÀÐ¢v²r÷—†VÄ†V–v‡Bò·&–çBC'ÒrÐ¢FW7B"Et”ED‚"ÖwBbbFW7B"D„T”t…B"ÖwB Ð¢UDôTD•Dõ%õ4Ôô´UõDU5CÓ"Dô6öçFVçG2ôÖ4õ2òD$”â Ð¢—F†öâ6¶v–ær÷fW&–g•ö†VÇW%öÖæ–fW7Bç’ÀÐ¢Ò×&W6÷W&6W2"Dô6öçFVçG2õ&W6÷W&6W2"ÀÐ¢ÒÖW‡V7FVBÖÖæ–fW7BFW6·F÷ö†VÇW"×7Fv–ær÷'VçF–ÖRÖÖæ–fW7Bæ§6öâÀÐ¢Ò×F&vWBÖ÷2Ö2Ò×F&vWBÖ&6‚"G·²ÖG&—‚æ&6‚×Ò"ÀÐ¢Ò×fW'6–öâ"G´t•D…T%õ$TeôäÔR6†VÇW"×gÒ Ð¢†F—WF–ÂFWF6‚"DÔõTåB"Öf÷&6PÐ¢G&ÒU„•@Ð Ð¢ÒæÖS¢WÆöBF†RfW&–f–VBÖ26æF–FFPÐ¢6†VÆÃ¢&6€Ð¢Vçc Ð¢u5ô44U55ô´U•ô”C¢G·²6V7&WG2å#%ô4äD”DDUô44U55ô´U•ô”B×ÐÐ¢u5õ4T5$UEô44U55ô´U“¢G·²6V7&WG2å#%ô4äD”DDUõ4T5$UEô44U55ô´U’×ÐÐ¢#%ô44õTåEô”C¢G·²6V7&WG2ä4ÄõTDdÄ$Uô44õTåEô”B×ÐÐ¢'Vã¢ÀÐ¢FW7BÖâ"Du5ô44U55ô´U•ô”B"bbFW7BÖâ"Du5õ4T5$UEô44U55ô´U’"bbÀÐ¢FW7BÖâ"E#%ô44õTåEô”B Ð¢”å5DÄÄU#ÒB†f–æB"D„TÅU%ôD•5B"ÖÖ†FWF‚×G—RbÖæÖRr¢æFÖrr×&–çB×V—BÐ¢FW7BÖb"D”å5DÄÄU" Ð¢$T4T•EôD•#Ò'&VÆV6R×&V6V—Bö†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×Ò Ð¢Ö¶F—"×"E$T4T•EôD•" Ð¢$T4T•CÒ"E$T4T•EôD•"ö6æF–FFRÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢—F†öâ6¶v–ærö†VÇW%÷&VÆV6UöÖWFFFç’6æF–FFRÀÐ¢ÒÖf–ÆR"D”å5DÄÄU""ÀÐ¢Ò×'VçF–ÖRÖÖæ–fW7BFW6·F÷ö†VÇW"×7Fv–ær÷'VçF–ÖRÖÖæ–fW7Bæ§6öâÀÐ¢Ò×F&vWBÖ÷2Ö2ÒÖ&6‚"G·²ÖG&—‚æ&6‚×Ò"ÀÐ¢Ò×Fr"Dt•D…T%õ$TeôäÔR"ÒÖ6öÖÖ—B"Dt•D…T%õ4„"ÀÐ¢Ò×'VâÖ–B"Dt•D…T%õ%Tåô”B"Ò×'VâÖGFV×B"Dt•D…T%õ%TåôEDTÕB"ÀÐ¢Ò×6–væ–ær×7FGW2fW&–f–VBÒÖæ÷F&—¦F–öâ×7FGW2fW&–f–VBÀÐ¢ÒÖ÷WGWB"E$T4T•B Ð¢7FW6·F÷ö†VÇW"×7Fv–ær÷'VçF–ÖRÖÖæ–fW7Bæ§6öâÀÐ¢"E$T4T•EôD•"÷'VçF–ÖRÖÖæ–fW7BÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢7"E%TääU%õDTÕöVÆV7G&öâÖæF—fRÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ"ÀÐ¢"E$T4T•EôD•"öVÆV7G&öâÖæF—fRÖÖ2ÒG·²ÖG&—‚æ&6‚×Òæ§6öâ Ð¢7"E%TääU%õDTÕöÖ2ÖæF—fR×6–væVBÒG·²ÖG&—‚æ&6‚×Ò"ò¢æ§6öâÀÐ¢"E$T4T•EôD•"ò Ð¢Ö¶F—"×"E$T4T•EôD•"ö66WFVBÖæF—fR Ð¢7Õ""E%TääU%õDTÕö66WFVBÖÖ2ÖæF—fRòâ"ÀÐ¢"E$T4T•EôD•"ö66WFVBÖæF—fRò Ð¢´U“ÒB‡—F†öâÖ2v–×÷'B§6öâÇ7—3²&–çB†§6öâæÆöB†÷Vâ‡7—2æ&we³Ò’•²&¶W’%Ò’r"E$T4T•B"Ð¢4„ÒB‡—F†öâÖ2v–×÷'B§6öâÇ7—3²&–çB†§6öâæÆöB†÷Vâ‡7—2æ&we³Ò’•²'6†#Sb%Ò’r"E$T4T•B"Ð¢E•SÒB‡—F†öâÖ2v–×÷'B§6öâÇ7—3²&–çB†§6öâæÆöB†÷Vâ‡7—2æ&we³Ò’•²&6öçFVçE÷G—R%Ò’r"E$T4T•B"Ð¢æöFRFW6·F÷÷67&—G2÷#"×&VÆV6R×7F÷&vRæ§2WÆöBÀÐ¢ÒÖ'V6¶WBWFöVF—F÷"×&VÆV6RÖ6æF–FFW2ÒÖ¶W’"D´U’"ÀÐ¢ÒÖf–ÆR"D”å5DÄÄU""ÒÖ6öçFVçB×G—R"EE•R"Ò×6†#Sb"E4„ Ð Ð¢ÒW6W3¢7F–öç2÷WÆöBÖ'F–f7D&&&6&FFVC†fVc6S3f#sffFCss3ƒfc#Fb2crãã Ð¢v—Fƒ Ð¢æÖS¢&VÆV6R×&V6V—BÖ†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×ÐÐ¢Fƒ¢&VÆV6R×&V6V—Bö†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×ÐÐ¢–bÖæòÖf–ÆW2Öf÷VæC¢W'&÷ Ð Ð¢ÒæÖS¢WÆöBF†R6–væVBÖ26æF–FFRf÷"‡—6–6Â66WFæ6PÐ¢W6W3¢7F–öç2÷WÆöBÖ'F–f7D&&&6&FFVC†fVc6S3f#sffFCss3ƒfc#Fb2crãã Ð¢v—Fƒ Ð¢æÖS¢6–væVBÖ6æF–FFRÖ†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×ÐÐ¢Fƒ¢ÀÐ¢G·²'VææW"çFV××Òö†VÇW"×6–væVBÖF—7Bò¢æFÖpÐ¢&VÆV6R×&V6V—Bö†VÇW"ÖÖ2ÒG·²ÖG&—‚æ&6‚×ÐÐ¢–bÖæòÖf–ÆW2Öf÷VæC¢W'&÷ Ð¢6ö×&W76–öâÖÆWfVÃ¢ Ð¢&WFVçF–öâÖF—3¢pÐ
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP "windows-ffmpeg-accepted"
+          $expectedName = "windows-ffmpeg-accepted-$env:GITHUB_SHA"
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_ID -notmatch '^[1-9][0-9]*$') {
+            throw "Accepted Windows FFmpeg artifact ID is invalid"
+          }
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_NAME -ne $expectedName) {
+            throw "Accepted Windows FFmpeg artifact name is not bound to this commit"
+          }
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_DIGEST `
+              -notmatch '^[0-9a-f]{64}$') {
+            throw "Accepted Windows FFmpeg artifact digest is invalid"
+          }
+          $expectedRoot = @(
+            "ffmpeg.exe"
+            "ffprobe.exe"
+            "licenses"
+            "link-evidence"
+            "linkage"
+            "windows-ffmpeg-build-receipt.json"
+            "windows-ffmpeg-corresponding-source.manifest.json"
+            "windows-ffmpeg-corresponding-source.tar"
+          ) | Sort-Object
+          $actualRoot = @(
+            Get-ChildItem -LiteralPath $source -Force | ForEach-Object Name
+          ) | Sort-Object
+          $rootDrift = @(Compare-Object $expectedRoot $actualRoot)
+          if ($rootDrift.Count -ne 0) {
+            throw "Accepted Windows FFmpeg artifact root set drifted"
+          }
+          python packaging/verify_windows_ffmpeg.py verify-receipt `
+            --receipt "$source\windows-ffmpeg-build-receipt.json" `
+            --ffmpeg "$source\ffmpeg.exe" `
+            --ffprobe "$source\ffprobe.exe" `
+            --license-dir "$source\licenses" `
+            --link-evidence-dir "$source\link-evidence" `
+            --linkage-dir "$source\linkage" `
+            --source-bundle "$source\windows-ffmpeg-corresponding-source.tar" `
+            --source-manifest "$source\windows-ffmpeg-corresponding-source.manifest.json" `
+            --repository-commit "$env:GITHUB_SHA" `
+            --repo-root "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt verification failed"
+          }
+          python packaging/verify_windows_ffmpeg.py assert-promotable `
+            --receipt "$source\windows-ffmpeg-build-receipt.json"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt is not promotable"
+          }
+
+          $stage = Join-Path $env:GITHUB_WORKSPACE "desktop/helper-staging"
+          $provenance = Join-Path $stage "licenses/windows-ffmpeg"
+          $notices = Join-Path $provenance "runtime-notices"
+          $linkReceipts = Join-Path $provenance "linkage"
+          New-Item -ItemType Directory -Force -Path `
+            $notices, $linkReceipts | Out-Null
+          Copy-Item -LiteralPath "$source\ffmpeg.exe" `
+            -Destination "$stage\bin\ffmpeg.exe"
+          Copy-Item -LiteralPath "$source\ffprobe.exe" `
+            -Destination "$stage\bin\ffprobe.exe"
+          foreach ($notice in @(
+              "FFmpeg-COPYING.GPLv2",
+              "LLVM-LICENSE.TXT",
+              "LLVM-compiler-rt-LICENSE.TXT",
+              "MinGW-w64-runtime-NOTICES.txt",
+              "x264-COPYING",
+              "zlib-LICENSE")) {
+            Copy-Item -LiteralPath "$source\licenses\$notice" `
+              -Destination "$notices\$notice"
+          }
+          foreach ($evidence in @(
+              "windows-ffmpeg-build-receipt.json",
+              "windows-ffmpeg-corresponding-source.manifest.json",
+              "windows-ffmpeg-corresponding-source.tar")) {
+            Copy-Item -LiteralPath "$source\$evidence" `
+              -Destination "$provenance\$evidence"
+          }
+          foreach ($receipt in @(
+              "ffmpeg-linkage-receipt.json",
+              "ffprobe-linkage-receipt.json")) {
+            Copy-Item -LiteralPath "$source\linkage\$receipt" `
+              -Destination "$linkReceipts\$receipt"
+          }
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-sources.lock.json" `
+            -Destination "$provenance\windows-ffmpeg-sources.lock.json"
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-capabilities.json" `
+            -Destination "$provenance\windows-ffmpeg-capabilities.json"
+          $artifactReceipt = @(
+            "artifact_id=$env:WINDOWS_FFMPEG_ARTIFACT_ID"
+            "artifact_name=$env:WINDOWS_FFMPEG_ARTIFACT_NAME"
+            "artifact_digest=$env:WINDOWS_FFMPEG_ARTIFACT_DIGEST"
+            "repository_commit=$env:GITHUB_SHA"
+          ) -join "`n"
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+            "$provenance\WINDOWS_FFMPEG_ACCEPTED_ARTIFACT.txt",
+            "$artifactReceipt`n",
+            $utf8)
+
+      - name: Verify required FFmpeg capabilities
+        shell: bash
+        run: |
+          FFMPEG=desktop/helper-staging/bin/ffmpeg
+          FFPROBE=desktop/helper-staging/bin/ffprobe
+          [[ "${{ matrix.target_os }}" == "windows" ]] && FFMPEG="${FFMPEG}.exe" && FFPROBE="${FFPROBE}.exe"
+          "$FFMPEG" -version | tee desktop/helper-staging/licenses/FFMPEG_VERSION.txt
+          "$FFMPEG" -buildconf > desktop/helper-staging/licenses/FFMPEG_BUILDCONF.txt 2>&1
+          "$FFPROBE" -version >/dev/null
+          "$FFMPEG" -hide_banner -encoders 2>&1 | grep -q libx264
+          "$FFMPEG" -hide_banner -encoders 2>&1 | grep -Eiq '(^| )aac( |$)'
+          FILTERS=$($FFMPEG -hide_banner -filters 2>&1)
+          for filter in fps aresample adelay atrim concat scale pad setsar overlay \
+            chromakey despill alphaextract dilation erosion alphamerge \
+            huesaturation loudnorm; do
+            grep -Eq "[[:space:]]${filter}[[:space:]]" <<< "$FILTERS" || {
+              echo "Required FFmpeg filter missing: $filter" >&2
+              exit 1
+            }
+          done
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            packaging/helper-runtime/package-lock.json
+
+      - name: Install desktop packaging dependencies for safety contracts
+        shell: bash
+        run: |
+          npm ci --prefix desktop
+          npm audit --prefix desktop --audit-level=high
+
+      - name: Run safety tests against the verified platform FFmpeg
+        shell: bash
+        run: |
+          FFMPEG=desktop/helper-staging/bin/ffmpeg
+          FFPROBE=desktop/helper-staging/bin/ffprobe
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            FFMPEG="${FFMPEG}.exe"
+            FFPROBE="${FFPROBE}.exe"
+          fi
+          test -x "$FFMPEG" || test -f "$FFMPEG"
+          test -x "$FFPROBE" || test -f "$FFPROBE"
+          export AUTOEDITOR_FFMPEG="$FFMPEG"
+          export AUTOEDITOR_FFPROBE="$FFPROBE"
+          ENGINE=packaging/dist/autoeditor-engine/autoeditor-engine
+          [[ "${{ matrix.target_os }}" == "windows" ]] && ENGINE="${ENGINE}.exe"
+          "$ENGINE" --audio-decoder-self-test
+          python -m unittest tests.test_safety tests.test_asr
+
+      - name: Bundle pinned Node, HyperFrames, Remotion and rendering browser
+        shell: bash
+        env:
+          STAGE: desktop/helper-staging
+        run: |
+          NODE_SOURCE=$(command -v node)
+          cp "$NODE_SOURCE" "$STAGE/node/$(basename "$NODE_SOURCE")"
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            NODE_ROOT=$(dirname "$NODE_SOURCE")
+          else
+            NODE_ROOT=$(dirname "$(dirname "$NODE_SOURCE")")
+          fi
+          test -f "$NODE_ROOT/LICENSE"
+          cp "$NODE_ROOT/LICENSE" "$STAGE/licenses/Node-LICENSE.txt"
+          test -f "$NODE_ROOT/README.md" && \
+            cp "$NODE_ROOT/README.md" "$STAGE/licenses/Node-README.md" || true
+          cp -R packaging/helper-runtime "$STAGE/creative-runtime"
+          (cd "$STAGE/creative-runtime" && npm ci --omit=dev)
+          (cd "$STAGE/creative-runtime" && npm audit --omit=dev --audit-level=high)
+          (cd "$STAGE/creative-runtime" && npm ls --all --json \
+            > "$OLDPWD/$STAGE/licenses/NPM_DEPENDENCIES.json")
+          (cd "$STAGE/creative-runtime" && npm sbom --omit=dev \
+            --sbom-format=cyclonedx \
+            > "$OLDPWD/$STAGE/licenses/NPM_SBOM.cdx.json")
+          cp packaging/helper-runtime/package-lock.json \
+            "$STAGE/licenses/creative-runtime-package-lock.json"
+          cp templates/remotion-viz/package-lock.json \
+            "$STAGE/licenses/remotion-template-package-lock.json"
+          cp -R templates/hyperframes-graphics "$STAGE/creative/hyperframes-graphics"
+          mkdir -p "$STAGE/creative/hyperframes-graphics/vendor"
+          cp "$STAGE/creative-runtime/node_modules/gsap/dist/gsap.min.js" \
+            "$STAGE/creative/hyperframes-graphics/vendor/gsap.min.js"
+          cp -R templates/remotion-viz "$STAGE/creative/remotion-viz"
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses "$STAGE/licenses" \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --electron-dist-dir "$RUNNER_TEMP/electron-dist" \
+            --browser-dir "$STAGE/browser"
+
+      - name: Keep only the target ONNX Runtime native payload
+        shell: bash
+        run: |
+          python packaging/prune_onnxruntime_node.py \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --transaction-parent "$RUNNER_TEMP" \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+
+      - name: Fetch the exact pinned Mac Remotion source tarball
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          TARBALL="remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          NPM_TARBALL="compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          URL="https://registry.npmjs.org/@remotion/compositor-darwin-${{ matrix.arch }}/-/$NPM_TARBALL"
+          curl --proto '=https' --tlsv1.2 -fsSL "$URL" \
+            -o "$EVIDENCE/$TARBALL"
+          test -s "$EVIDENCE/$TARBALL"
+
+      - name: Prune the exact stale Windows Remotion FFmpeg runtime
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python packaging/prune_remotion_windows_runtime.py \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --require-package
+
+      - name: Render real HyperFrames and Remotion probes
+        shell: bash
+        env:
+          STAGE: desktop/helper-staging
+          HYPERFRAMES_NO_UPDATE_CHECK: "1"
+          NODE_PATH: ${{ github.workspace }}/desktop/helper-staging/creative-runtime/node_modules
+          REMOTION_LICENSE_KEY: free-license
+        run: |
+          STAGE=$(realpath "$STAGE")
+          NODE="$STAGE/node/node"
+          FFMPEG="$STAGE/bin/ffmpeg"
+          FFPROBE="$STAGE/bin/ffprobe"
+          BROWSER="$STAGE/browser/chrome-headless-shell-mac/chrome-headless-shell"
+          [[ "${{ matrix.target_os }}" == "windows" ]] && \
+            NODE=$(realpath "$STAGE/node/node.exe") && FFMPEG="$STAGE/bin/ffmpeg.exe" && \
+            FFPROBE="$STAGE/bin/ffprobe.exe" && \
+            BROWSER="$STAGE/browser/chrome-headless-shell-win64/chrome-headless-shell.exe"
+          export HYPERFRAMES_BROWSER_PATH="$BROWSER"
+          export HYPERFRAMES_FFMPEG_PATH="$FFMPEG"
+          export HYPERFRAMES_FFPROBE_PATH="$FFPROBE"
+          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            check --json "$STAGE/creative/hyperframes-graphics"
+          (cd "$STAGE/creative/hyperframes-graphics" && \
+            "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+              render -o "$RUNNER_TEMP/hyperframes-probe.mp4" --quality draft)
+          "$NODE" "$STAGE/creative-runtime/node_modules/@remotion/cli/remotion-cli.js" \
+            render "$STAGE/creative/remotion-viz/src/index.ts" FlowViz \
+            "$RUNNER_TEMP/remotion-probe.mp4" \
+            --props="$STAGE/creative/remotion-viz/probe-props.json" \
+            --browser-executable="$BROWSER" --license-key="$REMOTION_LICENSE_KEY" \
+            --public-dir="$STAGE/fonts" --bundle-cache=false --log=error
+          "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
+            "$RUNNER_TEMP/hyperframes-probe.mp4"
+          "$FFPROBE" -v error -show_entries format=duration -of default=nw=1 \
+            "$RUNNER_TEMP/remotion-probe.mp4"
+          if find "$STAGE" -type d -path '*/node_modules/.cache' \
+              -print -quit | grep -q .; then
+            echo "A writable Remotion cache leaked into the packaged creative project" >&2
+            exit 1
+          fi
+
+      - name: Prepare the hash-locked large-file Windows web installer
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: desktop
+        run: |
+          python ../packaging/prepare_nsis_web.py \
+            --build-resources build \
+            --licenses helper-staging/licenses
+          python ../packaging/patch_nsis_web_integrity.py \
+            --node-modules node_modules \
+            --plugin build/x86-unicode/AutoEditorINetC.dll
+
+      - name: Strip packaging metadata before writing receipts
+        shell: bash
+        run: |
+          # Only the staged payload is part of the artifact from this point on.
+          # Drop duplicate build and download caches before electron-builder
+          # creates another unpacked copy and the external NSIS package.
+          rm -rf packaging/dist packaging/build \
+            build/autoeditor-engine build/autoeditor-helper-daemon \
+            "$HOME/.cache/huggingface" "$HOME/.cache/hyperframes"
+          python -m pip cache purge >/dev/null || true
+          npm cache clean --force >/dev/null 2>&1 || true
+          test -s desktop/helper-staging/models/faster-whisper-small/model.bin
+          test -s desktop/helper-staging/models/faster-whisper-medium/model.bin
+          find desktop/helper-staging \
+            \( -name '.DS_Store' -o -name '._*' \) -delete
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            xattr -cr desktop/helper-staging
+          fi
+
+      - name: Write exact runtime manifest
+        shell: bash
+        run: |
+          python packaging/prune_onnxruntime_node.py --verify-only \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/helper-staging/licenses \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+          python packaging/generate_helper_manifest.py \
+            --stage desktop/helper-staging \
+            --output desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
+
+      - name: Seal prepared runtime for tag-only signing jobs
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          tar -czf "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz" \
+            -C desktop helper-staging
+
+      - name: Upload prepared runtime to isolated signing job
+        if: steps.release.outputs.tagged == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prepared-${{ steps.release.outputs.artifact }}
+          path: ${{ runner.temp }}/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Release local signing archive before packaging
+        if: steps.release.outputs.tagged == 'true'
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/helper-stage-${{ matrix.target_os }}-${{ matrix.arch }}.tar.gz"
+
+      - name: Build installer
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          npm version "${{ steps.release.outputs.version }}" \
+            --no-git-tag-version --allow-same-version
+          node --check helper/main.js
+          node --check helper/preload.js
+          node --check helper/renderer/app.js
+          node --check scripts/notarize-artifacts.js
+          npm test
+          EXTRA_CONFIG=()
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/helper-v${{ steps.release.outputs.version }}/$GITHUB_SHA"
+            EXTRA_CONFIG+=(--config.nsisWeb.appPackageUrl="$PACKAGE_URL")
+          fi
+          npx electron-builder --config electron-builder.helper.yml \
+            --${{ matrix.electron_target }} \
+            --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
+            --config.directories.output="$HELPER_DIST" \
+            "${EXTRA_CONFIG[@]}"
+
+      - name: Verify the packed app ships the complete creative runtime
+        shell: bash
+        run: |
+          # The 2026-08 Mac acceptance failed because electron-builder pruned
+          # node_modules out of extraResources, so HyperFrames and Remotion
+          # were missing from the actual DMG while every earlier stage passed.
+          # This gate inspects the PACKED app, not the staging directory.
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            RES=$(find "$HELPER_DIST" -maxdepth 2 -type d -name resources \
+              -print -quit)
+            NODE_BIN="$RES/node/node.exe"
+            ENGINE_BIN="$RES/engine/autoeditor-engine.exe"
+            DAEMON_BIN="$RES/helper/autoeditor-helper-daemon.exe"
+          else
+            APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' \
+              -print -quit)
+            RES="$APP/Contents/Resources"
+            NODE_BIN="$RES/node/node"
+            ENGINE_BIN="$RES/engine/autoeditor-engine"
+            DAEMON_BIN="$RES/helper/autoeditor-helper-daemon"
+          fi
+          test -n "$RES" && test -d "$RES" || { echo "Packed resources not found" >&2; exit 1; }
+          for required in \
+            "$RES/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
+            "$RES/creative-runtime/node_modules/@remotion/cli/remotion-cli.js" \
+            "$RES/creative-runtime/package.json" \
+            "$RES/creative/hyperframes-graphics/vendor/gsap.min.js" \
+            "$RES/creative/remotion-viz/src/index.ts" \
+            "$NODE_BIN" "$ENGINE_BIN" "$DAEMON_BIN" \
+            "$RES/runtime-manifest.json"; do
+            test -e "$required" || {
+              echo "Packed app is missing: $required" >&2
+              exit 1
+            }
+          done
+          test -d "$RES/browser" && [ -n "$(ls -A "$RES/browser")" ] || {
+            echo "Packed app is missing the rendering browser" >&2
+            exit 1
+          }
+          python packaging/verify_helper_manifest.py --resources "$RES" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
+          echo "Packed creative runtime is complete."
+
+      - name: Create and verify exact packed Mac FFmpeg and Remotion receipts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          REMOTION_TARBALL="$EVIDENCE/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" --tarball "$REMOTION_TARBALL" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+
+      - name: Create exact packed Electron native producer receipt
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' -print -quit)
+            APP_ROOT=$(dirname "$APP_EXE")
+            TARGET="windows-x64"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip"
+          else
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' -print -quit)
+            TARGET="mac-${{ matrix.arch }}"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip"
+          fi
+          test -n "$APP_ROOT" && test -d "$APP_ROOT"
+          RECEIPT="$RUNNER_TEMP/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "$TARGET" \
+            --electron-archive "$ARCHIVE" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --output "$RECEIPT"
+          test -s "$RECEIPT"
+
+      - name: Release duplicate staging bytes before artifact acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
+
+      - name: Smoke-test installed Windows app and signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $webOutput = Join-Path $env:HELPER_DIST "nsis-web"
+          $installers = @(Get-ChildItem "$webOutput/*.exe" -File)
+          $packages = @(Get-ChildItem "$webOutput/*.nsis.7z" -File)
+          if ($installers.Count -ne 1 -or $packages.Count -ne 1) {
+            throw "Windows web installer must contain one EXE and one runtime package"
+          }
+          $installer = $installers[0]
+          $package = $packages[0]
+          if ($package.Length -le 0 -or $package.Length -ge [uint64]4294967295) {
+            throw "Windows runtime package must be nonempty and smaller than INetC's 4 GiB limit"
+          }
+          $corrupt = Join-Path $env:RUNNER_TEMP "corrupt-runtime.nsis.7z"
+          [System.IO.File]::WriteAllBytes($corrupt, [byte[]](1, 2, 3, 4))
+          $rejected = Start-Process $installer.FullName `
+            -ArgumentList @("/S", "--package-file=$corrupt") -Wait -PassThru
+          if ($rejected.ExitCode -eq 0) {
+            throw "Windows web installer accepted a runtime package with the wrong hash"
+          }
+          $acceptance = Join-Path $env:RUNNER_TEMP "helper-web-acceptance"
+          New-Item -ItemType Directory -Force -Path $acceptance | Out-Null
+          $acceptanceInstaller = Join-Path $acceptance $installer.Name
+          $acceptancePackage = Join-Path $acceptance $package.Name
+          Copy-Item $installer.FullName $acceptanceInstaller
+          New-Item -ItemType HardLink -Path $acceptancePackage `
+            -Target $package.FullName | Out-Null
+          $run = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Installer exited $($run.ExitCode)" }
+          # electron-builder keys InstallLocation by the UUIDv5 of appId. Read
+          # the installer's exact registry receipt instead of guessing a folder
+          # from productName (one-click uses the sanitized package name).
+          $installRegistryKey = `
+            "HKCU:\Software\35e34d8c-801d-53c1-a216-54f6187b5698"
+          if (-not (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Installed Helper registry receipt is missing"
+          }
+          $registeredRoot = Get-ItemPropertyValue `
+            -LiteralPath $installRegistryKey -Name InstallLocation
+          if ([string]::IsNullOrWhiteSpace($registeredRoot)) {
+            throw "Installed Helper registry receipt has no InstallLocation"
+          }
+          $root = [System.IO.Path]::GetFullPath($registeredRoot)
+          $programsRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $env:LOCALAPPDATA "Programs"))
+          $relativeRoot = [System.IO.Path]::GetRelativePath($programsRoot, $root)
+          if ($relativeRoot -eq "." -or $relativeRoot.StartsWith("..") `
+              -or [System.IO.Path]::IsPathRooted($relativeRoot)) {
+            throw "Installed Helper registry path is outside per-user Programs"
+          }
+          $app = Join-Path $root "AutoEditor Helper.exe"
+          $runtimeCache = Join-Path $env:LOCALAPPDATA `
+            "autoeditor-desktop-updater/package.7z"
+          if (-not (Test-Path $app)) { throw "Installed Helper app is missing" }
+          if (-not (Test-Path $runtimeCache)) {
+            throw "Installed Helper did not retain its verified runtime package"
+          }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version "${{ steps.release.outputs.version }}" `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper Electron native receipt verification failed"
+          }
+          python packaging/verify_helper_manifest.py `
+            --resources (Join-Path $root "resources") `
+            --expected-manifest desktop/helper-staging/runtime-manifest.json `
+            --target-os "${{ matrix.target_os }}" `
+            --target-arch "${{ matrix.arch }}" `
+            --version "${{ steps.release.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper runtime manifest verification failed"
+          }
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          if (-not (Test-Path $engine)) { throw "Installed frozen engine is missing" }
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed frozen engine self-test failed" }
+          $screenshot = Join-Path $env:RUNNER_TEMP "helper-unsigned-windows-x64.png"
+          Remove-Item $screenshot -Force -ErrorAction SilentlyContinue
+          $env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot
+          $env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS = "1"
+          try {
+            $capture = Start-Process $app -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS -ErrorAction SilentlyContinue
+          }
+          if ($capture.ExitCode -ne 0) { throw "Installed Helper screenshot launch failed" }
+          if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
+            throw "Installed Helper screenshot is missing or empty"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $stream = [System.IO.File]::OpenRead($screenshot)
+          try {
+            $image = [System.Drawing.Image]::FromStream($stream, $false, $true)
+            try {
+              if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Png.Guid `
+                  -or $image.Width -le 0 -or $image.Height -le 0) {
+                throw "Installed Helper screenshot is not a decodable PNG"
+              }
+            } finally {
+              $image.Dispose()
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $smoke = Start-Process $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
+          $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
+          $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
+              -or (Test-Path $runtimeCache) `
+              -or (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Windows uninstall smoke test failed"
+          }
+
+      - name: Smoke-test macOS app, DMG, signing and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP=$(find "$HELPER_DIST" -maxdepth 3 -type d -name '*.app' \
+            -print -quit)
+          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' \
+            -print -quit)
+          test -n "$APP" && test -n "$DMG"
+          # Never hardcode the binary name: resolve it from the bundle itself
+          # (2026-08 acceptance found the workflow calling the wrong name).
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          test -x "$APP/Contents/MacOS/$BIN" || {
+            echo "Bundle executable $BIN is missing from $APP" >&2
+            exit 1
+          }
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          hdiutil verify "$DMG"
+          # Verify the app AS FRIENDS RECEIVE IT: from a fresh DMG mount. This
+          # catches Finder metadata attached after sealing, which passes on the
+          # loose build directory but fails on the shipped artifact.
+          MOUNT=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' \
+            -print -quit)
+          MOUNTED_APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$MOUNTED_APP_COUNT" = 1
+          if xattr -lr "$MOUNTED_APP" 2>/dev/null | \
+              grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
+            echo "Finder metadata is attached to the app inside the DMG" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$MOUNTED_APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          NATIVE_EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$NATIVE_EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$NATIVE_EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+          MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$MOUNTED_APP/Contents/Info.plist")
+          test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -x "$MOUNTED_APP/Contents/Resources/engine/autoeditor-engine"
+          "$MOUNTED_APP/Contents/Resources/engine/autoeditor-engine" --self-test
+          SCREENSHOT="$RUNNER_TEMP/helper-unsigned-mac-${{ matrix.arch }}.png"
+          AUTOEDITOR_SCREENSHOT_PATH="$SCREENSHOT" \
+            AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS=1 \
+            "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -s "$SCREENSHOT"
+          DECODED_SCREENSHOT="$RUNNER_TEMP/helper-unsigned-mac-${{ matrix.arch }}-decoded.png"
+          /usr/bin/sips -s format png "$SCREENSHOT" \
+            --out "$DECODED_SCREENSHOT" >/dev/null
+          test -s "$DECODED_SCREENSHOT"
+          WIDTH=$(/usr/bin/sips -g pixelWidth "$DECODED_SCREENSHOT" | \
+            awk '/pixelWidth/ {print $2}')
+          HEIGHT=$(/usr/bin/sips -g pixelHeight "$DECODED_SCREENSHOT" | \
+            awk '/pixelHeight/ {print $2}')
+          test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0
+          AUTOEDITOR_SMOKE_TEST=1 "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
+          test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs"
+          test -f "$MOUNTED_APP/Contents/Resources/creative-runtime/node_modules/@remotion/cli/remotion-cli.js"
+          python packaging/verify_helper_manifest.py \
+            --resources "$MOUNTED_APP/Contents/Resources" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --version "${{ steps.release.outputs.version }}"
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
+
+      - name: Upload accepted Mac native producer evidence
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/mac-native-accepted-${{ matrix.arch }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload unsigned acceptance artifact
+        if: steps.release.outputs.tagged != 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.release.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/helper-dist/nsis-web/*.exe
+            ${{ runner.temp }}/helper-dist/nsis-web/*.nsis.7z
+            ${{ runner.temp }}/helper-dist/*.dmg
+            ${{ runner.temp }}/helper-dist/*.blockmap
+            ${{ runner.temp }}/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json
+            desktop/helper-staging/runtime-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  sign-windows:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    environment: helper-windows-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-helper-windows-x64
+          path: ${{ runner.temp }}/prepared-helper
+
+      - name: Restore the runtime that passed unsigned acceptance
+        shell: bash
+        run: |
+          tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-windows-x64.tar.gz" \
+            -C desktop
+          test -f desktop/helper-staging/runtime-manifest.json
+          rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-windows-x64.tar.gz"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        shell: bash
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os windows --target-arch x64
+          python ../packaging/prepare_nsis_web.py \
+            --build-resources build \
+            --licenses helper-staging/licenses
+          python ../packaging/patch_nsis_web_integrity.py \
+            --node-modules node_modules \
+            --plugin build/x86-unicode/AutoEditorINetC.dll
+
+      - name: Select the protected Windows signer
+        id: signer
+        shell: bash
+        env:
+          WIN_CERT: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
+          AZURE_TENANT_ID_VALUE: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID_VALUE: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET_VALUE: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_PUBLISHER: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          AZURE_PROFILE: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          AZURE_ACCOUNT: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          AZURE_IDENTITY_EKU: ${{ secrets.WIN_AZURE_SUBSCRIBER_IDENTITY_EKU }}
+        run: |
+          if test -n "$AZURE_TENANT_ID_VALUE" && \
+              test -n "$AZURE_CLIENT_ID_VALUE" && \
+              test -n "$AZURE_CLIENT_SECRET_VALUE" && \
+              test -n "$AZURE_PUBLISHER" && test -n "$AZURE_ENDPOINT" && \
+              test -n "$AZURE_PROFILE" && test -n "$AZURE_ACCOUNT" && \
+              test -n "$AZURE_IDENTITY_EKU"; then
+            echo "kind=azure" >> "$GITHUB_OUTPUT"
+          elif test -n "$WIN_CERT" && test -n "$WIN_CERT_PASSWORD" && \
+              test -n "$WIN_CERT_THUMBPRINT"; then
+            echo "kind=pfx" >> "$GITHUB_OUTPUT"
+          else
+            echo "A tagged Windows release requires complete Azure Artifact Signing secrets or WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD, and WIN_PFX_CERT_THUMBPRINT" >&2
+            exit 1
+          fi
+
+      - name: Build the signed Windows installer with Azure
+        if: steps.signer.outputs.kind == 'azure'
+        shell: bash
+        working-directory: desktop
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WIN_AZURE_PUBLISHER_NAME: ${{ secrets.WIN_AZURE_PUBLISHER_NAME }}
+          WIN_AZURE_ENDPOINT: ${{ secrets.WIN_AZURE_ENDPOINT }}
+          WIN_AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.WIN_AZURE_CERTIFICATE_PROFILE_NAME }}
+          WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.WIN_AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
+          npx electron-builder --config electron-builder.helper.azure.js \
+            --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
+            --config.directories.output="$HELPER_DIST" \
+            --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
+
+      - name: Build the signed Windows installer with PFX
+        if: steps.signer.outputs.kind == 'pfx'
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
+          npx electron-builder --config electron-builder.helper.yml \
+            --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
+            --config.directories.output="$HELPER_DIST" \
+            --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
+
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' -print -quit)
+          APP_ROOT=$(dirname "$APP_EXE")
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target windows-x64 \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-windows-x64.json"
+
+      - name: Release duplicate signed staging bytes before acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
+
+      - name: Verify installed Windows signatures and exact runtime
+        shell: pwsh
+        env:
+          WINDOWS_SIGNER_KIND: ${{ steps.signer.outputs.kind }}
+          WIN_PFX_CERT_THUMBPRINT: ${{ secrets.WIN_PFX_CERT_THUMBPRINT }}
+          WIN_AZURE_SUBSCRIBER_IDENTITY_EKU: ${{ secrets.WIN_AZURE_SUBSCRIBER_IDENTITY_EKU }}
+        run: |
+          function Normalize-Thumbprint([string]$value) {
+            return ($value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+          }
+          function Get-EnhancedKeyUsageValues($certificate) {
+            $extension = $certificate.Extensions | Where-Object {
+              $_.Oid.Value -eq "2.5.29.37"
+            } | Select-Object -First 1
+            if (-not $extension) { return @() }
+            $decoded = New-Object `
+              System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension
+            $decoded.CopyFrom($extension)
+            return @($decoded.EnhancedKeyUsages | ForEach-Object { $_.Value })
+          }
+          function Assert-AuthenticodeSigner(
+              [string]$file,
+              [string]$expectedThumbprint,
+              [string]$expectedIdentityEku) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") {
+              throw "$file signature is $($signature.Status)"
+            }
+            if (-not $signature.SignerCertificate) {
+              throw "$file has no Authenticode signer certificate"
+            }
+            $actual = Normalize-Thumbprint $signature.SignerCertificate.Thumbprint
+            if (-not $actual) { throw "$file signer thumbprint is empty" }
+            if ($expectedThumbprint -and $actual -ne (Normalize-Thumbprint $expectedThumbprint)) {
+              throw "$file signer thumbprint does not match the approved certificate"
+            }
+            $ekus = @(Get-EnhancedKeyUsageValues $signature.SignerCertificate)
+            if ($ekus -notcontains "1.3.6.1.5.5.7.3.3") {
+              throw "$file signer certificate lacks the code-signing EKU"
+            }
+            if ($expectedIdentityEku -and $ekus -notcontains $expectedIdentityEku) {
+              throw "$file signer certificate lacks the approved Artifact Signing subscriber identity EKU"
+            }
+            return $actual
+          }
+          $webOutput = Join-Path $env:HELPER_DIST "nsis-web"
+          $installers = @(Get-ChildItem "$webOutput/*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one signed Windows installer, found $($installers.Count)"
+          }
+          $packages = @(Get-ChildItem "$webOutput/*.nsis.7z" -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one signed Windows runtime package"
+          }
+          $installer = $installers[0]
+          $package = $packages[0]
+          if ($package.Length -le 0 -or $package.Length -ge [uint64]4294967295) {
+            throw "Signed Windows runtime package must be nonempty and smaller than INetC's 4 GiB limit"
+          }
+          $approvedThumbprint = ""
+          $approvedIdentityEku = ""
+          if ($env:WINDOWS_SIGNER_KIND -eq "pfx") {
+            $approvedThumbprint = Normalize-Thumbprint $env:WIN_PFX_CERT_THUMBPRINT
+            if (-not $approvedThumbprint) {
+              throw "WIN_PFX_CERT_THUMBPRINT is required for PFX signing"
+            }
+          } elseif ($env:WINDOWS_SIGNER_KIND -eq "azure") {
+            $approvedIdentityEku = $env:WIN_AZURE_SUBSCRIBER_IDENTITY_EKU.Trim()
+            if ($approvedIdentityEku -notmatch '^1\.3\.6\.1\.4\.1\.311\.97\.[0-9.]+$' `
+                -or $approvedIdentityEku -eq "1.3.6.1.4.1.311.97.1.0") {
+              throw "WIN_AZURE_SUBSCRIBER_IDENTITY_EKU is not a durable Artifact Signing identity OID"
+            }
+          } else {
+            throw "Unknown protected Windows signer kind: $env:WINDOWS_SIGNER_KIND"
+          }
+          $installerThumbprint = Assert-AuthenticodeSigner `
+            $installer.FullName $approvedThumbprint $approvedIdentityEku
+          $corrupt = Join-Path $env:RUNNER_TEMP "corrupt-signed-runtime.nsis.7z"
+          [System.IO.File]::WriteAllBytes($corrupt, [byte[]](1, 2, 3, 4))
+          $rejected = Start-Process $installer.FullName `
+            -ArgumentList @("/S", "--package-file=$corrupt") -Wait -PassThru
+          if ($rejected.ExitCode -eq 0) {
+            throw "Signed web installer accepted a runtime package with the wrong hash"
+          }
+          $acceptance = Join-Path $env:RUNNER_TEMP "helper-signed-web-acceptance"
+          New-Item -ItemType Directory -Force -Path $acceptance | Out-Null
+          $acceptanceInstaller = Join-Path $acceptance $installer.Name
+          $acceptancePackage = Join-Path $acceptance $package.Name
+          Copy-Item $installer.FullName $acceptanceInstaller
+          New-Item -ItemType HardLink -Path $acceptancePackage `
+            -Target $package.FullName | Out-Null
+          $install = Start-Process $acceptanceInstaller -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited $($install.ExitCode)" }
+          $installRegistryKey = `
+            "HKCU:\Software\35e34d8c-801d-53c1-a216-54f6187b5698"
+          if (-not (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Signed installed Helper registry receipt is missing"
+          }
+          $registeredRoot = Get-ItemPropertyValue `
+            -LiteralPath $installRegistryKey -Name InstallLocation
+          if ([string]::IsNullOrWhiteSpace($registeredRoot)) {
+            throw "Signed installed Helper registry receipt has no InstallLocation"
+          }
+          $root = [System.IO.Path]::GetFullPath($registeredRoot)
+          $programsRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $env:LOCALAPPDATA "Programs"))
+          $relativeRoot = [System.IO.Path]::GetRelativePath($programsRoot, $root)
+          if ($relativeRoot -eq "." -or $relativeRoot.StartsWith("..") `
+              -or [System.IO.Path]::IsPathRooted($relativeRoot)) {
+            throw "Signed installed Helper path is outside per-user Programs"
+          }
+          $app = Join-Path $root "AutoEditor Helper.exe"
+          $uninstaller = Join-Path $root "Uninstall AutoEditor Helper.exe"
+          $runtimeCache = Join-Path $env:LOCALAPPDATA `
+            "autoeditor-desktop-updater/package.7z"
+          foreach ($file in @($app, $uninstaller)) {
+            if (-not (Test-Path $file)) { throw "Signed installed file is missing: $file" }
+            $fileThumbprint = $installerThumbprint
+            if ($env:WINDOWS_SIGNER_KIND -eq "azure") { $fileThumbprint = "" }
+            [void](Assert-AuthenticodeSigner `
+              $file $fileThumbprint $approvedIdentityEku)
+          }
+          if (-not (Test-Path $runtimeCache)) {
+            throw "Signed Helper did not retain its verified runtime package"
+          }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version ($env:GITHUB_REF_NAME -replace '^helper-v', '') `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper Electron native receipt verification failed"
+          }
+          $resources = Join-Path $root "resources"
+          $resourceExecutables = @(Get-ChildItem $resources -Recurse -Filter *.exe -File)
+          if ($resourceExecutables.Count -eq 0) {
+            throw "Signed Helper runtime contains no executable payloads"
+          }
+          foreach ($file in $resourceExecutables) {
+            $fileThumbprint = $installerThumbprint
+            if ($env:WINDOWS_SIGNER_KIND -eq "azure") { $fileThumbprint = "" }
+            [void](Assert-AuthenticodeSigner `
+              $file.FullName $fileThumbprint $approvedIdentityEku)
+          }
+          python packaging/verify_helper_manifest.py `
+            --resources $resources `
+            --expected-manifest desktop/helper-staging/runtime-manifest.json `
+            --target-os windows --target-arch x64 `
+            --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper runtime manifest verification failed"
+          }
+          $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
+          if (-not (Test-Path $engine)) { throw "Signed installed frozen engine is missing" }
+          & $engine --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Signed installed frozen engine self-test failed" }
+          $screenshot = Join-Path $env:RUNNER_TEMP "helper-signed-windows-x64.png"
+          Remove-Item $screenshot -Force -ErrorAction SilentlyContinue
+          $env:AUTOEDITOR_SCREENSHOT_PATH = $screenshot
+          $env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS = "1"
+          try {
+            $capture = Start-Process $app -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS -ErrorAction SilentlyContinue
+          }
+          if ($capture.ExitCode -ne 0) { throw "Signed installed Helper screenshot launch failed" }
+          if (-not (Test-Path $screenshot) -or (Get-Item $screenshot).Length -eq 0) {
+            throw "Signed installed Helper screenshot is missing or empty"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $stream = [System.IO.File]::OpenRead($screenshot)
+          try {
+            $image = [System.Drawing.Image]::FromStream($stream, $false, $true)
+            try {
+              if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Png.Guid `
+                  -or $image.Width -le 0 -or $image.Height -le 0) {
+                throw "Signed installed Helper screenshot is not a decodable PNG"
+              }
+            } finally {
+              $image.Dispose()
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          $smoke = Start-Process $app -Wait -PassThru
+          Remove-Item Env:AUTOEDITOR_SMOKE_TEST
+          if ($smoke.ExitCode -ne 0) { throw "Installed Helper smoke test failed" }
+          $remove = Start-Process $uninstaller -ArgumentList "/S" -Wait -PassThru
+          if ($remove.ExitCode -ne 0 -or (Test-Path $app) `
+              -or (Test-Path $runtimeCache) `
+              -or (Test-Path -LiteralPath $installRegistryKey)) {
+            throw "Windows uninstall smoke test failed"
+          }
+
+      - name: Upload the verified Windows candidate
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && \
+            test -n "$R2_ACCOUNT_ID"
+          INSTALLER=$(find "$HELPER_DIST/nsis-web" -maxdepth 1 \
+            -type f -name '*.exe' -print -quit)
+          RUNTIME_PACKAGE=$(find "$HELPER_DIST/nsis-web" -maxdepth 1 \
+            -type f -name '*.nsis.7z' -print -quit)
+          test -f "$INSTALLER" && test -f "$RUNTIME_PACKAGE"
+          RECEIPT_DIR=release-receipt/helper-windows-x64
+          mkdir -p "$RECEIPT_DIR"
+          RECEIPT="$RECEIPT_DIR/candidate-windows-x64.json"
+          python packaging/helper_release_metadata.py candidate \
+            --file "$INSTALLER" \
+            --runtime-manifest desktop/helper-staging/runtime-manifest.json \
+            --runtime-package "$RUNTIME_PACKAGE" \
+            --target-os windows --arch x64 \
+            --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --signing-status verified --notarization-status not-applicable \
+            --output "$RECEIPT"
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RECEIPT_DIR/runtime-manifest-windows-x64.json"
+          cp "$RUNNER_TEMP/electron-native-windows-x64.json" \
+            "$RECEIPT_DIR/electron-native-windows-x64.json"
+          KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
+          SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
+          TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$KEY" \
+            --file "$INSTALLER" --content-type "$TYPE" --sha256 "$SHA"
+          PACKAGE_KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["key"])' "$RECEIPT")
+          PACKAGE_SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["sha256"])' "$RECEIPT")
+          PACKAGE_TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_package"]["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$PACKAGE_KEY" \
+            --file "$RUNTIME_PACKAGE" --content-type "$PACKAGE_TYPE" \
+            --sha256 "$PACKAGE_SHA"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-receipt-helper-windows-x64
+          path: release-receipt/helper-windows-x64
+          if-no-files-found: error
+
+      - name: Upload the signed Windows candidate for physical acceptance
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-candidate-helper-windows-x64
+          path: |
+            ${{ runner.temp }}/helper-signed-dist/nsis-web/*.exe
+            ${{ runner.temp }}/helper-signed-dist/nsis-web/*.nsis.7z
+            release-receipt/helper-windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  sign-macos:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helper-v')
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    environment: helper-macos-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set native temporary artifact directory
+        shell: bash
+        run: echo "HELPER_DIST=$RUNNER_TEMP/helper-signed-dist" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-helper-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/prepared-helper
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/accepted-mac-native
+
+      - name: Restore the runtime that passed unsigned acceptance
+        shell: bash
+        run: |
+          tar -xzf "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz" \
+            -C desktop
+          test -f desktop/helper-staging/runtime-manifest.json
+          rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz"
+
+      - name: Verify accepted Mac source and receipt input set
+        shell: bash
+        run: |
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          EXPECTED=$(printf '%s\n' \
+            "macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            "macos-ffmpeg-environment-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-sources.lock.json" \
+            "macos-remotion-${{ matrix.arch }}.json" \
+            "remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" | \
+            LC_ALL=C sort)
+          ACTUAL=$(find "$ACCEPTED" -mindepth 1 -maxdepth 1 -type f \
+            -exec basename {} \; | LC_ALL=C sort)
+          [[ "$ACTUAL" == "$EXPECTED" ]]
+          cmp packaging/macos-ffmpeg-sources.lock.json \
+            "$ACCEPTED/macos-ffmpeg-sources.lock.json"
+          python packaging/verify_macos_ffmpeg_source.py verify-bundle \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --archive "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --manifest "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            --repository-commit "$GITHUB_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install locked packaging dependencies without signing credentials
+        working-directory: desktop
+        shell: bash
+        run: |
+          npm ci
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os mac --target-arch "${{ matrix.arch }}"
+
+      - name: Restore exact Mac FFmpeg receipt source environment
+        shell: bash
+        run: |
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          BREW_VERSION=$(brew --version)
+          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.12'
+          brew install ffmpeg
+          EXPECTED=desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          OBSERVED="$RUNNER_TEMP/signed-mac-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" --output "$OBSERVED"
+          cmp "$EXPECTED" "$OBSERVED"
+
+      - name: Build the signed and notarized macOS installer
+        shell: bash
+        working-directory: desktop
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" && \
+            test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && \
+            test -n "$APPLE_TEAM_ID" || {
+            echo "A tagged Mac release requires Developer ID and notarization secrets" >&2
+            exit 1
+          }
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npx electron-builder --config electron-builder.helper.yml \
+            --mac --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
+            --config.directories.output="$HELPER_DIST"
+
+      - name: Create and verify exact signed Mac FFmpeg and Remotion receipts
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          SIGNED="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          mkdir -p "$SIGNED"
+          FFMPEG_RECEIPT="$SIGNED/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED/macos-remotion-signed-${{ matrix.arch }}.json"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" \
+            --tarball "$ACCEPTED/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+
+      - name: Release duplicate signed staging bytes before acceptance
+        shell: bash
+        run: |
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RUNNER_TEMP/runtime-manifest.json"
+          rm -rf desktop/helper-staging
+          mkdir -p desktop/helper-staging
+          cp "$RUNNER_TEMP/runtime-manifest.json" \
+            desktop/helper-staging/runtime-manifest.json
+
+      - name: Verify the final mounted Mac artifact
+        shell: bash
+        run: |
+          DMG_COUNT=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' | wc -l | tr -d ' ')
+          test "$DMG_COUNT" = 1
+          DMG=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          hdiutil verify "$DMG"
+          MOUNT=$(mktemp -d "$RUNNER_TEMP/helper-dmg.XXXXXX")
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
+          trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
+          APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' -print -quit)
+          APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)"
+          if xattr -lr "$APP" 2>/dev/null | \
+              grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
+            echo "Finder metadata is attached inside the signed app" >&2
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${GITHUB_REF_NAME#helper-v}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          SIGNED_NATIVE="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$SIGNED_NATIVE/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED_NATIVE/macos-remotion-signed-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+          codesign -dv --verbose=4 "$APP" 2>&1 | \
+            grep -q 'Authority=Developer ID Application'
+          spctl --assess --type execute --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+          BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist")
+          test -x "$APP/Contents/Resources/engine/autoeditor-engine"
+          "$APP/Contents/Resources/engine/autoeditor-engine" --self-test
+          SCREENSHOT="$RUNNER_TEMP/helper-signed-mac-${{ matrix.arch }}.png"
+          AUTOEDITOR_SCREENSHOT_PATH="$SCREENSHOT" \
+            AUTOEDITOR_SCREENSHOT_SKIP_ACCOUNTS=1 \
+            "$APP/Contents/MacOS/$BIN"
+          test -s "$SCREENSHOT"
+          DECODED_SCREENSHOT="$RUNNER_TEMP/helper-signed-mac-${{ matrix.arch }}-decoded.png"
+          /usr/bin/sips -s format png "$SCREENSHOT" \
+            --out "$DECODED_SCREENSHOT" >/dev/null
+          test -s "$DECODED_SCREENSHOT"
+          WIDTH=$(/usr/bin/sips -g pixelWidth "$DECODED_SCREENSHOT" | \
+            awk '/pixelWidth/ {print $2}')
+          HEIGHT=$(/usr/bin/sips -g pixelHeight "$DECODED_SCREENSHOT" | \
+            awk '/pixelHeight/ {print $2}')
+          test "$WIDTH" -gt 0 && test "$HEIGHT" -gt 0
+          AUTOEDITOR_SMOKE_TEST=1 "$APP/Contents/MacOS/$BIN"
+          python packaging/verify_helper_manifest.py \
+            --resources "$APP/Contents/Resources" \
+            --expected-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os mac --target-arch "${{ matrix.arch }}" \
+            --version "${GITHUB_REF_NAME#helper-v}"
+          hdiutil detach "$MOUNT" -force
+          trap - EXIT
+
+      - name: Upload the verified Mac candidate
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_CANDIDATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_CANDIDATE_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY" && \
+            test -n "$R2_ACCOUNT_ID"
+          INSTALLER=$(find "$HELPER_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -f "$INSTALLER"
+          RECEIPT_DIR="release-receipt/helper-mac-${{ matrix.arch }}"
+          mkdir -p "$RECEIPT_DIR"
+          RECEIPT="$RECEIPT_DIR/candidate-mac-${{ matrix.arch }}.json"
+          python packaging/helper_release_metadata.py candidate \
+            --file "$INSTALLER" \
+            --runtime-manifest desktop/helper-staging/runtime-manifest.json \
+            --target-os mac --arch "${{ matrix.arch }}" \
+            --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --signing-status verified --notarization-status verified \
+            --output "$RECEIPT"
+          cp desktop/helper-staging/runtime-manifest.json \
+            "$RECEIPT_DIR/runtime-manifest-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json" \
+            "$RECEIPT_DIR/electron-native-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"/*.json \
+            "$RECEIPT_DIR/"
+          mkdir -p "$RECEIPT_DIR/accepted-native"
+          cp -R "$RUNNER_TEMP/accepted-mac-native/." \
+            "$RECEIPT_DIR/accepted-native/"
+          KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
+          SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
+          TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
+          node desktop/scripts/r2-release-storage.js upload \
+            --bucket autoeditor-release-candidates --key "$KEY" \
+            --file "$INSTALLER" --content-type "$TYPE" --sha256 "$SHA"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-receipt-helper-mac-${{ matrix.arch }}
+          path: release-receipt/helper-mac-${{ matrix.arch }}
+          if-no-files-found: error
+
+      - name: Upload the signed Mac candidate for physical acceptance
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-candidate-helper-mac-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/helper-signed-dist/*.dmg
+            release-receipt/helper-mac-${{ matrix.arch }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

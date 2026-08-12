@@ -1,0 +1,40 @@
+name: Apply tested AutoEditor release patch
+
+on:
+  push:
+    branches: [work/windows-manifest-gate]
+    paths:
+      - .autoeditor-release.patch
+      - .github/workflows/apply-autoeditor-release-patch.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: work/windows-manifest-gate
+          fetch-depth: 0
+      - name: Apply the tested patch and remove this one-shot workflow
+        shell: bash
+        run: |
+          sed -i 's/\r$//' .autoeditor-release.patch
+          git apply --check .autoeditor-release.patch
+          git apply .autoeditor-release.patch
+          rm .autoeditor-release.patch
+          rm .github/workflows/apply-autoeditor-release-patch.yml
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m "Persist AutoEditor chat and package portable Windows build"
+          git push origin HEAD:work/windows-manifest-gate
+      - name: Dispatch Windows x64 and Mac arm64 acceptance packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run helper-release.yml --ref work/windows-manifest-gate --field version=0.1.3
