@@ -111,6 +111,20 @@ ChatState.dispatch(errorState, {
 assert.strictEqual(errorState.messages[0].retry, true);
 assert.strictEqual(errorState.messages[0].failedStage, 'Encoding video');
 
+const persisted = ChatState.conversationSnapshot(errorState);
+assert.strictEqual(persisted.schema, 'autoeditor-chat/v1');
+assert.ok(!JSON.stringify(persisted).includes('proposal'));
+const restored = ChatState.restoreConversation(JSON.parse(JSON.stringify(persisted)), {
+  platform: 'darwin',
+});
+assert.strictEqual(restored.messages[0].failedStage, 'Encoding video');
+assert.strictEqual(restored.platform, 'darwin');
+
+const interrupted = ChatState.createConversationState();
+ChatState.dispatch(interrupted, { type: 'render_started', stage: 'Encoding' }, 10);
+const interruptedSnapshot = ChatState.conversationSnapshot(interrupted);
+assert.strictEqual(ChatState.restoreConversation(interruptedSnapshot).activeRender.stage, 'Encoding');
+
 assert.deepStrictEqual(engineProgress('faster-whisper word-level transcript'), {
   stage: 'transcription', message: 'Transcribing audio, still working',
   measurable: false,
@@ -130,6 +144,8 @@ assert.ok(!html.includes('Live edit console'));
 assert.ok(appSource.includes("summary.textContent = 'Technical details'"));
 assert.ok(appSource.includes("openResult(path, 'open')"));
 assert.ok(appSource.includes("openResult(path, 'reveal')"));
+assert.ok(appSource.includes('ChatState.restoreConversation'));
+assert.ok(appSource.includes('window.helper.saveConversation'));
 assert.ok(mainSource.includes('videos: [revisionInput]'));
 assert.ok(mainSource.includes('activeRender: activeRenderState()'));
 

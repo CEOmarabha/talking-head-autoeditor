@@ -37,6 +37,7 @@ const PACKAGED = app.isPackaged;
 const RES = PACKAGED ? process.resourcesPath : path.join(__dirname, '../..');
 const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 const MAX_ENCRYPTED_SETTINGS_BYTES = 128 * 1024;
+const MAX_ENCRYPTED_CONVERSATION_BYTES = 512 * 1024;
 const MAX_LOG_LINE = 20000;
 const MAX_LINE_BUFFER = 2 * 1024 * 1024;
 const MAX_VISION_FRAME_BYTES = 1536 * 1024;
@@ -114,22 +115,52 @@ function legacySetupFile() {
   return path.join(app.getPath('userData'), 'helper-setup.enc');
 }
 
-function readEncryptedObject(file) {
+function conversationFile() {
+  return path.join(app.getPath('userData'), 'conversation.enc');
+}
+
+function readEncryptedObject(file, maxBytes = MAX_ENCRYPTED_SETTINGS_BYTES) {
   try {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file)) {
       return null;
     }
     const stat = fs.statSync(file);
     if (!stat.isFile() || stat.size < 1 ||
-        stat.size > MAX_ENCRYPTED_SETTINGS_BYTES) return null;
+        stat.size > maxBytes) return null;
     const plain = safeStorage.decryptString(fs.readFileSync(file));
-    if (Buffer.byteLength(plain, 'utf8') > MAX_ENCRYPTED_SETTINGS_BYTES) {
+    if (Buffer.byteLength(plain, 'utf8') > maxBytes) {
       return null;
     }
     const value = JSON.parse(plain);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     return value;
   } catch (_) { return null; }
+}
+
+function loadConversation() {
+  const value = readEncryptedObject(
+    conversationFile(), MAX_ENCRYPTED_CONVERSATION_BYTES);
+  if (!value || value.schema !== 'autoeditor-chat/v1' ||
+      !Array.isArray(value.messages) || value.messages.length > 500) return null;
+  return value;
+}
+
+function saveConversation(value) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so the conversation cannot be saved safely');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      value.schema !== 'autoeditor-chat/v1' || !Array.isArray(value.messages) ||
+      value.messages.length > 500) throw new Error('Conversation state is invalid');
+  const plain = JSON.stringify(value);
+  if (Buffer.byteLength(plain, 'utf8') > MAX_ENCRYPTED_CONVERSATION_BYTES) {
+    throw new Error('Conversation state is too large to save safely');
+  }
+  const sealed = safeStorage.encryptString(plain);
+  const file = conversationFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, sealed, { mode: 0o600 });
+  return { ok: true };
 }
 
 function writeSettings(settings) {
@@ -943,6 +974,7 @@ function setupIpc() {
       preflight: preflight({ checkKeystore: !screenshotMode }),
       version: app.getVersion(),
       platform: process.platform,
+      conversation: screenshotMode ? null : loadConversation(),
     };
   });
   ipcMain.handle('helper:pick-videos', () => pickVideos());
@@ -950,6 +982,8 @@ function setupIpc() {
     attachDroppedVideos(files));
   ipcMain.handle('helper:pick-output', () => pickOutput());
   ipcMain.handle('helper:save-settings', (_event, input) => saveSettings(input));
+  ipcMain.handle('helper:save-conversation', (_event, input) =>
+    saveConversation(input));
   ipcMain.handle('helper:render-local', (_event, input) => renderLocal(input));
   ipcMain.handle('helper:cancel-local', () => cancelLocal());
   ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));
