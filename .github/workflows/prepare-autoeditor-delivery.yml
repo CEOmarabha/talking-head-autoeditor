@@ -1,0 +1,65 @@
+name: Prepare AutoEditor 0.1.3 delivery
+
+on:
+  push:
+    branches: [work/windows-manifest-gate]
+    paths: [.github/workflows/prepare-autoeditor-delivery.yml]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare:
+    if: github.event.head_commit.message == 'Prepare AutoEditor 0.1.3 delivery'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download verified platform artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p incoming/windows incoming/mac delivery
+          gh run download 31563849085 --repo CEOmarabha/talking-head-autoeditor --name helper-windows-x64 --dir incoming/windows
+          gh run download 31563849085 --repo CEOmarabha/talking-head-autoeditor --name helper-mac-arm64 --dir incoming/mac
+      - name: Select requested packages and verify identical renderer bundle
+        shell: bash
+        run: |
+          WIN=$(find incoming/windows -type f -name '*-portable.zip' -print -quit)
+          MAC=$(find incoming/mac -type f -name '*.dmg' -print -quit)
+          test -n "$WIN" && test -s "$WIN"
+          test -n "$MAC" && test -s "$MAC"
+          cp "$WIN" delivery/AutoEditor-Helper-0.1.3-windows-x64-portable.zip
+          cp "$MAC" delivery/AutoEditor-Helper-0.1.3-mac-arm64.dmg
+          unzip -p "$WIN" 'resources/app.asar' > windows-app.asar
+          test -s windows-app.asar
+          mkdir mac-image
+          7z x -y "$MAC" -omac-image >/dev/null
+          MAC_ASAR=$(find mac-image -type f -path '*/Contents/Resources/app.asar' -print -quit)
+          test -n "$MAC_ASAR" && test -s "$MAC_ASAR"
+          WIN_ASAR=$(sha256sum windows-app.asar | awk '{print $1}')
+          MAC_ASAR_SHA=$(sha256sum "$MAC_ASAR" | awk '{print $1}')
+          test "$WIN_ASAR" = "$MAC_ASAR_SHA"
+          printf 'source_commit  e535f5e5bb00227a149b8a9bbbb60a348bebf00d\nwindows_app_asar_sha256  %s\nmac_app_asar_sha256      %s\n' "$WIN_ASAR" "$MAC_ASAR_SHA" > delivery/RENDERER-PARITY.txt
+          (cd delivery && sha256sum AutoEditor-Helper-0.1.3-windows-x64-portable.zip AutoEditor-Helper-0.1.3-mac-arm64.dmg > PACKAGE-HASHES.txt)
+          split -b 350M -d -a 2 delivery/AutoEditor-Helper-0.1.3-windows-x64-portable.zip delivery/windows.part.
+          split -b 350M -d -a 2 delivery/AutoEditor-Helper-0.1.3-mac-arm64.dmg delivery/mac.part.
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: autoeditor-delivery-metadata
+          path: |
+            delivery/PACKAGE-HASHES.txt
+            delivery/RENDERER-PARITY.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: autoeditor-windows-parts
+          path: delivery/windows.part.*
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: autoeditor-mac-parts
+          path: delivery/mac.part.*
+          if-no-files-found: error
+          compression-level: 0
