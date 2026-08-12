@@ -39,10 +39,12 @@ jobs:
           test -n "$MAC_ASAR" && test -s "$MAC_ASAR"
           npx --yes @electron/asar@3.2.13 extract windows-app.asar windows-asar
           npx --yes @electron/asar@3.2.13 extract "$MAC_ASAR" mac-asar
-          test -d windows-asar/renderer && test -d mac-asar/renderer
-          diff -qr windows-asar/renderer mac-asar/renderer
-          WIN_RENDERER=$(cd windows-asar/renderer && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
-          MAC_RENDERER=$(cd mac-asar/renderer && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+          WIN_RENDER_DIR=$(find windows-asar -type d -path '*/renderer' -print -quit)
+          MAC_RENDER_DIR=$(find mac-asar -type d -path '*/renderer' -print -quit)
+          test -n "$WIN_RENDER_DIR" && test -n "$MAC_RENDER_DIR"
+          diff -qr "$WIN_RENDER_DIR" "$MAC_RENDER_DIR"
+          WIN_RENDERER=$(cd "$WIN_RENDER_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+          MAC_RENDERER=$(cd "$MAC_RENDER_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
           test "$WIN_RENDERER" = "$MAC_RENDERER"
           printf 'source_commit  e535f5e5bb00227a149b8a9bbbb60a348bebf00d\nwindows_renderer_sha256  %s\nmac_renderer_sha256      %s\n' "$WIN_RENDERER" "$MAC_RENDERER" > delivery/RENDERER-PARITY.txt
           (cd delivery && sha256sum AutoEditor-Helper-0.1.3-windows-x64-portable.zip AutoEditor-Helper-0.1.3-mac-arm64.dmg > PACKAGE-HASHES.txt)
