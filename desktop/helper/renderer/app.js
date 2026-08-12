@@ -10,6 +10,8 @@ const app = {
 
 let visionWorker = null;
 let activeVisionId = null;
+let lastSavedConversation = '';
+let conversationSaveTimer = null;
 
 function asError(error) {
   const text = error?.message || String(error || 'Something went wrong.');
@@ -212,11 +214,11 @@ function mediaMessage(path, allowActions) {
     actions.className = 'result-actions';
     const open = document.createElement('button');
     open.type = 'button';
-    open.textContent = 'Open video';
+    open.textContent = 'Open';
     open.addEventListener('click', () => window.helper.openResult(path, 'open'));
     const reveal = document.createElement('button');
     reveal.type = 'button';
-    reveal.textContent = app.platform === 'darwin' ? 'Show in Finder' : 'Show in folder';
+    reveal.textContent = 'Show in folder';
     reveal.addEventListener('click', () => window.helper.openResult(path, 'reveal'));
     actions.append(open, reveal);
     footer.appendChild(actions);
@@ -246,9 +248,10 @@ function renderActivity(message) {
   card.appendChild(stage);
   if (message.kind === 'render') {
     const value = ChatState.renderTiming(message, Date.now());
-    if (value.stale) stage.textContent = `Still working, last engine update ${value.lastActivity}.`;
     timing.className = 'activity-timing';
-    timing.textContent = `Elapsed ${value.elapsed} · Last activity ${value.lastActivity}`;
+    timing.textContent = value.stale
+      ? `Elapsed ${value.elapsed} · Still working; last engine update ${value.lastActivity}`
+      : `Elapsed ${value.elapsed} · Last activity ${value.lastActivity}`;
     card.appendChild(timing);
     if (message.measurable && Number.isFinite(message.progress)) {
       const progress = document.createElement('progress');
@@ -294,6 +297,7 @@ function addProposalButton(row, message) {
 }
 
 function renderChat() {
+  scheduleConversationSave();
   const transcript = $('chat-transcript');
   transcript.replaceChildren();
   if (!app.conversation.messages.length) {
@@ -347,8 +351,27 @@ function renderChat() {
   });
   transcript.scrollTop = transcript.scrollHeight;
   const rendering = !!app.conversation.activeRender;
-  setStatus(rendering ? 'Rendering' : (app.currentChat ? 'Analyzing' : 'Ready'),
-    rendering || app.currentChat ? 'on' : '');
+  const analyzing = !!app.conversation.activeAnalysis;
+  setStatus(rendering ? 'Rendering' : (analyzing ? 'Analyzing' : 'Ready'),
+    rendering || analyzing ? 'on' : '');
+}
+
+function scheduleConversationSave() {
+  const snapshot = ChatState.conversationSnapshot(app.conversation);
+  const encoded = JSON.stringify(snapshot);
+  if (encoded === lastSavedConversation || conversationSaveTimer) return;
+  conversationSaveTimer = setTimeout(async () => {
+    conversationSaveTimer = null;
+    const current = ChatState.conversationSnapshot(app.conversation);
+    const currentEncoded = JSON.stringify(current);
+    if (currentEncoded === lastSavedConversation) return;
+    try {
+      await window.helper.saveConversation(current);
+      lastSavedConversation = currentEncoded;
+    } catch (error) {
+      $('chat-error').textContent = `Conversation could not be saved securely: ${asError(error)}`;
+    }
+  }, 150);
 }
 
 function assistantMessage(content, kind = 'text') {
@@ -515,7 +538,7 @@ function handleRenderEvent(event = {}) {
     const operations = event.proposal?.operations;
     const applicable = event.canApply === true && Array.isArray(operations) && operations.length;
     app.proposal = applicable ? event.proposal : null;
-    app.proposalTargetResultPath = app.currentChat?.targetResultPath || '';
+    app.proposalTargetResultPath = app.currentChat?.targetResultPath || app.resultPath || '';
     ChatState.dispatch(app.conversation, {
       type: 'analysis_complete', content: event.message || 'Analysis complete.',
       sources: event.sources, proposal: app.proposal, canApply: !!app.proposal,
@@ -606,6 +629,17 @@ function renderState(state = {}) {
       stage: state.activeRender.message || state.activeRender.stage,
       startedAt: state.activeRender.startedAt,
       lastActivityAt: state.activeRender.lastActivityAt,
+    });
+  } else if (!state.activeRender && app.conversation.activeRender) {
+    ChatState.dispatch(app.conversation, {
+      type: 'render_error', stage: app.conversation.activeRender.stage,
+      error: 'AutoEditor closed before this render finished. Retry to start it again.',
+    });
+  }
+  if (!state.chatting && app.conversation.activeAnalysis) {
+    ChatState.dispatch(app.conversation, {
+      type: 'analysis_complete', kind: 'error',
+      content: 'AutoEditor closed before this analysis finished. Send the message again to retry.',
     });
   }
   renderVideos();
@@ -719,9 +753,18 @@ setInterval(() => {
 }, 1000);
 
 async function boot() {
+  const state = await window.helper.state() || {};
+  if (state.conversation) {
+    app.conversation = ChatState.restoreConversation(state.conversation, {
+      platform: state.platform,
+    });
+    app.resultPath = app.conversation.latestResultPath || '';
+    lastSavedConversation = JSON.stringify(
+      ChatState.conversationSnapshot(app.conversation));
+  }
   renderVideos();
   renderChat();
-  renderState(await window.helper.state() || {});
+  renderState(state);
 }
 
 boot().catch((error) => {

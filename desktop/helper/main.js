@@ -37,6 +37,7 @@ const PACKAGED = app.isPackaged;
 const RES = PACKAGED ? process.resourcesPath : path.join(__dirname, '../..');
 const MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024;
 const MAX_ENCRYPTED_SETTINGS_BYTES = 128 * 1024;
+const MAX_ENCRYPTED_CONVERSATION_BYTES = 512 * 1024;
 const MAX_LOG_LINE = 20000;
 const MAX_LINE_BUFFER = 2 * 1024 * 1024;
 const MAX_VISION_FRAME_BYTES = 1536 * 1024;
@@ -114,22 +115,52 @@ function legacySetupFile() {
   return path.join(app.getPath('userData'), 'helper-setup.enc');
 }
 
-function readEncryptedObject(file) {
+function conversationFile() {
+  return path.join(app.getPath('userData'), 'conversation.enc');
+}
+
+function readEncryptedObject(file, maxBytes = MAX_ENCRYPTED_SETTINGS_BYTES) {
   try {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file)) {
       return null;
     }
     const stat = fs.statSync(file);
     if (!stat.isFile() || stat.size < 1 ||
-        stat.size > MAX_ENCRYPTED_SETTINGS_BYTES) return null;
+        stat.size > maxBytes) return null;
     const plain = safeStorage.decryptString(fs.readFileSync(file));
-    if (Buffer.byteLength(plain, 'utf8') > MAX_ENCRYPTED_SETTINGS_BYTES) {
+    if (Buffer.byteLength(plain, 'utf8') > maxBytes) {
       return null;
     }
     const value = JSON.parse(plain);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     return value;
   } catch (_) { return null; }
+}
+
+function loadConversation() {
+  const value = readEncryptedObject(
+    conversationFile(), MAX_ENCRYPTED_CONVERSATION_BYTES);
+  if (!value || value.schema !== 'autoeditor-chat/v1' ||
+      !Array.isArray(value.messages) || value.messages.length > 500) return null;
+  return value;
+}
+
+function saveConversation(value) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Your OS keystore is unavailable, so the conversation cannot be saved safely');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      value.schema !== 'autoeditor-chat/v1' || !Array.isArray(value.messages) ||
+      value.messages.length > 500) throw new Error('Conversation state is invalid');
+  const plain = JSON.stringify(value);
+  if (Buffer.byteLength(plain, 'utf8') > MAX_ENCRYPTED_CONVERSATION_BYTES) {
+    throw new Error('Conversation state is too large to save safely');
+  }
+  const sealed = safeStorage.encryptString(plain);
+  const file = conversationFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, sealed, { mode: 0o600 });
+  return { ok: true };
 }
 
 function writeSettings(settings) {
@@ -352,690 +383,4 @@ function registerVisionProtocol() {
       } });
     } catch (_) {
       return new Response('Not found', { status: 404 });
-    }
-  });
-}
-
-function readVisionFrame(file) {
-  const handle = fs.openSync(file, 'r');
-  try {
-    const before = fs.fstatSync(handle);
-    if (!before.isFile() || before.size < 4 || before.size > MAX_VISION_FRAME_BYTES) {
-      throw new Error('a local vision frame had an invalid size');
-    }
-    const data = Buffer.alloc(before.size);
-    if (fs.readSync(handle, data, 0, before.size, 0) !== before.size) {
-      throw new Error('a local vision frame changed while it was read');
-    }
-    const after = fs.fstatSync(handle);
-    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
-        after.dev !== before.dev || after.ino !== before.ino) {
-      throw new Error('a local vision frame changed while it was read');
-    }
-    if (data[0] !== 0xff || data[1] !== 0xd8 ||
-        data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) {
-      throw new Error('a local vision frame was not a complete JPEG');
-    }
-    return `data:image/jpeg;base64,${data.toString('base64')}`;
-  } finally {
-    fs.closeSync(handle);
-  }
-}
-
-function requestVision(framePaths, action) {
-  if (!win || win.isDestroyed() || activeChat !== action || action.canceled) {
-    return Promise.reject(new Error('the local vision window is unavailable'));
-  }
-  if (!Array.isArray(framePaths) || framePaths.length < 1 || framePaths.length > 8) {
-    return Promise.reject(new Error('local vision requires between 1 and 8 frames'));
-  }
-  const images = framePaths.map(readVisionFrame);
-  const id = ++visionSequence;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingVision.delete(id);
-      reject(new Error('the local vision model exceeded 30 minutes'));
-    }, VISION_TIMEOUT_MS);
-    pendingVision.set(id, { action, resolve, reject, timer });
-    send('helper-vision-request', { id, images });
-  });
-}
-
-function rejectPendingVision(message) {
-  for (const pending of pendingVision.values()) {
-    clearTimeout(pending.timer);
-    pending.reject(new Error(message));
-  }
-  pendingVision.clear();
-}
-
-function fromMainRenderer(event) {
-  return !!win && !win.isDestroyed() && event.sender === win.webContents &&
-    (!event.senderFrame || event.senderFrame === win.webContents.mainFrame);
-}
-
-function handleVisionProgress(event, value) {
-  if (!fromMainRenderer(event) || !value || typeof value !== 'object' ||
-      Array.isArray(value) || !Number.isSafeInteger(value.id)) return;
-  const pending = pendingVision.get(value.id);
-  if (!pending || activeChat !== pending.action || pending.action.canceled ||
-      typeof value.line !== 'string') return;
-  processLocalEvent({
-    event: 'local-progress', stage: 'media-analysis',
-    line: value.line.replace(/\0/g, '').trim().slice(0, 1000),
-  }, pending.action);
-}
-
-function handleVisionResult(event, value) {
-  if (!fromMainRenderer(event) || !value || typeof value !== 'object' ||
-      Array.isArray(value) || !Number.isSafeInteger(value.id)) return;
-  const pending = pendingVision.get(value.id);
-  if (!pending) return;
-  pendingVision.delete(value.id);
-  clearTimeout(pending.timer);
-  if (activeChat !== pending.action || pending.action.canceled) {
-    pending.reject(new Error('local vision was canceled'));
-    return;
-  }
-  if (value.status === 'complete' && typeof value.result === 'string') {
-    const result = value.result.replace(/\0/g, '').trim().slice(0, 5000);
-    if (result) {
-      pending.resolve(result);
-      return;
-    }
-  }
-  const detail = typeof value.error === 'string'
-    ? value.error.replace(/\0/g, '').trim().slice(0, 1000)
-    : 'the local vision model returned an invalid result';
-  pending.reject(new Error(detail || 'the local vision model stopped'));
-}
-
-function redact(line, settings) {
-  let clean = String(line || '');
-  for (const value of Object.values(settings)) {
-    if (typeof value === 'string' && value.length >= 4) {
-      clean = clean.split(value).join('[redacted]');
-    }
-  }
-  return clean.slice(0, MAX_LOG_LINE);
-}
-
-function lineReader(onLine) {
-  let buffer = '';
-  return {
-    push(chunk) {
-      buffer += chunk.toString('utf8');
-      if (buffer.length > MAX_LINE_BUFFER && !buffer.includes('\n')) {
-        onLine(buffer.slice(0, MAX_LOG_LINE));
-        buffer = '';
-      }
-      let index;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index).replace(/\r$/, '');
-        buffer = buffer.slice(index + 1);
-        if (line) onLine(line);
-      }
-    },
-    flush() {
-      const line = buffer.replace(/\r$/, '');
-      buffer = '';
-      if (line) onLine(line);
-    },
-  };
-}
-
-function stableJson(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
-}
-
-function realFile(file) {
-  return fs.realpathSync.native(normalizeResultPath(file));
-}
-
-function isInside(directory, file) {
-  const root = fs.realpathSync.native(directory);
-  const relative = path.relative(root, file);
-  return relative !== '' && relative !== '..' &&
-    !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
-
-function rememberOutput(raw, outputDir) {
-  try {
-    const real = realFile(raw);
-    if (!isInside(outputDir, real)) return false;
-    returnedOutputs.set(real, raw);
-    return true;
-  } catch (_) { return false; }
-}
-
-function rememberResult(event, outputDir) {
-  if (typeof event.output === 'string') rememberOutput(event.output, outputDir);
-  if (event.outputs && typeof event.outputs === 'object' &&
-      !Array.isArray(event.outputs)) {
-    for (const value of Object.values(event.outputs)) {
-      if (typeof value === 'string') rememberOutput(value, outputDir);
-    }
-  }
-}
-
-function rememberProposal(event) {
-  if (event.canApply !== true || !event.proposal ||
-      typeof event.proposal !== 'object' || Array.isArray(event.proposal) ||
-      !Array.isArray(event.proposal.operations) ||
-      event.proposal.operations.length < 1) return;
-  try {
-    const encoded = stableJson(event.proposal);
-    if (encoded.length <= 100000) returnedProposals.add(encoded);
-  } catch (_) { /* malformed daemon output is not applicable */ }
-}
-
-function rememberResearchSources(event) {
-  if (!Array.isArray(event.sources)) return;
-  for (const source of event.sources.slice(0, 12)) {
-    if (!source || typeof source !== 'object' || Array.isArray(source) ||
-        typeof source.url !== 'string' || source.url.length > 2048) continue;
-    try {
-      const parsed = new URL(source.url);
-      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) {
-        returnedResearchSources.add(source.url);
-      }
-    } catch (_) { /* malformed research source is never opened */ }
-  }
-}
-
-function proposalWasReturned(proposal) {
-  if (!returnedProposals.has(stableJson(proposal))) {
-    throw new Error('That edit proposal is no longer available. Ask DeepSeek again');
-  }
-  return true;
-}
-
-function processLocalEvent(event, action) {
-  if (!LOCAL_EVENTS.has(event.event)) return false;
-  if (action.canceled) return true;
-  action.lastActivityAt = Date.now();
-  let visibleEvent = { ...event, actionId: action.id, kind: action.kind };
-  if (event.event === 'local-progress') {
-    const mapped = engineProgress(event.line || event.stage || '');
-    if (mapped) {
-      visibleEvent = { ...visibleEvent, ...mapped };
-    }
-    const exact = event.measurable === true &&
-      Number.isFinite(Number(event.progress ?? event.percent));
-    if (exact) {
-      action.measurable = true;
-      action.progress = Math.max(0, Math.min(100,
-        Math.round(Number(event.progress ?? event.percent))));
-      visibleEvent = {
-        ...visibleEvent, measurable: true, progress: action.progress,
-      };
-    } else if (mapped?.measurable === false || event.measurable === false) {
-      action.measurable = false;
-      action.progress = null;
-    }
-    action.stage = String(visibleEvent.stage || action.stage || 'working');
-    action.message = String(visibleEvent.message || action.message || 'Working...');
-  }
-  if (event.event === 'local-result' && action.kind === 'render') {
-    rememberResult(event, action.outputDir);
-    action.terminal = true;
-  } else if (event.event === 'local-chat' && action.kind === 'chat') {
-    rememberProposal(event);
-    rememberResearchSources(event);
-    action.terminal = true;
-  } else if (event.event === 'local-error') {
-    action.terminal = true;
-    visibleEvent = {
-      ...visibleEvent, stage: event.stage || action.message || action.stage,
-    };
-  }
-  send('helper-render', visibleEvent);
-  return true;
-}
-
-function localProcess(mode, payload, kind, settings) {
-  const p = runtimePaths();
-  const action = {
-    id: ++actionSequence,
-    kind,
-    outputDir: kind === 'render' ? payload.outputDir : '',
-    proc: null,
-    terminal: false,
-    canceled: false,
-    progress: null,
-    measurable: false,
-    stage: kind === 'render' ? 'starting' : 'analysis',
-    message: kind === 'render' ? 'Starting the local edit...' : 'Analyzing...',
-    startedAt: Date.now(),
-    lastActivityAt: Date.now(),
-  };
-  const child = spawn(p.daemon, [mode], {
-    env: daemonEnv(settings), windowsHide: true, cwd: p.root,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: process.platform !== 'win32',
-  });
-  child.__autoeditorProcessGroup = process.platform !== 'win32';
-  action.proc = child;
-  if (kind === 'render') activeRender = action;
-  else activeChat = action;
-  if (kind === 'render') {
-    processLocalEvent({
-      event: 'local-progress', stage: 'starting', measurable: false,
-      message: 'Starting the local edit...',
-    }, action);
-  }
-
-  const onLine = (line) => {
-    action.lastActivityAt = Date.now();
-    const event = parseEngineEvent(line);
-    if (event && processLocalEvent(event, action)) return;
-    if (!event) send('helper-log', {
-      line: redact(line, settings), actionId: action.id, kind: action.kind,
-    });
-  };
-  const stdout = lineReader(onLine);
-  const stderr = lineReader(onLine);
-  child.stdout.on('data', (chunk) => stdout.push(chunk));
-  child.stderr.on('data', (chunk) => stderr.push(chunk));
-  child.stdin.on('error', () => { /* child error/close owns the visible result */ });
-  child.on('error', (error) => {
-    if (!action.terminal && !action.canceled) {
-      action.terminal = true;
-      send('helper-render', {
-        event: 'local-error', actionId: action.id, kind: action.kind,
-        stage: action.message || action.stage,
-        error: `AutoEditor could not start: ${error.message}`,
-      });
-    }
-  });
-  child.on('close', (code) => {
-    stdout.flush();
-    stderr.flush();
-    if (kind === 'render' && activeRender === action) activeRender = null;
-    if (kind === 'chat' && activeChat === action) activeChat = null;
-    if (!action.terminal && !action.canceled) {
-      send('helper-render', {
-        event: 'local-error', actionId: action.id, kind: action.kind,
-        stage: action.message || action.stage,
-        error: code === 0
-          ? 'AutoEditor ended without returning a result'
-          : `AutoEditor stopped before finishing (${code})`,
-      });
-    }
-    send('helper-state', {
-      running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
-      activeRender: activeRenderState(),
-    });
-  });
-  child.stdin.end(`${JSON.stringify(payload)}\n`);
-  send('helper-state', {
-    running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
-    activeRender: activeRenderState(),
-  });
-  return action;
-}
-
-function requireSecureSettings() {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('Your OS keystore is unavailable, so AutoEditor cannot safely load API keys');
-  }
-  return loadSettings();
-}
-
-function requireReady() {
-  const settings = requireSecureSettings();
-  const ready = preflight();
-  if (!ready.ok) {
-    throw new Error('A built-in editing component is missing or this computer has less than 20 GB free');
-  }
-  return settings;
-}
-
-function requireDialogSelection(request) {
-  for (const input of request.inputs) {
-    const real = fs.realpathSync.native(input);
-    if (!selectedVideos.has(real)) {
-      throw new Error('Choose every input video with the Select videos button');
-    }
-  }
-  const output = fs.realpathSync.native(request.outputDir);
-  if (!selectedOutputDirs.has(output)) {
-    throw new Error('Choose the output folder with the Choose button');
-  }
-}
-
-function translateVideoPaths(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
-      !Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) return raw;
-  if (['inputs', 'videos', 'clips'].some((key) =>
-    Object.prototype.hasOwnProperty.call(raw, key))) {
-    throw new Error('Video inputs were supplied more than once');
-  }
-  const translated = { ...raw, videos: raw.videoPaths };
-  delete translated.videoPaths;
-  return translated;
-}
-
-function renderLocal(raw) {
-  if (activeRender) throw new Error('An edit is already rendering');
-  const request = normalizeLocalRequest(translateVideoPaths(raw));
-  requireDialogSelection(request);
-  const settings = requireReady();
-  localProcess('--local-render', request, 'render',
-    settingsForLocalRender(settings));
-  return { ok: true };
-}
-
-function chatLocal(raw) {
-  if (activeChat) throw new Error('DeepSeek is already answering');
-  const request = normalizeChatRequest(raw);
-  let videoPaths = [];
-  if (raw && Object.prototype.hasOwnProperty.call(raw, 'videoPaths')) {
-    videoPaths = normalizeVideoPaths(raw.videoPaths);
-    for (const video of videoPaths) {
-      if (!selectedVideos.has(fs.realpathSync.native(video))) {
-        throw new Error('Attach every video with the picker or by dragging it into AutoEditor');
-      }
-    }
-  }
-  if (raw && raw.resultPath) {
-    const real = realFile(raw.resultPath);
-    if (!returnedOutputs.has(real)) {
-      throw new Error('That result is not from this AutoEditor session');
-    }
-  }
-  const settings = requireSecureSettings();
-  if (!settings.deepseekApiKey) {
-    throw new Error('Add your DeepSeek API key before opening the edit chat');
-  }
-  const action = {
-    id: ++actionSequence, kind: 'chat', outputDir: '', proc: null,
-    terminal: false, canceled: false, progress: null, measurable: false,
-    stage: 'analysis', message: 'Analyzing...',
-    startedAt: Date.now(), lastActivityAt: Date.now(),
-  };
-  activeChat = action;
-  send('helper-state', {
-    running: !!activeRender, rendering: !!activeRender, chatting: true,
-    activeRender: activeRenderState(),
-  });
-  (async () => {
-    let mediaAnalysis = null;
-    if (videoPaths.length) {
-      try {
-        mediaAnalysis = await analyzeMedia({
-          videoPaths,
-          runtime: runtimePaths(),
-          env: daemonEnv(settingsForLocalRender(settings)),
-          cacheRoot: path.join(app.getPath('userData'), 'media-analysis-cache'),
-          describeFrames: (frames) => requestVision(frames, action),
-          emit: (line) => processLocalEvent({
-            event: 'local-progress', stage: 'media-analysis', line,
-          }, action),
-          onChild: (child) => {
-            if (activeChat === action && !action.canceled) action.proc = child;
-          },
-        });
-      } catch (error) {
-        const detail = String(error?.message || error).slice(0, 1000);
-        processLocalEvent({
-          event: 'local-progress', stage: 'media-analysis',
-          line: `Local media analysis stopped safely: ${detail}`,
-        }, action);
-        mediaAnalysis = {
-          schema: 'autoeditor-local-media-analysis/v2',
-          videos: [], originalVideosUploaded: false, error: detail,
-        };
-      }
-    }
-    if (activeChat !== action || action.canceled) return;
-    action.proc = null;
-    const event = await runEditingChat(
-      { ...request, mediaAnalysis, hasCompletedRender: !!raw?.resultPath },
-      settings.deepseekApiKey,
-      (progress) => processLocalEvent(progress, action));
-    processLocalEvent(event, action);
-  })().catch((error) => {
-    processLocalEvent({
-      event: 'local-error',
-      error: `DeepSeek stopped safely: ${error.message || String(error)}`,
-    }, action);
-  }).finally(() => {
-    if (activeChat === action) activeChat = null;
-    send('helper-state', {
-      running: !!activeRender, rendering: !!activeRender, chatting: false,
-      activeRender: activeRenderState(),
-    });
-  });
-  return { ok: true };
-}
-
-function applyLocal(raw) {
-  if (activeRender) throw new Error('An edit is already rendering');
-  let translated = translateVideoPaths(raw);
-  let revisionInput = '';
-  if (raw && raw.resultPath) {
-    revisionInput = realFile(raw.resultPath);
-    if (!returnedOutputs.has(revisionInput)) {
-      throw new Error('That revision target is not from this AutoEditor session');
-    }
-    translated = { ...translated, videos: [revisionInput] };
-    delete translated.inputs;
-    delete translated.videoPaths;
-    delete translated.clips;
-  }
-  const request = normalizeApplyRequest(translated, proposalWasReturned);
-  if (revisionInput) {
-    if (!selectedOutputDirs.has(fs.realpathSync.native(request.outputDir))) {
-      throw new Error('Choose the output folder with the Choose button');
-    }
-  } else {
-    requireDialogSelection(request);
-  }
-  const settings = requireReady();
-  localProcess('--local-render', request, 'render',
-    settingsForLocalRender(settings));
-  return { ok: true };
-}
-
-async function cancelLocal() {
-  const action = activeRender;
-  if (!action) return { ok: true, canceled: false };
-  action.canceled = true;
-  activeRender = null;
-  await stopProcessTree(action.proc);
-  send('helper-render', {
-    event: 'local-progress', actionId: action.id, kind: 'render',
-    stage: 'canceled', line: 'Edit canceled',
-  });
-  send('helper-state', { running: false, rendering: false,
-    chatting: !!activeChat, activeRender: null });
-  return { ok: true, canceled: true };
-}
-
-async function pickVideos() {
-  const result = await dialog.showOpenDialog(win, {
-    title: 'Choose videos to edit',
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm'] }],
-  });
-  if (result.canceled) return [];
-  const videos = normalizeVideoPaths(result.filePaths);
-  for (const video of videos) {
-    if (!VIDEO_EXTENSIONS.has(path.extname(video).toLowerCase())) {
-      throw new Error('Choose MP4, MOV, M4V, MKV, or WebM video files');
-    }
-    selectedVideos.add(fs.realpathSync.native(video));
-  }
-  return videos;
-}
-
-function attachDroppedVideos(raw) {
-  const videos = normalizeVideoPaths(raw);
-  const accepted = [];
-  for (const video of videos) {
-    if (!VIDEO_EXTENSIONS.has(path.extname(video).toLowerCase())) {
-      throw new Error('Drop MP4, MOV, M4V, MKV, or WebM video files');
-    }
-    const real = fs.realpathSync.native(video);
-    selectedVideos.add(real);
-    accepted.push(real);
-  }
-  return accepted;
-}
-
-function openResearchSource(url) {
-  if (typeof url !== 'string' || !returnedResearchSources.has(url)) {
-    throw new Error('That research source is not from this AutoEditor session');
-  }
-  return shell.openExternal(url);
-}
-
-async function pickOutput() {
-  const result = await dialog.showOpenDialog(win, {
-    title: 'Choose where to save the finished video',
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  if (result.canceled) return '';
-  const output = normalizeOutputDir(result.filePaths[0]);
-  selectedOutputDirs.add(fs.realpathSync.native(output));
-  return output;
-}
-
-function openResult(raw, action = 'reveal') {
-  if (typeof raw !== 'string') throw new Error('Result path must be a string');
-  if (action !== 'open' && action !== 'reveal') {
-    throw new Error('Result action must be open or reveal');
-  }
-  const real = realFile(raw);
-  if (!returnedOutputs.has(real)) {
-    throw new Error('That result is not from this AutoEditor session');
-  }
-  if (action === 'open') return shell.openPath(real);
-  shell.showItemInFolder(real);
-  return { ok: true, action };
-}
-
-function setupIpc() {
-  ipcMain.on('helper:vision-progress', handleVisionProgress);
-  ipcMain.on('helper:vision-result', handleVisionResult);
-  ipcMain.handle('helper:state', () => {
-    const screenshotMode = !!process.env.AUTOEDITOR_SCREENSHOT_PATH;
-    const settings = screenshotMode ? {} : loadSettings();
-    return {
-      configured: true,
-      running: !!activeRender,
-      rendering: !!activeRender,
-      chatting: !!activeChat,
-      activeRender: activeRenderState(),
-      settings: settingsPresence(settings),
-      capabilities: {
-        deepseek: !!settings.deepseekApiKey,
-        pexels: !!settings.pexelsApiKey,
-        pixabay: !!settings.pixabayApiKey,
-        elevenlabs: !!settings.elevenLabsApiKey,
-        remotion: true,
-        hyperframes: true,
-      },
-      preflight: preflight({ checkKeystore: !screenshotMode }),
-      version: app.getVersion(),
-      platform: process.platform,
-    };
-  });
-  ipcMain.handle('helper:pick-videos', () => pickVideos());
-  ipcMain.handle('helper:attach-dropped-videos', (_event, files) =>
-    attachDroppedVideos(files));
-  ipcMain.handle('helper:pick-output', () => pickOutput());
-  ipcMain.handle('helper:save-settings', (_event, input) => saveSettings(input));
-  ipcMain.handle('helper:render-local', (_event, input) => renderLocal(input));
-  ipcMain.handle('helper:cancel-local', () => cancelLocal());
-  ipcMain.handle('helper:chat-local', (_event, input) => chatLocal(input));
-  ipcMain.handle('helper:apply-local', (_event, input) => applyLocal(input));
-  ipcMain.handle('helper:open-result', (_event, resultPath, action) =>
-    openResult(resultPath, action));
-  ipcMain.handle('helper:open-research-source', (_event, url) =>
-    openResearchSource(url));
-  ipcMain.handle('helper:notices', () => shell.openPath(runtimePaths().notices));
-  ipcMain.handle('helper:open', (_event, key) => {
-    if (typeof key !== 'string' || !PROVIDER_LINKS[key]) {
-      throw new Error('That help link is not allowed');
-    }
-    return shell.openExternal(PROVIDER_LINKS[key]);
-  });
-}
-
-function smokeTest() {
-  const settings = {
-    deepseekApiKey: '', pexelsApiKey: '', pixabayApiKey: '',
-    elevenLabsApiKey: '', remotionKey: 'free-license',
-  };
-  const p = runtimePaths();
-  const child = spawnSync(p.daemon, [], {
-    env: { ...daemonEnv(settings), AUTOEDITOR_HELPER_SMOKE_TEST: '1' },
-    windowsHide: true, encoding: 'utf8', timeout: 30000,
-  });
-  const creative = spawnSync(p.daemon, [], {
-    env: { ...daemonEnv(settings), AUTOEDITOR_CREATIVE_SMOKE_TEST: '1' },
-    windowsHide: true, encoding: 'utf8', timeout: 360000,
-  });
-  // Artifact smoke validates the installed runtime on small hosted runners.
-  // Interactive actions retain the 20 GiB gate.
-  const checks = preflight({ checkKeystore: false, checkDisk: false });
-  const result = {
-    packaged: PACKAGED,
-    preflight: checks.ok,
-    daemonExit: child.status === 0,
-    daemonReceipt: (child.stdout || '').includes('helper-daemon-smoke'),
-    creativeExit: creative.status === 0,
-    creativeReceipt: (creative.stdout || '').includes('helper-creative-smoke'),
-  };
-  console.log(JSON.stringify({ event: 'helper-desktop-smoke', checks: result }));
-  return Object.values(result).every(Boolean);
-}
-
-function createWindow() {
-  const capturePath = process.env.AUTOEDITOR_SCREENSHOT_PATH || '';
-  win = new BrowserWindow({
-    width: 900, height: capturePath ? 1200 : 760,
-    minWidth: 700, minHeight: 620, show: !capturePath,
-    title: 'AutoEditor', backgroundColor: '#0b0d10',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true,
-    },
-  });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  if (capturePath) {
-    win.webContents.once('did-finish-load', async () => {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const height = await win.webContents.executeJavaScript(
-        'Math.min(4000, document.documentElement.scrollHeight)');
-      win.setContentSize(900, Math.max(1200, height));
-      const shot = await win.webContents.capturePage();
-      fs.writeFileSync(capturePath, shot.toPNG());
-      app.exit(0);
-    });
-  }
-}
-
-app.whenReady().then(() => {
-  if (process.env.AUTOEDITOR_SMOKE_TEST === '1') {
-    app.exit(smokeTest() ? 0 : 1);
-    return;
-  }
-  registerVisionProtocol();
-  setupIpc();
-  createWindow();
-});
-
-app.on('before-quit', () => {
-  rejectPendingVision('AutoEditor is closing');
-  if (activeRender) stopProcessTree(activeRender.proc);
-  if (activeChat?.proc) stopProcessTree(activeChat.proc);
-});
-app.on('window-all-closed', () => app.quit());
-
-module.exports = { runtimePaths };
+    }ßž7¶‰žËkºwµç\°€¡•ÉÉ½È¤€ôøì4(€€€¥˜€ ……Ñ¥½¸¹Ñ•Éµ¥¹…°€˜˜€……Ñ¥½¸¹…¹•±•¤ì4(€€€€€…Ñ¥½¸¹Ñ•Éµ¥¹…°€ôÑÉÕ”ì4(€€€€€Í•¹ ¡•±Á•ÈµÉ•¹‘•Èœ°ì4(€€€€€€€•Ù•¹Ðè€±½…°µ•ÉÉ½Èœ°…Ñ¥½¹%è…Ñ¥½¸¹¥°­¥¹è…Ñ¥½¸¹­¥¹°4(€€€€€€€ÍÑ…”è…Ñ¥½¸¹µ•ÍÍ…”ñð…Ñ¥½¸¹ÍÑ…”°4(€€€€€€€•ÉÉ½ÈèÕÑ½‘¥Ñ½È½Õ±¹½ÐÍÑ…ÉÐè€‘í•ÉÉ½È¹µ•ÍÍ…•õ€°4(€€€€€ô¤ì4(€€€ô4(€ô¤ì4(€¡¥±¹½¸ ±½Í”œ°€¡½‘”¤€ôøì4(€€€ÍÑ‘½ÕÐ¹™±ÕÍ  ¤ì4(€€€ÍÑ‘•ÉÈ¹™±ÕÍ  ¤ì4(€€€¥˜€¡­¥¹€ôôô€É•¹‘•Èœ€˜˜…Ñ¥Ù•I•¹‘•È€ôôô…Ñ¥½¸¤…Ñ¥Ù•I•¹‘•È€ô¹Õ±°ì4(€€€¥˜€¡­¥¹€ôôô€¡…Ðœ€˜˜…Ñ¥Ù•¡…Ð€ôôô…Ñ¥½¸¤…Ñ¥Ù•¡…Ð€ô¹Õ±°ì4(€€€¥˜€ ……Ñ¥½¸¹Ñ•Éµ¥¹…°€˜˜€……Ñ¥½¸¹…¹•±•¤ì4(€€€€€Í•¹ ¡•±Á•ÈµÉ•¹‘•Èœ°ì4(€€€€€€€•Ù•¹Ðè€±½…°µ•ÉÉ½Èœ°…Ñ¥½¹%è…Ñ¥½¸¹¥°­¥¹è…Ñ¥½¸¹­¥¹°4(€€€€€€€ÍÑ…”è…Ñ¥½¸¹µ•ÍÍ…”ñð…Ñ¥½¸¹ÍÑ…”°4(€€€€€€€•ÉÉ½Èè½‘”€ôôô€À4(€€€€€€€€€€ü€ÕÑ½‘¥Ñ½È•¹‘•Ý¥Ñ¡½ÕÐÉ•ÑÕÉ¹¥¹œ„É•ÍÕ±Ðœ4(€€€€€€€€€€èÕÑ½‘¥Ñ½ÈÍÑ½ÁÁ•‰•™½É”™¥¹¥Í¡¥¹œ€ ‘í½‘•ô¥€°4(€€€€€ô¤ì4(€€€ô4(€€€Í•¹ ¡•±Á•ÈµÍÑ…Ñ”œ°ì4(€€€€€ÉÕ¹¹¥¹œè€„……Ñ¥Ù•I•¹‘•È°É•¹‘•É¥¹œè€„……Ñ¥Ù•I•¹‘•È°¡…ÑÑ¥¹œè€„……Ñ¥Ù•¡…Ð°4(€€€€€…Ñ¥Ù•I•¹‘•Èè…Ñ¥Ù•I•¹‘•ÉMÑ…Ñ” ¤°4(€€€ô¤ì4(€ô¤ì4(€¡¥±¹ÍÑ‘¥¸¹•¹¡€‘í)M=8¹ÍÑÉ¥¹¥™ä¡Á…å±½…¥õq¹€¤ì4(€Í•¹ ¡•±Á•ÈµÍÑ…Ñ”œ°ì4(€€€ÉÕ¹¹¥¹œè€„……Ñ¥Ù•I•¹‘•È°É•¹‘•É¥¹œè€„……Ñ¥Ù•I•¹‘•È°¡…ÑÑ¥¹œè€„……Ñ¥Ù•¡…Ð°4(€€€…Ñ¥Ù•I•¹‘•Èè…Ñ¥Ù•I•¹‘•ÉMÑ…Ñ” ¤°4(€ô¤ì4(€É•ÑÕÉ¸…Ñ¥½¸ì4)ô4(4)™Õ¹Ñ¥½¸É•ÅÕ¥É•M•ÕÉ•M•ÑÑ¥¹Ì ¤ì4(€¥˜€ …Í…™•MÑ½É…”¹¥Í¹ÉåÁÑ¥½¹Ù…¥±…‰±” ¤¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È e½ÕÈ=L­•åÍÑ½É”¥ÌÕ¹…Ù…¥±…‰±”°Í¼ÕÑ½‘¥Ñ½È…¹¹½ÐÍ…™•±ä±½…A$­•åÌœ¤ì4(€ô4(€É•ÑÕÉ¸±½…‘M•ÑÑ¥¹Ì ¤ì4)ô4(4)™Õ¹Ñ¥½¸É•ÅÕ¥É•I•…‘ä ¤ì4(€½¹ÍÐÍ•ÑÑ¥¹Ì€ôÉ•ÅÕ¥É•M•ÕÉ•M•ÑÑ¥¹Ì ¤ì4(€½¹ÍÐÉ•…‘ä€ôÁÉ•™±¥¡Ð ¤ì4(€¥˜€ …É•…‘ä¹½¬¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È ‰Õ¥±Ðµ¥¸•‘¥Ñ¥¹œ½µÁ½¹•¹Ð¥Ìµ¥ÍÍ¥¹œ½ÈÑ¡¥Ì½µÁÕÑ•È¡…Ì±•ÍÌÑ¡…¸€ÈÀ™É•”œ¤ì4(€ô4(€É•ÑÕÉ¸Í•ÑÑ¥¹Ìì4)ô4(4)™Õ¹Ñ¥½¸É•ÅÕ¥É•¥…±½M•±•Ñ¥½¸¡É•ÅÕ•ÍÐ¤ì4(€™½È€¡½¹ÍÐ¥¹ÁÕÐ½˜É•ÅÕ•ÍÐ¹¥¹ÁÕÑÌ¤ì4(€€€½¹ÍÐÉ•…°€ô™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡¥¹ÁÕÐ¤ì4(€€€¥˜€ …Í•±•Ñ•‘Y¥‘•½Ì¹¡…Ì¡É•…°¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È ¡½½Í”•Ù•Éä¥¹ÁÕÐÙ¥‘•¼Ý¥Ñ Ñ¡”M•±•ÐÙ¥‘•½Ì‰ÕÑÑ½¸œ¤ì4(€€€ô4(€ô4(€½¹ÍÐ½ÕÑÁÕÐ€ô™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡É•ÅÕ•ÍÐ¹½ÕÑÁÕÑ¥È¤ì4(€¥˜€ …Í•±•Ñ•‘=ÕÑÁÕÑ¥ÉÌ¹¡…Ì¡½ÕÑÁÕÐ¤¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È ¡½½Í”Ñ¡”½ÕÑÁÕÐ™½±‘•ÈÝ¥Ñ Ñ¡”¡½½Í”‰ÕÑÑ½¸œ¤ì4(€ô4)ô4(4)™Õ¹Ñ¥½¸ÑÉ…¹Í±…Ñ•Y¥‘•½A…Ñ¡Ì¡É…Ü¤ì4(€¥˜€ …É…ÜñðÑåÁ•½˜É…Ü€„ôô€½‰©•ÐœñðÉÉ…ä¹¥ÍÉÉ…ä¡É…Ü¤ñð4(€€€€€€…=‰©•Ð¹ÁÉ½Ñ½ÑåÁ”¹¡…Í=Ý¹AÉ½Á•ÉÑä¹…±°¡É…Ü°€Ù¥‘•½A…Ñ¡Ìœ¤¤É•ÑÕÉ¸É…Üì4(€¥˜€¡l¥¹ÁÕÑÌœ°€Ù¥‘•½Ìœ°€±¥ÁÌt¹Í½µ” ¡­•ä¤€ôø4(€€€=‰©•Ð¹ÁÉ½Ñ½ÑåÁ”¹¡…Í=Ý¹AÉ½Á•ÉÑä¹…±°¡É…Ü°­•ä¤¤¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È Y¥‘•¼¥¹ÁÕÑÌÝ•É”ÍÕÁÁ±¥•µ½É”Ñ¡…¸½¹”œ¤ì4(€ô4(€½¹ÍÐÑÉ…¹Í±…Ñ•€ôì€¸¸¹É…Ü°Ù¥‘•½ÌèÉ…Ü¹Ù¥‘•½A…Ñ¡Ìôì4(€‘•±•Ñ”ÑÉ…¹Í±…Ñ•¹Ù¥‘•½A…Ñ¡Ìì4(€É•ÑÕÉ¸ÑÉ…¹Í±…Ñ•ì4)ô4(4)™Õ¹Ñ¥½¸É•¹‘•É1½…°¡É…Ü¤ì4(€¥˜€¡…Ñ¥Ù•I•¹‘•È¤Ñ¡É½Ü¹•ÜÉÉ½È ¸•‘¥Ð¥Ì…±É•…‘äÉ•¹‘•É¥¹œœ¤ì4(€½¹ÍÐÉ•ÅÕ•ÍÐ€ô¹½Éµ…±¥é•1½…±I•ÅÕ•ÍÐ¡ÑÉ…¹Í±…Ñ•Y¥‘•½A…Ñ¡Ì¡É…Ü¤¤ì4(€É•ÅÕ¥É•¥…±½M•±•Ñ¥½¸¡É•ÅÕ•ÍÐ¤ì4(€½¹ÍÐÍ•ÑÑ¥¹Ì€ôÉ•ÅÕ¥É•I•…‘ä ¤ì4(€±½…±AÉ½•ÍÌ œ´µ±½…°µÉ•¹‘•Èœ°É•ÅÕ•ÍÐ°€É•¹‘•Èœ°4(€€€Í•ÑÑ¥¹Í½É1½…±I•¹‘•È¡Í•ÑÑ¥¹Ì¤¤ì4(€É•ÑÕÉ¸ì½¬èÑÉÕ”ôì4)ô4(4)™Õ¹Ñ¥½¸¡…Ñ1½…°¡É…Ü¤ì4(€¥˜€¡…Ñ¥Ù•¡…Ð¤Ñ¡É½Ü¹•ÜÉÉ½È ••ÁM••¬¥Ì…±É•…‘ä…¹ÍÝ•É¥¹œœ¤ì4(€½¹ÍÐÉ•ÅÕ•ÍÐ€ô¹½Éµ…±¥é•¡…ÑI•ÅÕ•ÍÐ¡É…Ü¤ì4(€±•ÐÙ¥‘•½A…Ñ¡Ì€ômtì4(€¥˜€¡É…Ü€˜˜=‰©•Ð¹ÁÉ½Ñ½ÑåÁ”¹¡…Í=Ý¹AÉ½Á•ÉÑä¹…±°¡É…Ü°€Ù¥‘•½A…Ñ¡Ìœ¤¤ì4(€€€Ù¥‘•½A…Ñ¡Ì€ô¹½Éµ…±¥é•Y¥‘•½A…Ñ¡Ì¡É…Ü¹Ù¥‘•½A…Ñ¡Ì¤ì4(€€€™½È€¡½¹ÍÐÙ¥‘•¼½˜Ù¥‘•½A…Ñ¡Ì¤ì4(€€€€€¥˜€ …Í•±•Ñ•‘Y¥‘•½Ì¹¡…Ì¡™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡Ù¥‘•¼¤¤¤ì4(€€€€€€€Ñ¡É½Ü¹•ÜÉÉ½È ÑÑ… •Ù•ÉäÙ¥‘•¼Ý¥Ñ Ñ¡”Á¥­•È½È‰ä‘É…¥¹œ¥Ð¥¹Ñ¼ÕÑ½‘¥Ñ½Èœ¤ì4(€€€€€ô4(€€€ô4(€ô4(€¥˜€¡É…Ü€˜˜É…Ü¹É•ÍÕ±ÑA…Ñ ¤ì4(€€€½¹ÍÐÉ•…°€ôÉ•…±¥±”¡É…Ü¹É•ÍÕ±ÑA…Ñ ¤ì4(€€€¥˜€ …É•ÑÕÉ¹•‘=ÕÑÁÕÑÌ¹¡…Ì¡É•…°¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È Q¡…ÐÉ•ÍÕ±Ð¥Ì¹½Ð™É½´Ñ¡¥ÌÕÑ½‘¥Ñ½ÈÍ•ÍÍ¥½¸œ¤ì4(€€€ô4(€ô4(€½¹ÍÐÍ•ÑÑ¥¹Ì€ôÉ•ÅÕ¥É•M•ÕÉ•M•ÑÑ¥¹Ì ¤ì4(€¥˜€ …Í•ÑÑ¥¹Ì¹‘••ÁÍ••­Á¥-•ä¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È ‘å½ÕÈ••ÁM••¬A$­•ä‰•™½É”½Á•¹¥¹œÑ¡”•‘¥Ð¡…Ðœ¤ì4(€ô4(€½¹ÍÐ…Ñ¥½¸€ôì4(€€€¥è€¬­…Ñ¥½¹M•ÅÕ•¹”°­¥¹è€¡…Ðœ°½ÕÑÁÕÑ¥Èè€œœ°ÁÉ½Œè¹Õ±°°4(€€€Ñ•Éµ¥¹…°è™…±Í”°…¹•±•è™…±Í”°ÁÉ½É•ÍÌè¹Õ±°°µ•…ÍÕÉ…‰±”è™…±Í”°4(€€€ÍÑ…”è€…¹…±åÍ¥Ìœ°µ•ÍÍ…”è€¹…±åé¥¹œ¸¸¸œ°4(€€€ÍÑ…ÉÑ•‘Ðè…Ñ”¹¹½Ü ¤°±…ÍÑÑ¥Ù¥ÑåÐè…Ñ”¹¹½Ü ¤°4(€ôì4(€…Ñ¥Ù•¡…Ð€ô…Ñ¥½¸ì4(€Í•¹ ¡•±Á•ÈµÍÑ…Ñ”œ°ì4(€€€ÉÕ¹¹¥¹œè€„……Ñ¥Ù•I•¹‘•È°É•¹‘•É¥¹œè€„……Ñ¥Ù•I•¹‘•È°¡…ÑÑ¥¹œèÑÉÕ”°4(€€€…Ñ¥Ù•I•¹‘•Èè…Ñ¥Ù•I•¹‘•ÉMÑ…Ñ” ¤°4(€ô¤ì4(€€¡…Íå¹Œ€ ¤€ôøì4(€€€±•Ðµ•‘¥…¹…±åÍ¥Ì€ô¹Õ±°ì4(€€€¥˜€¡Ù¥‘•½A…Ñ¡Ì¹±•¹Ñ ¤ì4(€€€€€ÑÉäì4(€€€€€€€µ•‘¥…¹…±åÍ¥Ì€ô…Ý…¥Ð…¹…±åé•5•‘¥„¡ì4(€€€€€€€€€Ù¥‘•½A…Ñ¡Ì°4(€€€€€€€€€ÉÕ¹Ñ¥µ”èÉÕ¹Ñ¥µ•A…Ñ¡Ì ¤°4(€€€€€€€€€•¹Øè‘…•µ½¹¹Ø¡Í•ÑÑ¥¹Í½É1½…±I•¹‘•È¡Í•ÑÑ¥¹Ì¤¤°4(€€€€€€€€€…¡•I½½ÐèÁ…Ñ ¹©½¥¸¡…ÁÀ¹•ÑA…Ñ  ÕÍ•É…Ñ„œ¤°€µ•‘¥„µ…¹…±åÍ¥Ìµ…¡”œ¤°4(€€€€€€€€€‘•ÍÉ¥‰•É…µ•Ìè€¡™É…µ•Ì¤€ôøÉ•ÅÕ•ÍÑY¥Í¥½¸¡™É…µ•Ì°…Ñ¥½¸¤°4(€€€€€€€€€•µ¥Ðè€¡±¥¹”¤€ôøÁÉ½•ÍÍ1½…±Ù•¹Ð¡ì4(€€€€€€€€€€€•Ù•¹Ðè€±½…°µÁÉ½É•ÍÌœ°ÍÑ…”è€µ•‘¥„µ…¹…±åÍ¥Ìœ°±¥¹”°4(€€€€€€€€€ô°…Ñ¥½¸¤°4(€€€€€€€€€½¹¡¥±è€¡¡¥±¤€ôøì4(€€€€€€€€€€€¥˜€¡…Ñ¥Ù•¡…Ð€ôôô…Ñ¥½¸€˜˜€……Ñ¥½¸¹…¹•±•¤…Ñ¥½¸¹ÁÉ½Œ€ô¡¥±ì4(€€€€€€€€€ô°4(€€€€€€€ô¤ì4(€€€€€ô…Ñ €¡•ÉÉ½È¤ì4(€€€€€€€½¹ÍÐ‘•Ñ…¥°€ôMÑÉ¥¹œ¡•ÉÉ½Èü¹µ•ÍÍ…”ñð•ÉÉ½È¤¹Í±¥” À°€ÄÀÀÀ¤ì4(€€€€€€€ÁÉ½•ÍÍ1½…±Ù•¹Ð¡ì4(€€€€€€€€€•Ù•¹Ðè€±½…°µÁÉ½É•ÍÌœ°ÍÑ…”è€µ•‘¥„µ…¹…±åÍ¥Ìœ°4(€€€€€€€€€±¥¹”è1½…°µ•‘¥„…¹…±åÍ¥ÌÍÑ½ÁÁ•Í…™•±äè€‘í‘•Ñ…¥±õ€°4(€€€€€€€ô°…Ñ¥½¸¤ì4(€€€€€€€µ•‘¥…¹…±åÍ¥Ì€ôì4(€€€€€€€€€Í¡•µ„è€…ÕÑ½•‘¥Ñ½Èµ±½…°µµ•‘¥„µ…¹…±åÍ¥Ì½ØÈœ°4(€€€€€€€€€Ù¥‘•½Ìèmt°½É¥¥¹…±Y¥‘•½ÍUÁ±½…‘•è™…±Í”°•ÉÉ½Èè‘•Ñ…¥°°4(€€€€€€€ôì4(€€€€€ô4(€€€ô4(€€€¥˜€¡…Ñ¥Ù•¡…Ð€„ôô…Ñ¥½¸ñð…Ñ¥½¸¹…¹•±•¤É•ÑÕÉ¸ì4(€€€…Ñ¥½¸¹ÁÉ½Œ€ô¹Õ±°ì4(€€€½¹ÍÐ•Ù•¹Ð€ô…Ý…¥ÐÉÕ¹‘¥Ñ¥¹¡…Ð 4(€€€€€ì€¸¸¹É•ÅÕ•ÍÐ°µ•‘¥…¹…±åÍ¥Ì°¡…Í½µÁ±•Ñ•‘I•¹‘•Èè€„…É…Üü¹É•ÍÕ±ÑA…Ñ ô°4(€€€€€Í•ÑÑ¥¹Ì¹‘••ÁÍ••­Á¥-•ä°4(€€€€€€¡ÁÉ½É•ÍÌ¤€ôøÁÉ½•ÍÍ1½…±Ù•¹Ð¡ÁÉ½É•ÍÌ°…Ñ¥½¸¤¤ì4(€€€ÁÉ½•ÍÍ1½…±Ù•¹Ð¡•Ù•¹Ð°…Ñ¥½¸¤ì4(€ô¤ ¤¹…Ñ  ¡•ÉÉ½È¤€ôøì4(€€€ÁÉ½•ÍÍ1½…±Ù•¹Ð¡ì4(€€€€€•Ù•¹Ðè€±½…°µ•ÉÉ½Èœ°4(€€€€€•ÉÉ½Èè••ÁM••¬ÍÑ½ÁÁ•Í…™•±äè€‘í•ÉÉ½È¹µ•ÍÍ…”ñðMÑÉ¥¹œ¡•ÉÉ½È¥õ€°4(€€€ô°…Ñ¥½¸¤ì4(€ô¤¹™¥¹…±±ä  ¤€ôøì4(€€€¥˜€¡…Ñ¥Ù•¡…Ð€ôôô…Ñ¥½¸¤…Ñ¥Ù•¡…Ð€ô¹Õ±°ì4(€€€Í•¹ ¡•±Á•ÈµÍÑ…Ñ”œ°ì4(€€€€€ÉÕ¹¹¥¹œè€„……Ñ¥Ù•I•¹‘•È°É•¹‘•É¥¹œè€„……Ñ¥Ù•I•¹‘•È°¡…ÑÑ¥¹œè™…±Í”°4(€€€€€…Ñ¥Ù•I•¹‘•Èè…Ñ¥Ù•I•¹‘•ÉMÑ…Ñ” ¤°4(€€€ô¤ì4(€ô¤ì4(€É•ÑÕÉ¸ì½¬èÑÉÕ”ôì4)ô4(4)™Õ¹Ñ¥½¸…ÁÁ±å1½…°¡É…Ü¤ì4(€¥˜€¡…Ñ¥Ù•I•¹‘•È¤Ñ¡É½Ü¹•ÜÉÉ½È ¸•‘¥Ð¥Ì…±É•…‘äÉ•¹‘•É¥¹œœ¤ì4(€±•ÐÑÉ…¹Í±…Ñ•€ôÑÉ…¹Í±…Ñ•Y¥‘•½A…Ñ¡Ì¡É…Ü¤ì4(€±•ÐÉ•Ù¥Í¥½¹%¹ÁÕÐ€ô€œœì4(€¥˜€¡É…Ü€˜˜É…Ü¹É•ÍÕ±ÑA…Ñ ¤ì4(€€€É•Ù¥Í¥½¹%¹ÁÕÐ€ôÉ•…±¥±”¡É…Ü¹É•ÍÕ±ÑA…Ñ ¤ì4(€€€¥˜€ …É•ÑÕÉ¹•‘=ÕÑÁÕÑÌ¹¡…Ì¡É•Ù¥Í¥½¹%¹ÁÕÐ¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È Q¡…ÐÉ•Ù¥Í¥½¸Ñ…É•Ð¥Ì¹½Ð™É½´Ñ¡¥ÌÕÑ½‘¥Ñ½ÈÍ•ÍÍ¥½¸œ¤ì4(€€€ô4(€€€ÑÉ…¹Í±…Ñ•€ôì€¸¸¹ÑÉ…¹Í±…Ñ•°Ù¥‘•½ÌèmÉ•Ù¥Í¥½¹%¹ÁÕÑtôì4(€€€‘•±•Ñ”ÑÉ…¹Í±…Ñ•¹¥¹ÁÕÑÌì4(€€€‘•±•Ñ”ÑÉ…¹Í±…Ñ•¹Ù¥‘•½A…Ñ¡Ìì4(€€€‘•±•Ñ”ÑÉ…¹Í±…Ñ•¹±¥ÁÌì4(€ô4(€½¹ÍÐÉ•ÅÕ•ÍÐ€ô¹½Éµ…±¥é•ÁÁ±åI•ÅÕ•ÍÐ¡ÑÉ…¹Í±…Ñ•°ÁÉ½Á½Í…±]…ÍI•ÑÕÉ¹•¤ì4(€¥˜€¡É•Ù¥Í¥½¹%¹ÁÕÐ¤ì4(€€€¥˜€ …Í•±•Ñ•‘=ÕÑÁÕÑ¥ÉÌ¹¡…Ì¡™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡É•ÅÕ•ÍÐ¹½ÕÑÁÕÑ¥È¤¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È ¡½½Í”Ñ¡”½ÕÑÁÕÐ™½±‘•ÈÝ¥Ñ Ñ¡”¡½½Í”‰ÕÑÑ½¸œ¤ì4(€€€ô4(€ô•±Í”ì4(€€€É•ÅÕ¥É•¥…±½M•±•Ñ¥½¸¡É•ÅÕ•ÍÐ¤ì4(€ô4(€½¹ÍÐÍ•ÑÑ¥¹Ì€ôÉ•ÅÕ¥É•I•…‘ä ¤ì4(€±½…±AÉ½•ÍÌ œ´µ±½…°µÉ•¹‘•Èœ°É•ÅÕ•ÍÐ°€É•¹‘•Èœ°4(€€€Í•ÑÑ¥¹Í½É1½…±I•¹‘•È¡Í•ÑÑ¥¹Ì¤¤ì4(€É•ÑÕÉ¸ì½¬èÑÉÕ”ôì4)ô4(4)…Íå¹Œ™Õ¹Ñ¥½¸…¹•±1½…° ¤ì4(€½¹ÍÐ…Ñ¥½¸€ô…Ñ¥Ù•I•¹‘•Èì4(€¥˜€ ……Ñ¥½¸¤É•ÑÕÉ¸ì½¬èÑÉÕ”°…¹•±•è™…±Í”ôì4(€…Ñ¥½¸¹…¹•±•€ôÑÉÕ”ì4(€…Ñ¥Ù•I•¹‘•È€ô¹Õ±°ì4(€…Ý…¥ÐÍÑ½ÁAÉ½•ÍÍQÉ•”¡…Ñ¥½¸¹ÁÉ½Œ¤ì4(€Í•¹ ¡•±Á•ÈµÉ•¹‘•Èœ°ì4(€€€•Ù•¹Ðè€±½…°µÁÉ½É•ÍÌœ°…Ñ¥½¹%è…Ñ¥½¸¹¥°­¥¹è€É•¹‘•Èœ°4(€€€ÍÑ…”è€…¹•±•œ°±¥¹”è€‘¥Ð…¹•±•œ°4(€ô¤ì4(€Í•¹ ¡•±Á•ÈµÍÑ…Ñ”œ°ìÉÕ¹¹¥¹œè™…±Í”°É•¹‘•É¥¹œè™…±Í”°4(€€€¡…ÑÑ¥¹œè€„……Ñ¥Ù•¡…Ð°…Ñ¥Ù•I•¹‘•Èè¹Õ±°ô¤ì4(€É•ÑÕÉ¸ì½¬èÑÉÕ”°…¹•±•èÑÉÕ”ôì4)ô4(4)…Íå¹Œ™Õ¹Ñ¥½¸Á¥­Y¥‘•½Ì ¤ì4(€½¹ÍÐÉ•ÍÕ±Ð€ô…Ý…¥Ð‘¥…±½œ¹Í¡½Ý=Á•¹¥…±½œ¡Ý¥¸°ì4(€€€Ñ¥Ñ±”è€¡½½Í”Ù¥‘•½ÌÑ¼•‘¥Ðœ°4(€€€ÁÉ½Á•ÉÑ¥•Ìèl½Á•¹¥±”œ°€µÕ±Ñ¥M•±•Ñ¥½¹Ìt°4(€€€™¥±Ñ•ÉÌèmì¹…µ”è€Y¥‘•½Ìœ°•áÑ•¹Í¥½¹ÌèlµÀÐœ°€µ½Øœ°€´ÑØœ°€µ­Øœ°€Ý•‰´tõt°4(€ô¤ì4(€¥˜€¡É•ÍÕ±Ð¹…¹•±•¤É•ÑÕÉ¸mtì4(€½¹ÍÐÙ¥‘•½Ì€ô¹½Éµ…±¥é•Y¥‘•½A…Ñ¡Ì¡É•ÍÕ±Ð¹™¥±•A…Ñ¡Ì¤ì4(€™½È€¡½¹ÍÐÙ¥‘•¼½˜Ù¥‘•½Ì¤ì4(€€€¥˜€ …Y%=}aQ9M%=9L¹¡…Ì¡Á…Ñ ¹•áÑ¹…µ”¡Ù¥‘•¼¤¹Ñ½1½Ý•É…Í” ¤¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È ¡½½Í”5@Ð°5=X°4ÑX°5-X°½È]•‰4Ù¥‘•¼™¥±•Ìœ¤ì4(€€€ô4(€€€Í•±•Ñ•‘Y¥‘•½Ì¹…‘¡™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡Ù¥‘•¼¤¤ì4(€ô4(€É•ÑÕÉ¸Ù¥‘•½Ìì4)ô4(4)™Õ¹Ñ¥½¸…ÑÑ…¡É½ÁÁ•‘Y¥‘•½Ì¡É…Ü¤ì4(€½¹ÍÐÙ¥‘•½Ì€ô¹½Éµ…±¥é•Y¥‘•½A…Ñ¡Ì¡É…Ü¤ì4(€½¹ÍÐ…•ÁÑ•€ômtì4(€™½È€¡½¹ÍÐÙ¥‘•¼½˜Ù¥‘•½Ì¤ì4(€€€¥˜€ …Y%=}aQ9M%=9L¹¡…Ì¡Á…Ñ ¹•áÑ¹…µ”¡Ù¥‘•¼¤¹Ñ½1½Ý•É…Í” ¤¤¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È É½À5@Ð°5=X°4ÑX°5-X°½È]•‰4Ù¥‘•¼™¥±•Ìœ¤ì4(€€€ô4(€€€½¹ÍÐÉ•…°€ô™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡Ù¥‘•¼¤ì4(€€€Í•±•Ñ•‘Y¥‘•½Ì¹…‘¡É•…°¤ì4(€€€…•ÁÑ•¹ÁÕÍ ¡É•…°¤ì4(€ô4(€É•ÑÕÉ¸…•ÁÑ•ì4)ô4(4)™Õ¹Ñ¥½¸½Á•¹I•Í•…É¡M½ÕÉ”¡ÕÉ°¤ì4(€¥˜€¡ÑåÁ•½˜ÕÉ°€„ôô€ÍÑÉ¥¹œœñð€…É•ÑÕÉ¹•‘I•Í•…É¡M½ÕÉ•Ì¹¡…Ì¡ÕÉ°¤¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È Q¡…ÐÉ•Í•…É Í½ÕÉ”¥Ì¹½Ð™É½´Ñ¡¥ÌÕÑ½‘¥Ñ½ÈÍ•ÍÍ¥½¸œ¤ì4(€ô4(€É•ÑÕÉ¸Í¡•±°¹½Á•¹áÑ•É¹…°¡ÕÉ°¤ì4)ô4(4)…Íå¹Œ™Õ¹Ñ¥½¸Á¥­=ÕÑÁÕÐ ¤ì4(€½¹ÍÐÉ•ÍÕ±Ð€ô…Ý…¥Ð‘¥…±½œ¹Í¡½Ý=Á•¹¥…±½œ¡Ý¥¸°ì4(€€€Ñ¥Ñ±”è€¡½½Í”Ý¡•É”Ñ¼Í…Ù”Ñ¡”™¥¹¥Í¡•Ù¥‘•¼œ°4(€€€ÁÉ½Á•ÉÑ¥•Ìèl½Á•¹¥É•Ñ½Éäœ°€É•…Ñ•¥É•Ñ½Éät°4(€ô¤ì4(€¥˜€¡É•ÍÕ±Ð¹…¹•±•¤É•ÑÕÉ¸€œœì4(€½¹ÍÐ½ÕÑÁÕÐ€ô¹½Éµ…±¥é•=ÕÑÁÕÑ¥È¡É•ÍÕ±Ð¹™¥±•A…Ñ¡ÍlÁt¤ì4(€Í•±•Ñ•‘=ÕÑÁÕÑ¥ÉÌ¹…‘¡™Ì¹É•…±Á…Ñ¡Må¹Œ¹¹…Ñ¥Ù”¡½ÕÑÁÕÐ¤¤ì4(€É•ÑÕÉ¸½ÕÑÁÕÐì4)ô4(4)™Õ¹Ñ¥½¸½Á•¹I•ÍÕ±Ð¡É…Ü°…Ñ¥½¸€ô€É•Ù•…°œ¤ì4(€¥˜€¡ÑåÁ•½˜É…Ü€„ôô€ÍÑÉ¥¹œœ¤Ñ¡É½Ü¹•ÜÉÉ½È I•ÍÕ±ÐÁ…Ñ µÕÍÐ‰”„ÍÑÉ¥¹œœ¤ì4(€¥˜€¡…Ñ¥½¸€„ôô€½Á•¸œ€˜˜…Ñ¥½¸€„ôô€É•Ù•…°œ¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È I•ÍÕ±Ð…Ñ¥½¸µÕÍÐ‰”½Á•¸½ÈÉ•Ù•…°œ¤ì4(€ô4(€½¹ÍÐÉ•…°€ôÉ•…±¥±”¡É…Ü¤ì4(€¥˜€ …É•ÑÕÉ¹•‘=ÕÑÁÕÑÌ¹¡…Ì¡É•…°¤¤ì4(€€€Ñ¡É½Ü¹•ÜÉÉ½È Q¡…ÐÉ•ÍÕ±Ð¥Ì¹½Ð™É½´Ñ¡¥ÌÕÑ½‘¥Ñ½ÈÍ•ÍÍ¥½¸œ¤ì4(€ô4(€¥˜€¡…Ñ¥½¸€ôôô€½Á•¸œ¤É•ÑÕÉ¸Í¡•±°¹½Á•¹A…Ñ ¡É•…°¤ì4(€Í¡•±°¹Í¡½Ý%Ñ•µ%¹½±‘•È¡É•…°¤ì4(€É•ÑÕÉ¸ì½¬èÑÉÕ”°…Ñ¥½¸ôì4)ô4(4)™Õ¹Ñ¥½¸Í•ÑÕÁ%ÁŒ ¤ì4(€¥Á5…¥¸¹½¸ ¡•±Á•ÈéÙ¥Í¥½¸µÁÉ½É•ÍÌœ°¡…¹‘±•Y¥Í¥½¹AÉ½É•ÍÌ¤ì4(€¥Á5…¥¸¹½¸ ¡•±Á•ÈéÙ¥Í¥½¸µÉ•ÍÕ±Ðœ°¡…¹‘±•Y¥Í¥½¹I•ÍÕ±Ð¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÍÑ…Ñ”œ°€ ¤€ôøì4(€€€½¹ÍÐÍÉ••¹Í¡½Ñ5½‘”€ô€„…ÁÉ½•ÍÌ¹•¹Ø¹UQ=%Q=I}MI9M!=Q}AQ ì4(€€€½¹ÍÐÍ•ÑÑ¥¹Ì€ôÍÉ••¹Í¡½Ñ5½‘”€üíô€è±½…‘M•ÑÑ¥¹Ì ¤ì4(€€€É•ÑÕÉ¸ì4(€€€€€½¹™¥ÕÉ•èÑÉÕ”°4(€€€€€ÉÕ¹¹¥¹œè€„……Ñ¥Ù•I•¹‘•È°4(€€€€€É•¹‘•É¥¹œè€„……Ñ¥Ù•I•¹‘•È°4(€€€€€¡…ÑÑ¥¹œè€„……Ñ¥Ù•¡…Ð°4(€€€€€…Ñ¥Ù•I•¹‘•Èè…Ñ¥Ù•I•¹‘•ÉMÑ…Ñ” ¤°4(€€€€€Í•ÑÑ¥¹ÌèÍ•ÑÑ¥¹ÍAÉ•Í•¹”¡Í•ÑÑ¥¹Ì¤°4(€€€€€…Á…‰¥±¥Ñ¥•Ìèì4(€€€€€€€‘••ÁÍ••¬è€„…Í•ÑÑ¥¹Ì¹‘••ÁÍ••­Á¥-•ä°4(€€€€€€€Á•á•±Ìè€„…Í•ÑÑ¥¹Ì¹Á•á•±ÍÁ¥-•ä°4(€€€€€€€Á¥á…‰…äè€„…Í•ÑÑ¥¹Ì¹Á¥á…‰…åÁ¥-•ä°4(€€€€€€€•±•Ù•¹±…‰Ìè€„…Í•ÑÑ¥¹Ì¹•±•Ù•¹1…‰ÍÁ¥-•ä°4(€€€€€€€É•µ½Ñ¥½¸èÑÉÕ”°4(€€€€€€€¡åÁ•É™É…µ•ÌèÑÉÕ”°4(€€€€€ô°4(€€€€€ÁÉ•™±¥¡ÐèÁÉ•™±¥¡Ð¡ì¡•­-•åÍÑ½É”è€…ÍÉ••¹Í¡½Ñ5½‘”ô¤°4(€€€€€Ù•ÉÍ¥½¸è…ÁÀ¹•ÑY•ÉÍ¥½¸ ¤°4(€€€€€Á±…Ñ™½É´èÁÉ½•ÍÌ¹Á±…Ñ™½É´°4(€€€€€½¹Ù•ÉÍ…Ñ¥½¸èÍÉ••¹Í¡½Ñ5½‘”€ü¹Õ±°€è±½…‘½¹Ù•ÉÍ…Ñ¥½¸ ¤°4(€€€ôì4(€ô¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÁ¥¬µÙ¥‘•½Ìœ°€ ¤€ôøÁ¥­Y¥‘•½Ì ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé…ÑÑ… µ‘É½ÁÁ•µÙ¥‘•½Ìœ°€¡}•Ù•¹Ð°™¥±•Ì¤€ôø4(€€€…ÑÑ…¡É½ÁÁ•‘Y¥‘•½Ì¡™¥±•Ì¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÁ¥¬µ½ÕÑÁÕÐœ°€ ¤€ôøÁ¥­=ÕÑÁÕÐ ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÍ…Ù”µÍ•ÑÑ¥¹Ìœ°€¡}•Ù•¹Ð°¥¹ÁÕÐ¤€ôøÍ…Ù•M•ÑÑ¥¹Ì¡¥¹ÁÕÐ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÍ…Ù”µ½¹Ù•ÉÍ…Ñ¥½¸œ°€¡}•Ù•¹Ð°¥¹ÁÕÐ¤€ôø4(€€€Í…Ù•½¹Ù•ÉÍ…Ñ¥½¸¡¥¹ÁÕÐ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•ÈéÉ•¹‘•Èµ±½…°œ°€¡}•Ù•¹Ð°¥¹ÁÕÐ¤€ôøÉ•¹‘•É1½…°¡¥¹ÁÕÐ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé…¹•°µ±½…°œ°€ ¤€ôø…¹•±1½…° ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé¡…Ðµ±½…°œ°€¡}•Ù•¹Ð°¥¹ÁÕÐ¤€ôø¡…Ñ1½…°¡¥¹ÁÕÐ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé…ÁÁ±äµ±½…°œ°€¡}•Ù•¹Ð°¥¹ÁÕÐ¤€ôø…ÁÁ±å1½…°¡¥¹ÁÕÐ¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé½Á•¸µÉ•ÍÕ±Ðœ°€¡}•Ù•¹Ð°É•ÍÕ±ÑA…Ñ °…Ñ¥½¸¤€ôø4(€€€½Á•¹I•ÍÕ±Ð¡É•ÍÕ±ÑA…Ñ °…Ñ¥½¸¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé½Á•¸µÉ•Í•…É µÍ½ÕÉ”œ°€¡}•Ù•¹Ð°ÕÉ°¤€ôø4(€€€½Á•¹I•Í•…É¡M½ÕÉ”¡ÕÉ°¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé¹½Ñ¥•Ìœ°€ ¤€ôøÍ¡•±°¹½Á•¹A…Ñ ¡ÉÕ¹Ñ¥µ•A…Ñ¡Ì ¤¹¹½Ñ¥•Ì¤¤ì4(€¥Á5…¥¸¹¡…¹‘±” ¡•±Á•Èé½Á•¸œ°€¡}•Ù•¹Ð°­•ä¤€ôøì4(€€€¥˜€¡ÑåÁ•½˜­•ä€„ôô€ÍÑÉ¥¹œœñð€…AI=Y%I}1%9-Mm­•åt¤ì4(€€€€€Ñ¡É½Ü¹•ÜÉÉ½È Q¡…Ð¡•±À±¥¹¬¥Ì¹½Ð…±±½Ý•œ¤ì4(€€€ô4(€€€É•ÑÕÉ¸Í¡•±°¹½Á•¹áÑ•É¹…°¡AI=Y%I}1%9-Mm­•åt¤ì4(€ô¤ì4)ô4(4)™Õ¹Ñ¥½¸Íµ½­•Q•ÍÐ ¤ì4(€½¹ÍÐÍ•ÑÑ¥¹Ì€ôì4(€€€‘••ÁÍ••­Á¥-•äè€œœ°Á•á•±ÍÁ¥-•äè€œœ°Á¥á…‰…åÁ¥-•äè€œœ°4(€€€•±•Ù•¹1…‰ÍÁ¥-•äè€œœ°É•µ½Ñ¥½¹-•äè€™É•”µ±¥•¹Í”œ°4(€ôì4(€½¹ÍÐÀ€ôÉÕ¹Ñ¥µ•A…Ñ¡Ì ¤ì4(€½¹ÍÐ¡¥±€ôÍÁ…Ý¹Må¹Œ¡À¹‘…•µ½¸°mt°ì4(€€€•¹Øèì€¸¸¹‘…•µ½¹¹Ø¡Í•ÑÑ¥¹Ì¤°UQ=%Q=I}!1AI}M5=-}QMPè€œÄœô°4(€€€Ý¥¹‘½ÝÍ!¥‘”èÑÉÕ”°•¹½‘¥¹œè€ÕÑ˜àœ°Ñ¥µ•½ÕÐè€ÌÀÀÀÀ°4(€ô¤ì4(€½¹ÍÐÉ•…Ñ¥Ù”€ôÍÁ…Ý¹Må¹Œ¡À¹‘…•µ½¸°mt°ì4(€€€•¹Øèì€¸¸¹‘…•µ½¹¹Ø¡Í•ÑÑ¥¹Ì¤°UQ=%Q=I}IQ%Y}M5=-}QMPè€œÄœô°4(€€€Ý¥¹‘½ÝÍ!¥‘”èÑÉÕ”°•¹½‘¥¹œè€ÕÑ˜àœ°Ñ¥µ•½ÕÐè€ÌØÀÀÀÀ°4(€ô¤ì4(€€¼¼ÉÑ¥™…ÐÍµ½­”Ù…±¥‘…Ñ•ÌÑ¡”¥¹ÍÑ…±±•ÉÕ¹Ñ¥µ”½¸Íµ…±°¡½ÍÑ•ÉÕ¹¹•ÉÌ¸4(€€¼¼%¹Ñ•É…Ñ¥Ù”…Ñ¥½¹ÌÉ•Ñ…¥¸Ñ¡”€ÈÀ¥…Ñ”¸4(€½¹ÍÐ¡•­Ì€ôÁÉ•™±¥¡Ð¡ì¡•­-•åÍÑ½É”è™…±Í”°¡•­¥Í¬è™…±Í”ô¤ì4(€½¹ÍÐÉ•ÍÕ±Ð€ôì4(€€€Á…­…•èA-°4(€€€ÁÉ•™±¥¡Ðè¡•­Ì¹½¬°4(€€€‘…•µ½¹á¥Ðè¡¥±¹ÍÑ…ÑÕÌ€ôôô€À°4(€€€‘…•µ½¹I••¥ÁÐè€¡¡¥±¹ÍÑ‘½ÕÐñð€œœ¤¹¥¹±Õ‘•Ì ¡•±Á•Èµ‘…•µ½¸µÍµ½­”œ¤°4(€€€É•…Ñ¥Ù•á¥ÐèÉ•…Ñ¥Ù”¹ÍÑ…ÑÕÌ€ôôô€À°4(€€€É•…Ñ¥Ù•I••¥ÁÐè€¡É•…Ñ¥Ù”¹ÍÑ‘½ÕÐñð€œœ¤¹¥¹±Õ‘•Ì ¡•±Á•ÈµÉ•…Ñ¥Ù”µÍµ½­”œ¤°4(€ôì4(€½¹Í½±”¹±½œ¡)M=8¹ÍÑÉ¥¹¥™ä¡ì•Ù•¹Ðè€¡•±Á•Èµ‘•Í­Ñ½ÀµÍµ½­”œ°¡•­ÌèÉ•ÍÕ±Ðô¤¤ì4(€É•ÑÕÉ¸=‰©•Ð¹Ù…±Õ•Ì¡É•ÍÕ±Ð¤¹•Ù•Éä¡	½½±•…¸¤ì4)ô4(4)™Õ¹Ñ¥½¸É•…Ñ•]¥¹‘½Ü ¤ì4(€½¹ÍÐ…ÁÑÕÉ•A…Ñ €ôÁÉ½•ÍÌ¹•¹Ø¹UQ=%Q=I}MI9M!=Q}AQ ñð€œœì4(€Ý¥¸€ô¹•Ü	É½ÝÍ•É]¥¹‘½Ü¡ì4(€€€Ý¥‘Ñ è€äÀÀ°¡•¥¡Ðè…ÁÑÕÉ•A…Ñ €ü€ÄÈÀÀ€è€ÜØÀ°4(€€€µ¥¹]¥‘Ñ è€ÜÀÀ°µ¥¹!•¥¡Ðè€ØÈÀ°Í¡½Üè€……ÁÑÕÉ•A…Ñ °4(€€€Ñ¥Ñ±”è€ÕÑ½‘¥Ñ½Èœ°‰…­É½Õ¹‘½±½Èè€œŒÁˆÁÄÀœ°4(€€€Ý•‰AÉ•™•É•¹•Ìèì4(€€€€€ÁÉ•±½…èÁ…Ñ ¹©½¥¸¡}}‘¥É¹…µ”°€ÁÉ•±½…¹©Ìœ¤°4(€€€€€½¹Ñ•áÑ%Í½±…Ñ¥½¸èÑÉÕ”°¹½‘•%¹Ñ•É…Ñ¥½¸è™…±Í”°Í…¹‘‰½àèÑÉÕ”°4(€€€ô°4(€ô¤ì4(€Ý¥¸¹±½…‘¥±”¡Á…Ñ ¹©½¥¸¡}}‘¥É¹…µ”°€É•¹‘•É•Èœ°€¥¹‘•à¹¡Ñµ°œ¤¤ì4(€¥˜€¡…ÁÑÕÉ•A…Ñ ¤ì4(€€€Ý¥¸¹Ý•‰½¹Ñ•¹ÑÌ¹½¹” ‘¥µ™¥¹¥Í µ±½…œ°…Íå¹Œ€ ¤€ôøì4(€€€€€…Ý…¥Ð¹•ÜAÉ½µ¥Í” ¡É•Í½±Ù”¤€ôøÍ•ÑQ¥µ•½ÕÐ¡É•Í½±Ù”°€àÀÀ¤¤ì4(€€€€€½¹ÍÐ¡•¥¡Ð€ô…Ý…¥ÐÝ¥¸¹Ý•‰½¹Ñ•¹ÑÌ¹•á•ÕÑ•)…Ù…MÉ¥ÁÐ 4(€€€€€€€€5…Ñ ¹µ¥¸ ÐÀÀÀ°‘½Õµ•¹Ð¹‘½Õµ•¹Ñ±•µ•¹Ð¹ÍÉ½±±!•¥¡Ð¤œ¤ì4(€€€€€Ý¥¸¹Í•Ñ½¹Ñ•¹ÑM¥é” äÀÀ°5…Ñ ¹µ…à ÄÈÀÀ°¡•¥¡Ð¤¤ì4(€€€€€½¹ÍÐÍ¡½Ð€ô…Ý…¥ÐÝ¥¸¹Ý•‰½¹Ñ•¹ÑÌ¹…ÁÑÕÉ•A…” ¤ì4(€€€€€™Ì¹ÝÉ¥Ñ•¥±•Må¹Œ¡…ÁÑÕÉ•A…Ñ °Í¡½Ð¹Ñ½A9 ¤¤ì4(€€€€€…ÁÀ¹•á¥Ð À¤ì4(€€€ô¤ì4(€ô4)ô4(4)…ÁÀ¹Ý¡•¹I•…‘ä ¤¹Ñ¡•¸  ¤€ôøì4(€¥˜€¡ÁÉ½•ÍÌ¹•¹Ø¹UQ=%Q=I}M5=-}QMP€ôôô€œÄœ¤ì4(€€€…ÁÀ¹•á¥Ð¡Íµ½­•Q•ÍÐ ¤€ü€À€è€Ä¤ì4(€€€É•ÑÕÉ¸ì4(€ô4(€É•¥ÍÑ•ÉY¥Í¥½¹AÉ½Ñ½½° ¤ì4(€Í•ÑÕÁ%ÁŒ ¤ì4(€É•…Ñ•]¥¹‘½Ü ¤ì4)ô¤ì4(4)…ÁÀ¹½¸ ‰•™½É”µÅÕ¥Ðœ°€ ¤€ôøì4(€É•©•ÑA•¹‘¥¹Y¥Í¥½¸ ÕÑ½‘¥Ñ½È¥Ì±½Í¥¹œœ¤ì4(€¥˜€¡…Ñ¥Ù•I•¹‘•È¤ÍÑ½ÁAÉ½•ÍÍQÉ•”¡…Ñ¥Ù•I•¹‘•È¹ÁÉ½Œ¤ì4(€¥˜€¡…Ñ¥Ù•¡…Ðü¹ÁÉ½Œ¤ÍÑ½ÁAÉ½•ÍÍQÉ•”¡…Ñ¥Ù•¡…Ð¹ÁÉ½Œ¤ì4)ô¤ì4)…ÁÀ¹½¸ Ý¥¹‘½Üµ…±°µ±½Í•œ°€ ¤€ôø…ÁÀ¹ÅÕ¥Ð ¤¤ì4(4)µ½‘Õ±”¹•áÁ½ÉÑÌ€ôìÉÕ¹Ñ¥µ•A…Ñ¡Ìôì4(
