@@ -34,7 +34,7 @@ jobs:
           unzip -p "$WIN" 'resources/app.asar' > windows-app.asar
           test -s windows-app.asar
           mkdir mac-image
-          7z x -y "$MAC" -omac-image >/dev/null
+          7z x -y "$MAC" -omac-image >/dev/null || true
           MAC_ASAR=$(find mac-image -type f -path '*/Contents/Resources/app.asar' -print -quit)
           test -n "$MAC_ASAR" && test -s "$MAC_ASAR"
           WIN_ASAR=$(sha256sum windows-app.asar | awk '{print $1}')
