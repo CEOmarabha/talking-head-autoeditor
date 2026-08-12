@@ -120,6 +120,9 @@ assert.ok(!helperMain.includes('AUTOEDITOR_WEB_API:'));
 assert.ok(!helperMain.includes('WORKER_TOKEN:'));
 assert.ok(helperWorkflow.includes('windows-2022'));
 assert.ok(!helperWorkflow.includes('macos-15-intel'));
+assert.ok(helperWorkflow.includes(
+  'Package and smoke-test the Windows x64 portable build'));
+assert.ok(helperWorkflow.includes('*-portable.zip'));
 assert.ok(helperWorkflow.includes('Render real HyperFrames and Remotion probes'));
 assert.ok(helperWorkflow.includes('STAGE=$(realpath "$STAGE")'));
 assert.ok(helperWorkflow.includes(

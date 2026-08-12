@@ -952,6 +952,39 @@ jobs:
             throw "Windows uninstall smoke test failed"
           }
 
+      - name: Package and smoke-test the Windows x64 portable build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $unpacked = Join-Path $env:HELPER_DIST "win-unpacked"
+          $app = Join-Path $unpacked "AutoEditor Helper.exe"
+          if (-not (Test-Path -LiteralPath $app)) {
+            throw "Accepted unpacked Windows app is missing"
+          }
+          $portable = Join-Path $env:HELPER_DIST `
+            "AutoEditor-Helper-${{ steps.release.outputs.version }}-windows-x64-portable.zip"
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          if (-not (Test-Path -LiteralPath $sevenZip)) {
+            throw "7-Zip is unavailable on the Windows runner"
+          }
+          & $sevenZip a -tzip -mx=1 $portable (Join-Path $unpacked "*")
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $portable) `
+              -or (Get-Item -LiteralPath $portable).Length -le 0) {
+            throw "Portable ZIP creation failed"
+          }
+          $verifyRoot = Join-Path $env:RUNNER_TEMP "helper-portable-verify"
+          New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
+          & $sevenZip x -y "-o$verifyRoot" $portable
+          if ($LASTEXITCODE -ne 0) { throw "Portable ZIP extraction failed" }
+          $portableApp = Join-Path $verifyRoot "AutoEditor Helper.exe"
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          try {
+            $smoke = Start-Process $portableApp -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SMOKE_TEST -ErrorAction SilentlyContinue
+          }
+          if ($smoke.ExitCode -ne 0) { throw "Portable Helper smoke test failed" }
+
       - name: Smoke-test macOS app, DMG, signing and notarization
         if: runner.os == 'macOS'
         shell: bash
@@ -1061,6 +1094,7 @@ jobs:
           path: |
             ${{ runner.temp }}/helper-dist/nsis-web/*.exe
             ${{ runner.temp }}/helper-dist/nsis-web/*.nsis.7z
+            ${{ runner.temp }}/helper-dist/*-portable.zip
             ${{ runner.temp }}/helper-dist/*.dmg
             ${{ runner.temp }}/helper-dist/*.blockmap
             ${{ runner.temp }}/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json
