@@ -243,7 +243,7 @@ try {
         source_start_seconds: 0, source_end_seconds: 1,
       },
       {
-        anchor_id: 'closer', anchor_text: 'closing line',
+        anchor_id: 'closer', anchor_text: 'closing line phrase with context',
         source_start_word: 8, source_end_word: 9,
         source_start_seconds: 9, source_end_seconds: 10,
       },
@@ -262,7 +262,7 @@ try {
     required_graphic: {
       kind: 'callout',
       text: 'OPENING VS CLOSING',
-      anchor_text: 'closing line',
+      anchor_text: 'closing line phrase with context',
     },
     music_allowed: false,
   };

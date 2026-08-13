@@ -25,6 +25,9 @@ _VISUAL_KEYS = frozenset({
     "opening_visual_required", "max_visual_gap_seconds",
 })
 _GRAPHIC_KEYS = frozenset({"kind", "text", "anchor_text"})
+_APOSTROPHE_TRANSLATION = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u02bc": "'", "\uff07": "'",
+})
 
 
 class CreativeConstraintsError(ValueError):
@@ -35,6 +38,12 @@ def canonical_text(value: object) -> str:
     return re.sub(
         r"\s+", " ", unicodedata.normalize("NFKC", str(value or ""))
     ).strip()
+
+
+def word_tokens(value: object) -> list[str]:
+    """Use one token boundary contract for constraints and creative QA."""
+    text = canonical_text(value).translate(_APOSTROPHE_TRANSLATION).lower()
+    return re.findall(r"[a-z0-9']+", text)
 
 
 def _plain_dict(value: object, keys: frozenset[str], label: str) -> dict:
@@ -112,9 +121,11 @@ def validate_creative_constraints(raw: object) -> dict:
                 "required_graphic.text must be uppercase, at most 44 characters "
                 "and four words"
             )
-        if not anchor or len(anchor) > 400:
+        if (not anchor or len(anchor) > 200
+                or not 5 <= len(word_tokens(anchor)) <= 20):
             raise CreativeConstraintsError(
-                "required_graphic.anchor_text must contain 1-400 characters"
+                "required_graphic.anchor_text must contain 5-20 exact words "
+                "and at most 200 characters"
             )
         clean_graphic = {"kind": kind, "text": text, "anchor_text": anchor}
     elif graphics_exact == 1:

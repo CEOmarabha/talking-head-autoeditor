@@ -493,6 +493,36 @@ def _qa_failure_issue(raw_path: object) -> str:
     return "; ".join(dict.fromkeys(failures))[:1000]
 
 
+def _validated_output_targets(result: dict, output_root: Path) -> tuple[
+        dict[str, str], dict[str, str]]:
+    """Bind pending engine files to distinct safe desktop promotion targets."""
+    outputs = result.get("outputs")
+    final_outputs = result.get("final_outputs")
+    if not isinstance(outputs, dict) or not outputs:
+        raise RuntimeError("the editing engine returned no finished video")
+    if not isinstance(final_outputs, dict) or set(final_outputs) != set(outputs):
+        raise RuntimeError("the editing engine omitted final output targets")
+    output_root = output_root.resolve()
+    finished: dict[str, str] = {}
+    desired: dict[str, str] = {}
+    for name, value in outputs.items():
+        path = Path(str(value)).resolve()
+        final_path = Path(str(final_outputs[name])).resolve()
+        try:
+            path.relative_to(output_root)
+            final_path.relative_to(output_root)
+        except ValueError as exc:
+            raise RuntimeError("the output escaped the selected folder") from exc
+        if not path.is_file():
+            raise RuntimeError("the finished video is missing")
+        if path == final_path or final_path.exists() or \
+                final_path.suffix.lower() != ".mp4":
+            raise RuntimeError("the final output target is unsafe")
+        finished[str(name)] = str(path)
+        desired[str(name)] = str(final_path)
+    return finished, desired
+
+
 def local_render() -> int:
     from webapp.render_worker.project_types import (
         engine_args, revision_engine_args,
@@ -564,24 +594,14 @@ def local_render() -> int:
                 "the premium editing plan or rendering engine did not pass; "
                 "no heuristic draft was substituted"
             )
-        outputs = result.get("outputs")
-        if not isinstance(outputs, dict) or not outputs:
-            raise RuntimeError("the editing engine returned no finished video")
-        finished: dict[str, str] = {}
-        output_root = request["output"]
-        for name, value in outputs.items():
-            path = Path(str(value)).resolve()
-            try:
-                path.relative_to(output_root)
-            except ValueError as exc:
-                raise RuntimeError("the output escaped the selected folder") from exc
-            if not path.is_file():
-                raise RuntimeError("the finished video is missing")
-            finished[str(name)] = str(path)
+        finished, desired = _validated_output_targets(
+            result, request["output"]
+        )
         _emit_local({
             "event": "local-result",
             "outputs": finished,
             "output": next(iter(finished.values())),
+            "finalOutputs": desired,
             "qaReport": str(result.get("qa_report") or ""),
             "qaPass": result.get("qa_pass") is True,
             "warning": ("" if result.get("qa_pass") is True else

@@ -39,4 +39,5 @@ contextBridge.exposeInMainWorld('helper', Object.freeze({
   onLog: (callback) => on('helper-log', callback),
   onRender: (callback) => on('helper-render', callback),
   onVisionRequest: (callback) => on('helper-vision-request', callback),
+  onVisionCancel: (callback) => on('helper-vision-cancel', callback),
 }));

@@ -17,6 +17,15 @@ let activeVisionId = null;
 let lastSavedConversation = '';
 let conversationSaveTimer = null;
 
+function resetVisionWorker(expectedId = null) {
+  if (expectedId !== null && activeVisionId !== expectedId) return false;
+  const worker = visionWorker;
+  visionWorker = null;
+  activeVisionId = null;
+  if (worker) worker.terminate();
+  return true;
+}
+
 function asError(error) {
   const text = error?.message || String(error || 'Something went wrong.');
   return text.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
@@ -24,12 +33,14 @@ function asError(error) {
 
 function localVisionWorker() {
   if (visionWorker) return visionWorker;
-  visionWorker = new Worker('../vision/vision-worker.bundle.js', {
+  const worker = new Worker('../vision/vision-worker.bundle.js', {
     name: 'autoeditor-local-vision',
   });
-  visionWorker.addEventListener('message', (event) => {
+  visionWorker = worker;
+  worker.addEventListener('message', (event) => {
     const value = event.data;
-    if (!value || typeof value !== 'object' || value.id !== activeVisionId) return;
+    if (worker !== visionWorker || !value || typeof value !== 'object' ||
+        value.id !== activeVisionId) return;
     if (value.status === 'progress') {
       window.helper.visionProgress({ id: value.id, line: value.line });
       return;
@@ -37,18 +48,20 @@ function localVisionWorker() {
     activeVisionId = null;
     window.helper.visionResult(value);
   });
-  visionWorker.addEventListener('error', (event) => {
-    if (!activeVisionId) return;
+  worker.addEventListener('error', (event) => {
+    if (worker !== visionWorker) return;
+    if (!activeVisionId) {
+      resetVisionWorker();
+      return;
+    }
     const id = activeVisionId;
-    activeVisionId = null;
+    resetVisionWorker(id);
     window.helper.visionResult({
       id, status: 'error',
       error: String(event.message || 'the local vision worker could not start').slice(0, 1000),
     });
-    visionWorker.terminate();
-    visionWorker = null;
   });
-  return visionWorker;
+  return worker;
 }
 
 window.helper.onVisionRequest((request) => {
@@ -69,9 +82,15 @@ window.helper.onVisionRequest((request) => {
         ? request.context.slice(0, 8000) : '',
     });
   } catch (error) {
-    activeVisionId = null;
+    resetVisionWorker(id);
     window.helper.visionResult({ id, status: 'error', error: asError(error).slice(0, 1000) });
   }
+});
+
+window.helper.onVisionCancel((request) => {
+  const id = request?.id;
+  if (!Number.isSafeInteger(id) || id < 1) return;
+  resetVisionWorker(id);
 });
 
 const CHAT_HISTORY_MAX_ENTRIES = 12;

@@ -9,10 +9,19 @@ const fs = require('fs');
 const path = require('path');
 const { stopProcessTree } = require('../lib/process-tree');
 const { runEditingChat } = require('./lib/editing-harness');
-const { analyzeMedia, extractFrames, probeVideo } = require('./lib/media-analysis');
 const {
-  artifactReviewPrompt,
+  analyzeMedia,
+  artifactCaptionRenderEvents,
+  artifactVisionCoverage,
+  artifactVisionPlan,
+  extractArtifactVisionFrames,
+  parseArtifactCaptions,
+  probeVideo,
+} = require('./lib/media-analysis');
+const {
+  artifactAudioQaReceipt,
   parseArtifactReview,
+  reviewArtifactFrames,
   reviewIssueText,
   reviewPasses,
 } = require('./lib/artifact-quality');
@@ -58,6 +67,8 @@ const PREFERENCE_POLICY_VERSION = '2026-08-12';
 const MAX_LOG_LINE = 20000;
 const MAX_LINE_BUFFER = 2 * 1024 * 1024;
 const MAX_VISION_FRAME_BYTES = 1536 * 1024;
+const MAX_ARTIFACT_EDL_BYTES = 2 * 1024 * 1024;
+const MAX_ARTIFACT_SIDECAR_BYTES = 2 * 1024 * 1024;
 const VISION_TIMEOUT_MS = 30 * 60 * 1000;
 const LOCAL_EVENTS = new Set([
   'local-progress', 'local-result', 'local-chat', 'local-error', 'local-canceled',
@@ -553,6 +564,7 @@ function requestVision(framePaths, action, {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingVision.delete(id);
+      sendVisionCancel(id, 'timeout');
       reject(new Error('the local vision model exceeded 30 minutes'));
     }, VISION_TIMEOUT_MS);
     pendingVision.set(id, { action, mode, resolve, reject, timer });
@@ -564,9 +576,17 @@ function requestVision(framePaths, action, {
   });
 }
 
+function sendVisionCancel(id, reason) {
+  if (!Number.isSafeInteger(id) || id < 1 || !win || win.isDestroyed()) return;
+  send('helper-vision-cancel', {
+    id, reason: String(reason || 'canceled').replace(/\0/g, '').slice(0, 100),
+  });
+}
+
 function rejectPendingVision(message) {
-  for (const pending of pendingVision.values()) {
+  for (const [id, pending] of pendingVision.entries()) {
     clearTimeout(pending.timer);
+    sendVisionCancel(id, message);
     pending.reject(new Error(message));
   }
   pendingVision.clear();
@@ -668,6 +688,20 @@ function sha256File(file) {
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
   });
+}
+
+async function assertVisionArtifactUnchanged(file, expectedStat,
+                                             expectedSha256) {
+  const before = fs.statSync(file);
+  const actualSha256 = await sha256File(file);
+  const after = fs.statSync(file);
+  const sameIdentity = (stat) => stat.size === expectedStat.size &&
+    stat.mtimeMs === expectedStat.mtimeMs && stat.dev === expectedStat.dev &&
+    stat.ino === expectedStat.ino;
+  if (!sameIdentity(before) || !sameIdentity(after) ||
+      actualSha256 !== expectedSha256) {
+    throw new Error('the finished artifact changed during final visual QA');
+  }
 }
 
 async function sourceManifestSha256(inputs) {
@@ -930,22 +964,62 @@ function rejectPendingVisionForAction(action, message) {
     if (pending.action !== action) continue;
     pendingVision.delete(id);
     clearTimeout(pending.timer);
+    sendVisionCancel(id, message);
     pending.reject(new Error(message));
   }
 }
 
-function visibleArtifactPath(event, outputDir) {
-  const candidates = [event.output];
-  if (event.outputs && typeof event.outputs === 'object' &&
-      !Array.isArray(event.outputs)) candidates.push(...Object.values(event.outputs));
-  for (const candidate of candidates) {
-    if (typeof candidate !== 'string') continue;
-    try {
-      const real = realFile(candidate);
-      if (isInside(outputDir, real)) return real;
-    } catch (_) { /* malformed daemon output is not reviewable */ }
+function validateFinalOutputTarget(outputDir, pendingRaw, finalRaw) {
+  if (typeof pendingRaw !== 'string' || typeof finalRaw !== 'string' ||
+      !path.isAbsolute(pendingRaw) || !path.isAbsolute(finalRaw) ||
+      pendingRaw.includes('\0') || finalRaw.includes('\0')) {
+    throw new Error('the pending/final artifact paths are invalid');
   }
-  throw new Error('the finished artifact is missing or outside the selected folder');
+  const root = fs.realpathSync.native(outputDir);
+  const pending = fs.realpathSync.native(pendingRaw);
+  const pendingRelative = path.relative(root, pending);
+  if (!pendingRelative || pendingRelative === '..' ||
+      pendingRelative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(pendingRelative) ||
+      !fs.statSync(pending).isFile() ||
+      !/\.UNVERIFIED(?:\.|$)/i.test(path.basename(pending))) {
+    throw new Error('the engine artifact is not a safe pending file');
+  }
+  const final = path.resolve(finalRaw);
+  const finalParent = fs.realpathSync.native(path.dirname(final));
+  const finalRelative = path.relative(root, final);
+  if (!finalRelative || finalRelative === '..' ||
+      finalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(finalRelative) ||
+      finalParent !== root || path.extname(final).toLowerCase() !== '.mp4' ||
+      final === pending || fs.existsSync(final)) {
+    throw new Error('the desired final artifact path is unsafe or already exists');
+  }
+  return { pending, approved: final };
+}
+
+function artifactPromotionTarget(event, outputDir) {
+  if (!event?.outputs || typeof event.outputs !== 'object' ||
+      Array.isArray(event.outputs) || !event.finalOutputs ||
+      typeof event.finalOutputs !== 'object' || Array.isArray(event.finalOutputs)) {
+    throw new Error('the engine omitted pending/final artifact mappings');
+  }
+  const keys = Object.keys(event.outputs);
+  const finalKeys = Object.keys(event.finalOutputs);
+  if (keys.length !== 1 || finalKeys.length !== keys.length ||
+      keys.some((key, index) => !key || key !== finalKeys[index])) {
+    throw new Error('the engine pending/final artifact keys do not match exactly');
+  }
+  const key = keys[0];
+  const target = validateFinalOutputTarget(
+    outputDir, event.outputs[key], event.finalOutputs[key]);
+  if (fs.realpathSync.native(event.output) !== target.pending) {
+    throw new Error('the primary artifact does not match its output key');
+  }
+  return { key, ...target };
+}
+
+function visibleArtifactPath(event, outputDir) {
+  return artifactPromotionTarget(event, outputDir).pending;
 }
 
 function markRenderFinished(action) {
@@ -967,12 +1041,65 @@ function quarantineRejectedArtifact(artifact) {
   return rejected;
 }
 
-function stageArtifactForVision(artifact) {
-  const parsed = path.parse(artifact);
-  const pending = path.join(parsed.dir,
-    `${parsed.name}.VISION-PENDING.${Date.now()}.${process.pid}${parsed.ext}`);
-  fs.renameSync(artifact, pending);
-  return { approved: artifact, pending };
+function stageArtifactForVision(actualPending, desiredFinal) {
+  return validateFinalOutputTarget(
+    path.dirname(desiredFinal), actualPending, desiredFinal);
+}
+
+function sha256FileSync(file) {
+  const handle = fs.openSync(file, 'r');
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (;;) {
+      const count = fs.readSync(handle, buffer, 0, buffer.length, null);
+      if (!count) break;
+      hash.update(buffer.subarray(0, count));
+    }
+    return hash.digest('hex');
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function promoteVisionArtifact(staged, expectedBytes, expectedSha256) {
+  if (!staged || fs.existsSync(staged.approved)) {
+    throw new Error('the desired final artifact path collided before promotion');
+  }
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1 ||
+      !/^[0-9a-f]{64}$/.test(expectedSha256 || '')) {
+    throw new Error('the reviewed artifact identity is unavailable for promotion');
+  }
+  // linkSync is an atomic, no-overwrite promotion on both supported desktop
+  // platforms/filesystems that support hard links. Removable, exFAT, and some
+  // network folders do not; COPYFILE_EXCL preserves no-overwrite semantics and
+  // is hash-verified before the pending name is removed.
+  try {
+    fs.linkSync(staged.pending, staged.approved);
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'EINVAL']
+      .includes(error?.code)) throw error;
+    let copied = false;
+    try {
+      fs.copyFileSync(
+        staged.pending, staged.approved, fs.constants.COPYFILE_EXCL);
+      copied = true;
+      const stat = fs.statSync(staged.approved);
+      if (stat.size !== expectedBytes ||
+          sha256FileSync(staged.approved) !== expectedSha256) {
+        throw new Error('the copied final artifact did not match the reviewed bytes');
+      }
+    } catch (copyError) {
+      if (copied) {
+        try { fs.unlinkSync(staged.approved); }
+        catch (_) { /* retain the original copy error */ }
+      }
+      throw copyError;
+    }
+  }
+  try { fs.unlinkSync(staged.pending); }
+  catch (_) { /* final hard link is already the reviewed immutable bytes */ }
+  return staged.approved;
 }
 
 function replaceEventArtifactPath(event, previous, next) {
@@ -983,6 +1110,270 @@ function replaceEventArtifactPath(event, previous, next) {
       if (value === previous) event.outputs[key] = next;
     }
   }
+}
+
+function readArtifactEdl(outputDir) {
+  const candidate = path.join(outputDir, 'EDL.json');
+  const real = fs.realpathSync.native(candidate);
+  if (!isInside(outputDir, real)) {
+    throw new Error('the final EDL is outside the selected output folder');
+  }
+  const handle = fs.openSync(real, 'r');
+  try {
+    const before = fs.fstatSync(handle);
+    if (!before.isFile() || before.size < 2 || before.size > MAX_ARTIFACT_EDL_BYTES) {
+      throw new Error('the final EDL has an invalid size');
+    }
+    const raw = Buffer.alloc(before.size);
+    if (fs.readSync(handle, raw, 0, before.size, 0) !== before.size) {
+      throw new Error('the final EDL changed while it was read');
+    }
+    const after = fs.fstatSync(handle);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+        after.dev !== before.dev || after.ino !== before.ino) {
+      throw new Error('the final EDL changed while it was read');
+    }
+    let edl;
+    try { edl = JSON.parse(raw.toString('utf8')); }
+    catch (_) { throw new Error('the final EDL is not valid JSON'); }
+    return {
+      file: path.basename(real),
+      bytes: before.size,
+      sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      edl,
+    };
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function readBoundedJsonSidecar(outputDir, file, label,
+                                maximum = MAX_ARTIFACT_SIDECAR_BYTES) {
+  const candidate = path.join(outputDir, file);
+  const real = fs.realpathSync.native(candidate);
+  if (!isInside(outputDir, real)) throw new Error(`${label} is outside the output folder`);
+  const handle = fs.openSync(real, 'r');
+  try {
+    const before = fs.fstatSync(handle);
+    if (!before.isFile() || before.size < 2 || before.size > maximum) {
+      throw new Error(`${label} has an invalid size`);
+    }
+    const raw = Buffer.alloc(before.size);
+    if (fs.readSync(handle, raw, 0, before.size, 0) !== before.size) {
+      throw new Error(`${label} changed while it was read`);
+    }
+    const after = fs.fstatSync(handle);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+        after.dev !== before.dev || after.ino !== before.ino) {
+      throw new Error(`${label} changed while it was read`);
+    }
+    let report;
+    try { report = JSON.parse(raw.toString('utf8')); }
+    catch (_) { throw new Error(`${label} is not valid JSON`); }
+    return { file: path.basename(real), bytes: before.size,
+      sha256: crypto.createHash('sha256').update(raw).digest('hex'), report };
+  } finally { fs.closeSync(handle); }
+}
+
+function readBoundedTextSidecar(outputDir, file, label,
+                                maximum = MAX_ARTIFACT_SIDECAR_BYTES) {
+  const candidate = path.join(outputDir, file);
+  const real = fs.realpathSync.native(candidate);
+  if (!isInside(outputDir, real)) throw new Error(`${label} is outside the output folder`);
+  const handle = fs.openSync(real, 'r');
+  try {
+    const before = fs.fstatSync(handle);
+    if (!before.isFile() || before.size < 1 || before.size > maximum) {
+      throw new Error(`${label} has an invalid size`);
+    }
+    const raw = Buffer.alloc(before.size);
+    if (fs.readSync(handle, raw, 0, before.size, 0) !== before.size) {
+      throw new Error(`${label} changed while it was read`);
+    }
+    const after = fs.fstatSync(handle);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+        after.dev !== before.dev || after.ino !== before.ino) {
+      throw new Error(`${label} changed while it was read`);
+    }
+    return { file: path.basename(real), bytes: before.size,
+      sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      text: raw.toString('utf8') };
+  } finally { fs.closeSync(handle); }
+}
+
+function sidecarBinding(contract, name, receipt, required = true) {
+  const binding = contract?.[name];
+  if (!binding && !required) return null;
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
+      binding.file !== receipt?.file || binding.sha256 !== receipt?.sha256 ||
+      !Number.isSafeInteger(binding.bytes) || binding.bytes < 1 ||
+      binding.bytes !== receipt?.bytes || !/^[0-9a-f]{64}$/.test(binding.sha256)) {
+    throw new Error(`engine QA does not bind the exact ${name} sidecar`);
+  }
+  return binding;
+}
+
+function contractSidecarFile(contract, name, required = true) {
+  const binding = contract?.[name];
+  if (!binding && !required) return '';
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding) ||
+      typeof binding.file !== 'string' || !binding.file ||
+      path.basename(binding.file) !== binding.file) {
+    throw new Error(`engine QA lacks a safe ${name} sidecar binding`);
+  }
+  return binding.file;
+}
+
+function readContractJsonSidecar(outputDir, contract, name, label,
+                                 required = true) {
+  const file = contractSidecarFile(contract, name, required);
+  if (!file) return null;
+  const receipt = readBoundedJsonSidecar(outputDir, file, label);
+  sidecarBinding(contract, name, receipt, required);
+  return receipt;
+}
+
+function readContractTextSidecar(outputDir, contract, name, label,
+                                 required = true) {
+  const file = contractSidecarFile(contract, name, required);
+  if (!file) return null;
+  const receipt = readBoundedTextSidecar(outputDir, file, label);
+  sidecarBinding(contract, name, receipt, required);
+  return receipt;
+}
+
+function artifactQaReleaseBinding(report, contract, promotion,
+                                  artifactSha256, artifactBytes) {
+  const releaseKeys = report.release && typeof report.release === 'object' &&
+      !Array.isArray(report.release) ? Object.keys(report.release) : [];
+  const release = releaseKeys.length === 1 && releaseKeys[0] === promotion.key
+    ? report.release[promotion.key] : null;
+  const delivery = contract.delivery;
+  const desiredBasename = path.basename(promotion.approved);
+  if (!release || !delivery || typeof delivery.file !== 'string' ||
+      path.basename(delivery.file) !== delivery.file ||
+      delivery.file !== desiredBasename ||
+      !Number.isSafeInteger(delivery.bytes) || delivery.bytes < 1 ||
+      delivery.sha256 !== artifactSha256 || delivery.bytes !== artifactBytes ||
+      typeof release.file !== 'string' ||
+      path.basename(release.file) !== desiredBasename ||
+      path.resolve(release.file) !== promotion.approved ||
+      !Number.isSafeInteger(release.bytes) || release.bytes !== artifactBytes ||
+      release.sha256 !== artifactSha256) {
+    throw new Error('engine QA does not bind the exact released artifact');
+  }
+  return release;
+}
+
+function readArtifactQaReport(outputDir, event, artifactSha256, artifactBytes) {
+  const promotion = artifactPromotionTarget(event, outputDir);
+  const requested = typeof event?.qaReport === 'string' && event.qaReport
+    ? path.basename(event.qaReport) : 'QA_REPORT.json';
+  if (requested !== 'QA_REPORT.json') {
+    throw new Error('the engine QA report path is invalid');
+  }
+  const receipt = readBoundedJsonSidecar(outputDir, requested, 'engine QA report');
+  const report = receipt.report;
+  if (report?.schema !== 'autoeditor-engine-qa/v2' || report.pass !== true ||
+      !report.artifact_contract || typeof report.artifact_contract !== 'object') {
+    throw new Error('the engine QA report lacks the versioned artifact contract');
+  }
+  const contract = report.artifact_contract;
+  const contractKeys = [
+    'schema', 'mode', 'delivery', 'edl', 'captions', 'caption_render',
+    'edit_boundaries', 'audio_mix',
+  ];
+  if (Object.keys(contract).length !== contractKeys.length ||
+      contractKeys.some((key) => !Object.prototype.hasOwnProperty.call(
+        contract, key)) ||
+      contract.schema !== 'autoeditor-engine-artifact-contract/v1' ||
+      (contract.mode !== 'generic-baseline' && contract.mode !== 'premium-edl')) {
+    throw new Error('the engine QA artifact mode is invalid');
+  }
+  const release = artifactQaReleaseBinding(
+    report, contract, promotion, artifactSha256, artifactBytes);
+  return { ...receipt, contract, release };
+}
+
+function readArtifactCaptions(outputDir, contract, durationSeconds) {
+  const receipt = readContractTextSidecar(
+    outputDir, contract, 'captions', 'artifact captions', false);
+  if (!receipt) return null;
+  return { ...receipt, events: parseArtifactCaptions(receipt.text, durationSeconds) };
+}
+
+function writeVisionQaReport(action, report) {
+  const encoded = `${JSON.stringify(report, null, 2)}\n`;
+  if (Buffer.byteLength(encoded, 'utf8') > 512 * 1024) {
+    throw new Error('the final vision QA report exceeded its safety bound');
+  }
+  fs.writeFileSync(path.join(action.outputDir, 'VISION_QA_REPORT.json'), encoded,
+    { encoding: 'utf8', mode: 0o600 });
+}
+
+function visionReport({ action, staged, artifactStat, qaReceipt, edlReceipt,
+                        captionReceipt, captionRenderReceipt, boundaryReceipt,
+                        mixReceipt, audioQa, plan, capture, reviewed, coverage,
+                        review, artifactSha256 = '', error = '' }) {
+  const planSummary = plan ? {
+    schema: plan.schema,
+    timeline: plan.timeline,
+    edlBound: plan.edlBound,
+    durationSeconds: plan.durationSeconds,
+    frameCount: plan.frames.length,
+    targetCount: plan.frames.reduce((total, frame) =>
+      total + frame.targets.length, 0),
+    captionSampling: plan.captionSampling || null,
+    cutSampling: plan.cutSampling || null,
+    sha256: sha256Text(stableJson(plan)),
+  } : null;
+  return {
+    schema: 'autoeditor-final-vision-qa/v3',
+    pass: !error && !!coverage?.complete && reviewPasses(review) &&
+      audioQa?.pass === true,
+    artifact: path.basename(staged?.approved || ''),
+    artifactBytes: Number(artifactStat?.size || 0),
+    artifactSha256,
+    edl: edlReceipt ? {
+      file: edlReceipt.file, bytes: edlReceipt.bytes, sha256: edlReceipt.sha256,
+    } : null,
+    engineQa: qaReceipt ? {
+      file: qaReceipt.file, bytes: qaReceipt.bytes, sha256: qaReceipt.sha256,
+      schema: qaReceipt.report?.schema,
+      artifactMode: qaReceipt.contract?.mode,
+    } : null,
+    captions: captionReceipt ? {
+      file: captionReceipt.file, bytes: captionReceipt.bytes,
+      sha256: captionReceipt.sha256, eventCount: captionReceipt.events?.length || 0,
+    } : null,
+    captionRender: captionRenderReceipt ? {
+      file: captionRenderReceipt.file, bytes: captionRenderReceipt.bytes,
+      sha256: captionRenderReceipt.sha256,
+      eventCount: Array.isArray(captionRenderReceipt.report?.events)
+        ? captionRenderReceipt.report.events.length : 0,
+    } : null,
+    editBoundaries: boundaryReceipt ? {
+      file: boundaryReceipt.file, bytes: boundaryReceipt.bytes,
+      sha256: boundaryReceipt.sha256,
+    } : null,
+    audioMix: mixReceipt ? {
+      file: mixReceipt.file, bytes: mixReceipt.bytes, sha256: mixReceipt.sha256,
+    } : null,
+    audioQa: audioQa || null,
+    plan: planSummary,
+    coverage: coverage || null,
+    coverageSha256: coverage ? sha256Text(stableJson(coverage)) : '',
+    captureFailures: Array.isArray(capture?.missing) ? capture.missing.map((item) => ({
+      id: String(item?.id || '').slice(0, 100),
+      timeSeconds: Number(item?.timeSeconds),
+      error: String(item?.error || '').replace(/\0/g, '').trim().slice(0, 500),
+    })) : [],
+    batches: Array.isArray(reviewed?.batches) ? reviewed.batches : [],
+    review: review || parseArtifactReview(''),
+    error: String(error || '').replace(/\0/g, '').trim().slice(0, 2000),
+    reviewedAt: new Date().toISOString(),
+    actionId: action.id,
+  };
 }
 
 function retryRejectedRender(action, artifact, issue) {
@@ -1009,71 +1400,217 @@ function retryRejectedRender(action, artifact, issue) {
   }, action);
   action.qaPending = false;
   if (activeRender === action) activeRender = null;
-  const retryRequest = normalizeApplyRequest(payload);
+  const retryRequest = payload.proposal
+    ? normalizeApplyRequest(payload) : normalizeLocalRequest(payload);
   localProcess('--local-render', retryRequest, 'render', action.settings,
     { ...action.resultContext, planSha256: planSha256(retryRequest) });
   return true;
+}
+
+function assertVisionAction(action) {
+  if (!action || action.canceled || activeRender !== action ||
+      action.qaPending !== true) {
+    throw new Error('local vision was canceled');
+  }
 }
 
 async function reviewArtifact(event, action) {
   let artifact = '';
   let staged = null;
   let work = '';
+  let artifactStat = null;
+  let artifactSha256 = '';
+  let qaReceipt = null;
+  let edlReceipt = null;
+  let captionReceipt = null;
+  let captionRenderReceipt = null;
+  let boundaryReceipt = null;
+  let mixReceipt = null;
+  let audioQa = null;
+  let plan = null;
+  let capture = { captured: [], missing: [] };
+  let reviewed = { reviewedFrameIds: [], reviewedTargetIds: [], batches: [] };
+  let coverage = null;
+  let review = parseArtifactReview('');
   try {
-    artifact = visibleArtifactPath(event, action.outputDir);
-    staged = stageArtifactForVision(artifact);
-    replaceEventArtifactPath(event, artifact, staged.pending);
+    const promotion = artifactPromotionTarget(event, action.outputDir);
+    artifact = promotion.pending;
+    staged = stageArtifactForVision(artifact, promotion.approved);
     artifact = staged.pending;
+    artifactStat = fs.statSync(artifact);
+    artifactSha256 = await sha256File(artifact);
+    assertVisionAction(action);
+    qaReceipt = readArtifactQaReport(
+      action.outputDir, event, artifactSha256, artifactStat.size);
     work = fs.mkdtempSync(path.join(app.getPath('userData'), 'artifact-review-'));
     processLocalEvent({
       event: 'local-progress', stage: 'artifact-quality', measurable: false,
-      message: 'Watching the finished video for visible quality problems...',
-      line: 'Premium visual QA is inspecting the complete rendered artifact before release.',
+      message: 'Building exact visual coverage for the finished video...',
+      line: 'Final QA is binding engine receipts, hook, timeline, captions, edit boundaries, and planned events before release.',
     }, action);
     const runtime = runtimePaths();
     const probe = await probeVideo(artifact, runtime, (child) => {
       if (activeRender === action && !action.canceled) action.proc = child;
     });
-    const frames = await extractFrames(
-      artifact, probe, work, 8, runtime, (child) => {
-        if (activeRender === action && !action.canceled) action.proc = child;
-      });
-    if (frames.length < 6) {
-      throw new Error('premium visual QA could not sample the complete artifact');
+    assertVisionAction(action);
+    const contract = qaReceipt.contract;
+    boundaryReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'edit_boundaries', 'edit-boundary receipt');
+    captionReceipt = readArtifactCaptions(
+      action.outputDir, contract, probe.durationSeconds);
+    captionRenderReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'caption_render', 'caption-render receipt', false);
+    mixReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'audio_mix', 'audio-mix receipt');
+    audioQa = artifactAudioQaReceipt(qaReceipt, mixReceipt, artifactSha256);
+    if (!audioQa.pass) {
+      throw new Error(`deterministic final audio QA failed: ${audioQa.note}`);
     }
-    const prompt = artifactReviewPrompt(action.payload?.creativeBrief || '');
-    const raw = await requestVision(frames, action, {
-      mode: 'artifact-quality', context: prompt,
+    const premium = contract.mode === 'premium-edl';
+    if (premium) {
+      edlReceipt = readArtifactEdl(action.outputDir);
+      sidecarBinding(contract, 'edl', edlReceipt);
+    } else if (contract.edl) {
+      throw new Error('generic baseline engine QA must not bind a premium EDL');
+    }
+    const captionDelivery = captionRenderReceipt
+      ? 'burned' : (captionReceipt ? 'sidecar' : 'none');
+    const captionVisionEvents = captionRenderReceipt
+      ? artifactCaptionRenderEvents(
+        captionRenderReceipt.report, probe.durationSeconds) : [];
+    plan = artifactVisionPlan(probe.durationSeconds, edlReceipt?.edl || null, {
+      requireEdl: premium,
+      captions: captionVisionEvents,
+      captionDelivery,
+      captionMechanicalEventCount: captionDelivery === 'burned'
+        ? captionVisionEvents.length : (captionReceipt?.events?.length || 0),
+      captionEvidenceSha256: captionRenderReceipt?.sha256 ||
+        captionReceipt?.sha256 || '',
+      editBoundaryEvidenceSha256: boundaryReceipt.sha256,
+      boundaries: boundaryReceipt.report,
     });
-    const review = parseArtifactReview(raw);
-    if (action.canceled || activeRender !== action) return;
+    capture = await extractArtifactVisionFrames(
+      artifact, plan, work, runtime, (child) => {
+        if (activeRender === action && !action.canceled) action.proc = child;
+      }, () => activeRender === action && !action.canceled);
+    assertVisionAction(action);
+    coverage = artifactVisionCoverage(plan, capture.captured, []);
+    if (capture.missing.length || capture.captured.length !== plan.frames.length) {
+      const missing = capture.missing.map((frame) =>
+        `${frame.id}@${Number(frame.timeSeconds).toFixed(3)}s`).join(', ');
+      const issue = `final visual QA could not capture every planned frame: ${missing}`;
+      throw new Error(issue);
+    }
+    const batchCount = Math.ceil(capture.captured.length / 8);
+    processLocalEvent({
+      event: 'local-progress', stage: 'artifact-quality', measurable: false,
+      message: `Watching ${capture.captured.length} exact QA frames in ${batchCount} local vision batch${batchCount === 1 ? '' : 'es'}...`,
+      line: `Exact visual plan includes ${plan.frames.length} frames across anchors, captions, boundaries, and planned visual events.`,
+    }, action);
+    reviewed = await reviewArtifactFrames(capture.captured, {
+      approvedBrief: action.payload?.creativeBrief || '',
+      captionDelivery: plan.captionSampling.deliveryMode,
+      requestBatch: async (frames, context) => {
+        assertVisionAction(action);
+        const result = await requestVision(
+          frames.map((frame) => frame.path), action,
+          { mode: 'artifact-quality', context });
+        assertVisionAction(action);
+        return result;
+      },
+    });
+    review = reviewed.review;
+    assertVisionAction(action);
+    coverage = artifactVisionCoverage(
+      plan, capture.captured, reviewed.reviewedTargetIds);
+    await assertVisionArtifactUnchanged(
+      artifact, artifactStat, artifactSha256);
+    assertVisionAction(action);
+    const report = visionReport({
+      action, staged, artifactStat, qaReceipt, edlReceipt, captionReceipt,
+      captionRenderReceipt, boundaryReceipt, mixReceipt, audioQa, plan, capture,
+      reviewed, coverage, review, artifactSha256,
+    });
+    writeVisionQaReport(action, report);
+    if (!coverage.complete) {
+      const categories = coverage.unobservedCategories.join(', ') || 'unknown';
+      throw new Error(
+        `Final visual QA coverage was incomplete; unobserved categories: ${categories}`);
+    }
     if (!reviewPasses(review)) {
       const issue = reviewIssueText(review);
-      const receipt = path.join(action.outputDir, 'VISION_QA_REPORT.json');
-      fs.writeFileSync(receipt, `${JSON.stringify({
-        ...review, artifact: path.basename(artifact), reviewedAt: new Date().toISOString(),
-      }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       if (retryRejectedRender(action, artifact, issue)) return;
-      throw new Error(`Premium visual QA rejected the draft: ${issue}`);
+      throw new Error(`Final visual QA rejected the draft: ${issue}`);
     }
-    event.visionQa = { pass: true, score: review.score };
-    fs.renameSync(staged.pending, staged.approved);
+    event.visionQa = {
+      pass: true,
+      score: review.score,
+      coverageComplete: true,
+      plannedFrames: coverage.plannedFrameCount,
+      reviewedFrames: coverage.reviewedFrameCount,
+      batches: reviewed.batches.length,
+      artifactMode: qaReceipt.contract.mode,
+      engineQaSha256: qaReceipt.sha256,
+      edlSha256: edlReceipt?.sha256 || '',
+      captionsSha256: captionReceipt?.sha256 || '',
+      editBoundariesSha256: boundaryReceipt.sha256,
+      audioMixSha256: mixReceipt.sha256,
+      deterministicAudioPass: audioQa.pass,
+      sfxCueCount: audioQa.sfx.boundCueCount,
+      perceptualAudioReviewed: false,
+      coverageSha256: report.coverageSha256,
+    };
+    const metadata = await approvedResultMetadata(action);
+    assertVisionAction(action);
+    await assertVisionArtifactUnchanged(
+      artifact, artifactStat, artifactSha256);
+    assertVisionAction(action);
+    promoteVisionArtifact(staged, artifactStat.size, artifactSha256);
     replaceEventArtifactPath(event, staged.pending, staged.approved);
     artifact = staged.approved;
-    const metadata = await approvedResultMetadata(action);
+    assertVisionAction(action);
     rememberResult(event, action.outputDir, metadata);
+    assertVisionAction(action);
     send('helper-render', { ...event, actionId: action.id, kind: action.kind });
     markRenderFinished(action);
-  } catch (error) {
+  } catch (caught) {
+    let error = caught;
+    if (staged) {
+      const progress = caught?.visionProgress;
+      if (progress) {
+        reviewed = {
+          reviewedFrameIds: progress.reviewedFrameIds || [],
+          reviewedTargetIds: progress.reviewedTargetIds || [],
+          batches: progress.receipts || [],
+        };
+      }
+      if (plan) {
+        try {
+          coverage = artifactVisionCoverage(
+            plan, capture.captured, reviewed.reviewedTargetIds);
+        } catch (_) { coverage = null; }
+      }
+      try {
+        writeVisionQaReport(action, visionReport({
+          action, staged, artifactStat, qaReceipt, edlReceipt, captionReceipt,
+          captionRenderReceipt, boundaryReceipt, mixReceipt, audioQa, plan,
+          capture, reviewed, coverage, review, artifactSha256,
+          error: error?.message || error,
+        }));
+      } catch (reportError) {
+        error = new Error(`${error?.message || error}; final vision QA report failed: ${
+          reportError.message || reportError}`);
+      }
+    }
     if (artifact && fs.existsSync(artifact) &&
         !/\.VISION-REJECTED(?:\.|$)/i.test(path.basename(artifact))) {
       try { quarantineRejectedArtifact(artifact); }
       catch (_) { /* failure is still reported and never registered as a result */ }
     }
-    if (action.canceled) return;
+    if (action.canceled || activeRender !== action) return;
     send('helper-render', {
       event: 'local-error', actionId: action.id, kind: 'render',
-      stage: 'premium visual quality assurance',
+      stage: 'final artifact quality assurance',
       error: `${error.message || String(error)} The draft was not exposed as a finished video. Retry after the reported issue is corrected.`,
     });
     markRenderFinished(action);
@@ -1390,27 +1927,72 @@ function chatLocal(raw) {
   return { ok: true };
 }
 
+function createRevisionOutputDir(outputRoot, priorResult) {
+  const root = fs.realpathSync.native(outputRoot);
+  const revisions = path.join(root, 'Revisions');
+  try { fs.mkdirSync(revisions, { mode: 0o700 }); }
+  catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+  const revisionRoot = fs.realpathSync.native(revisions);
+  const rootRelative = path.relative(root, revisionRoot);
+  if (!rootRelative || rootRelative === '..' ||
+      rootRelative.startsWith(`..${path.sep}`) || path.isAbsolute(rootRelative) ||
+      !fs.statSync(revisionRoot).isDirectory()) {
+    throw new Error('the revision output root is unsafe');
+  }
+  const rawStem = path.parse(priorResult).name
+    .replace(/\.VISION-(?:PENDING|REJECTED)(?:\..*)?$/i, '')
+    .replace(/\.UNVERIFIED(?:\..*)?$/i, '');
+  const stem = rawStem.normalize('NFKC').replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '').slice(0, 60) || 'edit';
+  for (let version = 1; version <= 9999; version += 1) {
+    const candidate = path.join(
+      revisionRoot, `${stem}-v${String(version).padStart(2, '0')}`);
+    try { fs.mkdirSync(candidate, { mode: 0o700 }); }
+    catch (error) {
+      if (error?.code === 'EEXIST') continue;
+      throw error;
+    }
+    const real = fs.realpathSync.native(candidate);
+    if (path.dirname(real) !== revisionRoot || !fs.statSync(real).isDirectory()) {
+      throw new Error('the generated revision output folder is unsafe');
+    }
+    return real;
+  }
+  throw new Error('the revision output folder limit was reached');
+}
+
 function applyLocal(raw) {
   if (activeRender) throw new Error('An edit is already rendering');
   let translated = translateVideoPaths(raw);
   let revisionInput = '';
   let revisionMetadata = null;
+  let revisionOutputDir = '';
   if (raw && raw.resultPath) {
     revisionInput = realFile(raw.resultPath);
     if (!returnedOutputs.has(revisionInput)) {
       throw new Error('That revision target is not from this AutoEditor session');
     }
     revisionMetadata = returnedOutputs.get(revisionInput);
+    const requestedRoot = normalizeOutputDir(translated.outputDir);
+    const selectedRoot = fs.realpathSync.native(requestedRoot);
+    if (!selectedOutputDirs.has(selectedRoot)) {
+      throw new Error('Choose the output folder with the Choose button');
+    }
+    revisionOutputDir = createRevisionOutputDir(selectedRoot, revisionInput);
     translated = { ...translated, videos: [revisionInput] };
+    translated.outputDir = revisionOutputDir;
     delete translated.inputs;
     delete translated.videoPaths;
     delete translated.clips;
   }
   const request = normalizeApplyRequest(translated, proposalWasReturned);
   if (revisionInput) {
-    if (!selectedOutputDirs.has(fs.realpathSync.native(request.outputDir))) {
-      throw new Error('Choose the output folder with the Choose button');
+    if (fs.realpathSync.native(request.outputDir) !== revisionOutputDir) {
+      throw new Error('the generated revision output folder changed');
     }
+    selectedOutputDirs.add(revisionOutputDir);
   } else {
     requireDialogSelection(request);
   }

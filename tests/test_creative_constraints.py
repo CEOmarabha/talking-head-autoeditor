@@ -69,6 +69,26 @@ class CreativeConstraintsTests(unittest.TestCase):
                     CreativeConstraintsError):
                 validate_creative_constraints(raw)
 
+    def test_required_graphic_anchor_requires_5_to_20_exact_words(self):
+        for anchor in (
+                "one two three four",
+                " ".join(f"word{index}" for index in range(21))):
+            raw = valid_constraints()
+            raw["required_graphic"]["anchor_text"] = anchor
+            with self.subTest(anchor=anchor), self.assertRaisesRegex(
+                    CreativeConstraintsError, "5-20"):
+                validate_creative_constraints(raw)
+        for word_count in (5, 20):
+            raw = valid_constraints()
+            raw["required_graphic"]["anchor_text"] = " ".join(
+                f"word{index}" for index in range(word_count)
+            )
+            self.assertEqual(
+                len(validate_creative_constraints(raw)["required_graphic"]
+                    ["anchor_text"].split()),
+                word_count,
+            )
+
     def test_rejects_music_string_and_nonfinite_gap(self):
         raw = valid_constraints()
         raw["music_allowed"] = "false"
@@ -77,7 +97,7 @@ class CreativeConstraintsTests(unittest.TestCase):
 
     def test_explicit_sparse_policy_replaces_generic_density_only(self):
         spoken = (
-            "Is now a bad time "
+            "Is now a bad time? "
             + " ".join(f"context{i}" for i in range(58))
             + " is now a bad time versus do you have a minute "
             + " closing thought lands clearly today"
@@ -153,6 +173,36 @@ class CreativeConstraintsTests(unittest.TestCase):
                 raw, words, [], 4.0, "short", constraints=constraints
             )
 
+    def test_explicit_zero_broll_overrides_generic_framework_diagram(self):
+        constraints = valid_constraints()
+        constraints["visual_policy"]["graphics_exact"] = 0
+        constraints["required_graphic"] = None
+        words = [
+            {"w": word, "s": index * 0.3, "e": index * 0.3 + 0.2}
+            for index, word in enumerate(
+                "Is now a bad time here are three ways to improve today".split()
+            )
+        ]
+        words[4]["w"] = "time?"
+        raw = {
+            "protocol_version": creative_contract.PROTOCOL_VERSION,
+            "timeline_space": creative_contract.TIMELINE_SPACE,
+            "punch_ins": [{
+                "s": 0.0, "e": 1.5, "scale": 1.1,
+                "anchor_quote": "Is now a bad time here",
+                "reason": "approved opening emphasis",
+            }],
+            "broll": [], "graphics": [],
+        }
+        _edl, report = creative_contract.validate_edl(
+            raw, words, [], 3.2, "short", constraints=constraints
+        )
+        self.assertTrue(report["diagram_ok"])
+        with self.assertRaisesRegex(
+                creative_contract.CreativeContractError,
+                "framework language is present"):
+            creative_contract.validate_edl(raw, words, [], 3.2, "short")
+
     def test_low_confidence_now_not_homophone_uses_approved_opener_text(self):
         constraints = valid_constraints()
         words = [
@@ -189,6 +239,33 @@ class CreativeConstraintsTests(unittest.TestCase):
         raw["visual_policy"]["max_visual_gap_seconds"] = float("nan")
         with self.assertRaises(CreativeConstraintsError):
             validate_creative_constraints(raw)
+
+    def test_exact_opener_case_and_punctuation_are_applied(self):
+        constraints = valid_constraints()
+        words = [
+            {"w": token, "s": index * 0.2, "e": index * 0.2 + 0.15,
+             "p": 0.99}
+            for index, token in enumerate(
+                ["is", "now", "a", "bad", "time."]
+            )
+        ]
+        self.assertFalse(
+            pipeline._approved_opener_check(words, constraints)["ok"]
+        )
+        self.assertFalse(
+            creative_contract._approved_opener_present(words, constraints)
+        )
+        corrected = pipeline.apply_approved_opener(words, constraints)
+        self.assertEqual(
+            [word["w"] for word in corrected],
+            ["Is", "now", "a", "bad", "time?"],
+        )
+        self.assertTrue(
+            pipeline._approved_opener_check(corrected, constraints)["ok"]
+        )
+        self.assertTrue(
+            creative_contract._approved_opener_present(corrected, constraints)
+        )
 
 
 if __name__ == "__main__":

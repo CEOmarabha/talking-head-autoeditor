@@ -14,7 +14,7 @@ const {
 } = require('../helper/lib/story-plan');
 const {
   CREATIVE_CONSTRAINTS_SCHEMA,
-  CURRENT_CREATIVE_CONSTRAINT_EXAMPLE,
+  CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE,
   normalizeCreativeConstraints,
   structuralCreativeConstraints,
 } = require('../helper/lib/creative-constraints');
@@ -135,20 +135,24 @@ assert.strictEqual(approved.storyPlan.keep_ranges[0].source_start_word, 50);
 assert.deepStrictEqual(approved.creativeConstraints, approvedCreativeConstraints);
 assert.strictEqual(approved.creativeConstraints.music_allowed, false);
 assert.ok(Object.isFrozen(approved.creativeConstraints));
-assert.deepStrictEqual(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE, {
+assert.deepStrictEqual(CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE, {
   schema_version: 'autoeditor-creative-constraints/v1',
-  opener: { exact_text: 'Is now a bad time?', max_start_seconds: 3 },
+  opener: { exact_text: 'REPLACE WITH EXACT OPENER', max_start_seconds: 3 },
   visual_policy: {
     graphics_exact: 1, broll_exact: 0,
     opening_punch_required: true, opening_visual_required: false,
     max_visual_gap_seconds: null,
   },
   required_graphic: {
-    kind: 'callout', text: 'BAD TIME VS MINUTE',
-    anchor_text: 'is now a bad time versus do you have a minute',
+    kind: 'callout', text: 'REPLACE DISPLAY COPY',
+    anchor_text: 'REPLACE WITH EXACT KEPT ANCHOR',
   },
   music_allowed: false,
 });
+assert.ok(Object.isFrozen(CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE));
+assert.ok(JSON.stringify(CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE).includes('REPLACE'));
+assert.ok(!JSON.stringify(CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE)
+  .toLowerCase().includes('bad time'));
 assert.strictEqual(validateProposal({
   operations: [{ op: 'set_edit_style', style: 'short' }],
 }, { mediaAnalysis: sourceReport, requireStoryPlan: true }), null);
@@ -203,6 +207,15 @@ assert.strictEqual(normalizeCreativeConstraints({
     text: 'ONE TWO THREE FOUR FIVE',
   },
 }, approvedStoryPlan), null);
+for (const anchorText of [exactAnchor(60, 63), exactAnchor(60, 80)]) {
+  assert.strictEqual(normalizeCreativeConstraints({
+    ...approvedCreativeConstraints,
+    required_graphic: {
+      ...approvedCreativeConstraints.required_graphic,
+      anchor_text: anchorText,
+    },
+  }, approvedStoryPlan), null);
+}
 assert.throws(() => structuralCreativeConstraints({
   ...approvedCreativeConstraints,
   opener: { exact_text: ' word50 word51 ', max_start_seconds: 3 },

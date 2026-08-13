@@ -12,7 +12,24 @@ const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 30000;
 const MAX_VISUAL_CHARS = 5000;
 const MAX_FRAMES_TOTAL = 8;
+const MAX_ARTIFACT_VISION_FRAMES = 128;
+const MAX_ARTIFACT_TARGETS_PER_FRAME = 3;
+const MAX_ARTIFACT_CAPTION_EVENTS = 10000;
+const MAX_ARTIFACT_CUT_EVENTS = 10000;
 const SAMPLE_BYTES = 64 * 1024;
+const ARTIFACT_VISION_PLAN_SCHEMA = 'autoeditor-artifact-vision-plan/v2';
+const ARTIFACT_VISION_COVERAGE_SCHEMA =
+  'autoeditor-artifact-vision-coverage/v2';
+const ARTIFACT_EVENT_LAYERS = Object.freeze([
+  'punch_ins', 'broll', 'graphics', 'transitions',
+]);
+const EDIT_BOUNDARIES_SCHEMA = 'autoeditor-edit-boundaries/v1';
+const CAPTION_SAMPLING_SCHEMA = 'autoeditor-caption-vision-sampling/v1';
+const CAPTION_SAMPLING_POLICY =
+  'all-if-fit-else-first-last-early-timeline-stratified/v1';
+const CUT_SAMPLING_SCHEMA = 'autoeditor-cut-vision-sampling/v1';
+const CUT_SAMPLING_POLICY =
+  'all-if-fit-else-first-last-timeline-stratified-pairs/v1';
 
 function bounded(value, maximum) {
   return String(value || '').replace(/\0/g, '').trim().slice(0, maximum);
@@ -262,6 +279,655 @@ function sampleTimes(duration, count) {
   return [...new Set(samples)].sort((a, b) => a - b);
 }
 
+function finiteSeconds(value, label, { allowEqual = false } = {}) {
+  const seconds = value;
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0 ||
+      (!allowEqual && Object.is(seconds, -0))) {
+    throw new Error(`${label} must be a finite nonnegative time`);
+  }
+  return seconds;
+}
+
+function artifactEventExpectation(layer, event) {
+  const value = { layer };
+  for (const key of [
+    'kind', 'text', 'value', 'items', 'query', 'family', 'viz', 'scale',
+    'type', 'name', 'anchor_quote', 'reason',
+  ]) {
+    if (event[key] === undefined || event[key] === null) continue;
+    if (typeof event[key] === 'string' || typeof event[key] === 'number' ||
+        typeof event[key] === 'boolean') {
+      value[key] = event[key];
+    } else if (Array.isArray(event[key])) {
+      value[key] = event[key].slice(0, 6).map((item) =>
+        typeof item === 'string' || typeof item === 'number' ? item : String(item));
+    }
+  }
+  return bounded(JSON.stringify(value), 200);
+}
+
+function parseSrtSeconds(value) {
+  const match = /^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(value);
+  if (!match) return NaN;
+  const [, hours, minutes, seconds, millis] = match.map(Number);
+  if (minutes > 59 || seconds > 59) return NaN;
+  return hours * 3600 + minutes * 60 + seconds + millis / 1000;
+}
+
+function parseArtifactCaptions(raw, duration) {
+  if (typeof raw !== 'string') {
+    throw new TypeError('artifact captions must be SRT text');
+  }
+  const durationSeconds = finiteSeconds(duration, 'artifact duration');
+  const blocks = raw.replace(/\r\n?/g, '\n').trim().split(/\n{2,}/)
+    .filter(Boolean);
+  if (!blocks.length) throw new Error('artifact captions contain no events');
+  if (blocks.length > MAX_ARTIFACT_CAPTION_EVENTS) {
+    throw new Error('artifact captions exceed the mechanical validation limit');
+  }
+  const events = [];
+  const indices = new Set();
+  for (const [offset, block] of blocks.entries()) {
+    const lines = block.split('\n');
+    const index = Number(lines.shift());
+    const timing = /^(\S+)\s+-->\s+(\S+)(?:\s+.*)?$/.exec(lines.shift() || '');
+    const startSeconds = timing ? parseSrtSeconds(timing[1]) : NaN;
+    const endSeconds = timing ? parseSrtSeconds(timing[2]) : NaN;
+    const text = bounded(lines.join(' '), 500);
+    if (!Number.isSafeInteger(index) || index < 1 || indices.has(index) ||
+        !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) ||
+        endSeconds <= startSeconds || startSeconds < 0 ||
+        endSeconds > durationSeconds + 0.05 || !text) {
+      throw new Error(`artifact caption event ${offset + 1} is invalid`);
+    }
+    indices.add(index);
+    events.push({ index, startSeconds, endSeconds, text });
+  }
+  events.sort((left, right) => left.startSeconds - right.startSeconds ||
+    left.index - right.index);
+  return events;
+}
+
+function artifactCaptionRenderEvents(receipt, duration) {
+  const durationSeconds = finiteSeconds(duration, 'artifact duration');
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+      Object.keys(receipt).length !== 6 ||
+      receipt.schema !== 'autoeditor-caption-render-receipt/v1' ||
+      receipt.timeline !== 'post_cut_seconds' ||
+      receipt.delivery_mode !== 'burned' ||
+      !['karaoke-band', 'caption-cards'].includes(receipt.renderer) ||
+      receipt.mechanical_qa?.layout_safe !== true ||
+      receipt.mechanical_qa?.subject_clear !== true ||
+      receipt.mechanical_qa?.pixel_quality?.ok !== true ||
+      !Array.isArray(receipt.events) ||
+      receipt.events.length > MAX_ARTIFACT_CAPTION_EVENTS) {
+    throw new Error('artifact caption-render receipt is invalid');
+  }
+  const indices = new Set();
+  return receipt.events.map((event, offset) => {
+    const index = event?.index;
+    const startSeconds = event?.start_seconds;
+    const endSeconds = event?.end_seconds;
+    const text = bounded(event?.text, 500);
+    const stateCount = event?.state_count;
+    if (index !== offset + 1 || indices.has(index) ||
+        !Number.isFinite(startSeconds) || startSeconds < 0 ||
+        !Number.isFinite(endSeconds) || endSeconds <= startSeconds ||
+        endSeconds > durationSeconds + 0.05 || !text ||
+        !Number.isSafeInteger(stateCount) || stateCount < 1) {
+      throw new Error(`artifact caption-render event ${offset + 1} is invalid`);
+    }
+    indices.add(index);
+    return { index, startSeconds, endSeconds, text, stateCount };
+  }).sort((left, right) => left.startSeconds - right.startSeconds ||
+    left.index - right.index);
+}
+
+function groupArtifactTargets(targets) {
+  const ordered = [...targets].sort((left, right) =>
+    left.timeSeconds - right.timeSeconds || left.id.localeCompare(right.id));
+  const grouped = [];
+  for (const target of ordered) {
+    const prior = grouped.at(-1);
+    if (prior && prior.targets.length < MAX_ARTIFACT_TARGETS_PER_FRAME &&
+        Math.abs(prior.timeSeconds - target.timeSeconds) <= 0.0005) {
+      prior.targets.push(target);
+    } else {
+      grouped.push({ timeSeconds: target.timeSeconds, targets: [target] });
+    }
+  }
+  return grouped;
+}
+
+function captionVisionSample(targets, maximum, durationSeconds) {
+  if (!Number.isSafeInteger(maximum) || maximum < 0) {
+    throw new Error('artifact caption vision budget is invalid');
+  }
+  if (targets.length <= maximum) return [...targets];
+  if (maximum < 2) {
+    throw new Error(
+      'mandatory artifact targets leave no room for first/last caption vision coverage');
+  }
+  const selected = new Set([0, targets.length - 1]);
+  for (let slot = 1; selected.size < maximum && slot < maximum - 1; slot += 1) {
+    const wanted = durationSeconds * slot / (maximum - 1);
+    let best = -1;
+    let bestDistance = Infinity;
+    for (const [index, target] of targets.entries()) {
+      if (selected.has(index)) continue;
+      const distance = Math.abs(target.timeSeconds - wanted);
+      if (distance < bestDistance - 0.0005 ||
+          (Math.abs(distance - bestDistance) <= 0.0005 && index < best)) {
+        best = index;
+        bestDistance = distance;
+      }
+    }
+    if (best >= 0) selected.add(best);
+  }
+  // Duplicate or clustered timestamps can leave stratified slots tied. Fill
+  // deterministically in source order without weakening first/last coverage.
+  for (let index = 0; selected.size < maximum && index < targets.length; index += 1) {
+    selected.add(index);
+  }
+  return targets.filter((_target, index) => selected.has(index));
+}
+
+function cutPairVisionSample(pairs, maximum, durationSeconds) {
+  if (!Number.isSafeInteger(maximum) || maximum < 0) {
+    throw new Error('artifact cut-pair vision budget is invalid');
+  }
+  if (pairs.length <= maximum) return [...pairs];
+  if (maximum < 2) {
+    throw new Error(
+      'mandatory artifact targets leave no room for first/last cut-pair coverage');
+  }
+  const selected = new Set([0, pairs.length - 1]);
+  for (let slot = 1; selected.size < maximum && slot < maximum - 1; slot += 1) {
+    const wanted = durationSeconds * slot / (maximum - 1);
+    let best = -1;
+    let bestDistance = Infinity;
+    for (const [index, pair] of pairs.entries()) {
+      if (selected.has(index)) continue;
+      const distance = Math.abs(pair.timeSeconds - wanted);
+      if (distance < bestDistance - 0.0005 ||
+          (Math.abs(distance - bestDistance) <= 0.0005 && index < best)) {
+        best = index;
+        bestDistance = distance;
+      }
+    }
+    if (best >= 0) selected.add(best);
+  }
+  for (let index = 0; selected.size < maximum && index < pairs.length; index += 1) {
+    selected.add(index);
+  }
+  return pairs.filter((_pair, index) => selected.has(index));
+}
+
+function artifactVisionPlan(duration, edl = null, {
+  requireEdl = false, captions = [], boundaries = null,
+  captionDelivery = captions.length ? 'burned' : 'none',
+  captionMechanicalEventCount = captions.length, captionEvidenceSha256 = '',
+  editBoundaryEvidenceSha256 = '',
+} = {}) {
+  const durationSeconds = finiteSeconds(duration, 'artifact duration');
+  if (!(durationSeconds > 0)) {
+    throw new Error('artifact duration must be greater than zero');
+  }
+  if (requireEdl && !edl) {
+    throw new Error('premium artifact vision requires a final EDL');
+  }
+  if (edl && (typeof edl !== 'object' || Array.isArray(edl) ||
+      edl.timeline_space !== 'post_cut_seconds')) {
+    throw new Error('artifact EDL must use the post_cut_seconds timeline');
+  }
+  if (!Array.isArray(captions)) {
+    throw new Error('artifact caption events must be an array');
+  }
+  if (!['none', 'burned', 'sidecar'].includes(captionDelivery) ||
+      !Number.isSafeInteger(captionMechanicalEventCount) ||
+      captionMechanicalEventCount < 0 ||
+      captionMechanicalEventCount > MAX_ARTIFACT_CAPTION_EVENTS ||
+      (captionDelivery === 'burned' &&
+        captionMechanicalEventCount !== captions.length) ||
+      (captionDelivery !== 'burned' && captions.length) ||
+      (captionDelivery === 'none' && captionMechanicalEventCount !== 0) ||
+      (captionEvidenceSha256 &&
+        !/^[0-9a-f]{64}$/.test(captionEvidenceSha256))) {
+    throw new Error('artifact caption delivery evidence is invalid');
+  }
+  if (editBoundaryEvidenceSha256 &&
+      !/^[0-9a-f]{64}$/.test(editBoundaryEvidenceSha256)) {
+    throw new Error('artifact edit-boundary evidence hash is invalid');
+  }
+  const targets = [];
+  const categories = Object.create(null);
+  if (captionDelivery !== 'none') {
+    categories.captions = {
+      available: captionDelivery === 'burned',
+      deliveryMode: captionDelivery,
+      mechanicallyValidated: true,
+      mechanicalEventCount: captionMechanicalEventCount,
+    };
+  }
+  const limit = Math.max(0, durationSeconds - 0.05);
+  const boundedTime = (value) => Number(
+    Math.max(0, Math.min(limit, value)).toFixed(3));
+  const addSpanTargets = (prefix, category, kind, start, end, expectation,
+                          samples) => {
+    for (const [sample, time] of samples(start, end)) {
+      targets.push({
+        id: `${prefix}-${sample}`,
+        category, kind, sample, timeSeconds: boundedTime(time), expectation,
+      });
+    }
+  };
+  const anchorTimes = sampleTimes(durationSeconds, MAX_FRAMES_TOTAL);
+  for (const [index, timeSeconds] of anchorTimes.entries()) {
+    const final = index === anchorTimes.length - 1;
+    const category = final ? 'final' : (timeSeconds <= 2.5 ? 'hook' : 'timeline');
+    categories[category] = { available: true };
+    targets.push({
+      id: `anchor-${category}-${String(index + 1).padStart(2, '0')}`,
+      category,
+      kind: 'anchor',
+      timeSeconds,
+    });
+  }
+  for (const layer of edl ? ARTIFACT_EVENT_LAYERS : []) {
+    const events = edl[layer];
+    categories[layer] = { available: Array.isArray(events) };
+    if (events === undefined && layer === 'transitions') continue;
+    if (!Array.isArray(events)) {
+      throw new Error(`artifact EDL ${layer} must be an array`);
+    }
+    if (events.length > MAX_ARTIFACT_VISION_FRAMES) {
+      throw new Error(`artifact EDL ${layer} exceeds the vision coverage limit`);
+    }
+    for (const [index, event] of events.entries()) {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) {
+        throw new Error(`artifact EDL ${layer}[${index}] must be an object`);
+      }
+      const start = finiteSeconds(event.s, `artifact EDL ${layer}[${index}].s`,
+        { allowEqual: true });
+      const end = finiteSeconds(event.e, `artifact EDL ${layer}[${index}].e`,
+        { allowEqual: true });
+      if (end < start || (end === start && layer !== 'transitions') ||
+          end > durationSeconds + 0.05) {
+        throw new Error(`artifact EDL ${layer}[${index}] has an invalid span`);
+      }
+      const prefix = `edl-${layer}-${String(index + 1).padStart(3, '0')}`;
+      const expectation = artifactEventExpectation(layer, event);
+      if (layer === 'transitions') {
+        addSpanTargets(prefix, layer, 'edl-transition', start, end,
+          expectation, (s, e) => [
+            ['before', s - 0.05], ['midpoint', (s + e) / 2], ['after', e + 0.05],
+          ]);
+      } else {
+        targets.push({
+          id: prefix,
+          category: layer,
+          kind: 'edl-event',
+          timeSeconds: Number(((start + end) / 2).toFixed(3)),
+          expectation,
+        });
+      }
+    }
+  }
+  const captionTargets = [];
+  const captionIds = new Set();
+  let priorCaptionStart = -1;
+  for (const [offset, caption] of captions.entries()) {
+    if (!caption || typeof caption !== 'object' || Array.isArray(caption)) {
+      throw new Error(`artifact caption event ${offset + 1} is invalid`);
+    }
+    const start = finiteSeconds(caption.startSeconds,
+      `artifact caption event ${offset + 1} start`, { allowEqual: true });
+    const end = finiteSeconds(caption.endSeconds,
+      `artifact caption event ${offset + 1} end`, { allowEqual: true });
+    if (end <= start || end > durationSeconds + 0.05 ||
+        !Number.isSafeInteger(caption.index) || caption.index < 1 ||
+        captionIds.has(caption.index) || start < priorCaptionStart) {
+      throw new Error(`artifact caption event ${offset + 1} is invalid`);
+    }
+    captionIds.add(caption.index);
+    priorCaptionStart = start;
+    captionTargets.push({
+      id: `caption-${String(caption.index).padStart(4, '0')}`,
+      category: 'captions', kind: 'caption-event',
+      timeSeconds: boundedTime((start + end) / 2),
+      expectation: bounded(JSON.stringify({
+        text: caption.text,
+        stateCount: Number.isSafeInteger(caption.stateCount)
+          ? caption.stateCount : null,
+      }), 200),
+    });
+  }
+  const cutPairs = [];
+  let cutMechanicalPayload = [];
+  if (boundaries !== null) {
+    if (!boundaries || typeof boundaries !== 'object' ||
+        Array.isArray(boundaries) || boundaries.schema !== EDIT_BOUNDARIES_SCHEMA ||
+        boundaries.timeline !== 'post_cut_seconds' ||
+        !Array.isArray(boundaries.cuts) || !Array.isArray(boundaries.transitions) ||
+        (boundaries.transition_support !== 'not_implemented' &&
+          boundaries.transition_support !== 'implemented')) {
+      throw new Error('artifact edit-boundary receipt is invalid');
+    }
+    if (boundaries.transition_support === 'not_implemented' &&
+        boundaries.transitions.length) {
+      throw new Error('unsupported artifact transitions cannot be receipted');
+    }
+    categories.transitions = {
+      available: boundaries.transition_support === 'implemented',
+    };
+    if (boundaries.cuts.length > MAX_ARTIFACT_CUT_EVENTS ||
+        boundaries.transitions.length > MAX_ARTIFACT_VISION_FRAMES) {
+      throw new Error('artifact edit boundaries exceed the vision coverage limit');
+    }
+    if (boundaries.cuts.length) categories.cuts = { available: true };
+    let priorCutTime = -1;
+    for (const [index, cut] of boundaries.cuts.entries()) {
+      const time = finiteSeconds(cut?.time_seconds,
+        `artifact cut boundary ${index + 1}`, { allowEqual: true });
+      if (cut?.index !== index || time > durationSeconds + 0.05 ||
+          time < priorCutTime || !Number.isFinite(cut?.removed_seconds) ||
+          cut.removed_seconds <= 0) {
+        throw new Error(`artifact cut boundary ${index + 1} is invalid`);
+      }
+      priorCutTime = time;
+      const prefix = `cut-boundary-${String(index + 1).padStart(3, '0')}`;
+      const expectation = bounded(JSON.stringify({
+        removed_seconds: cut?.removed_seconds,
+      }), 200);
+      cutPairs.push({
+        id: prefix, index, timeSeconds: time,
+        targets: [
+          { id: `${prefix}-before`, category: 'cuts', kind: 'cut-boundary',
+            sample: 'before', timeSeconds: boundedTime(time - 0.05), expectation },
+          { id: `${prefix}-after`, category: 'cuts', kind: 'cut-boundary',
+            sample: 'after', timeSeconds: boundedTime(time + 0.05), expectation },
+        ],
+      });
+    }
+    if (boundaries.transitions.length) categories.transitions.available = true;
+    let priorTransitionEnd = -1;
+    for (const [index, transition] of boundaries.transitions.entries()) {
+      const start = finiteSeconds(transition?.s,
+        `artifact transition ${index + 1} start`, { allowEqual: true });
+      const end = finiteSeconds(transition?.e,
+        `artifact transition ${index + 1} end`, { allowEqual: true });
+      if (transition?.index !== index || end < start ||
+          start < priorTransitionEnd || end > durationSeconds + 0.05) {
+        throw new Error(`artifact transition ${index + 1} is invalid`);
+      }
+      priorTransitionEnd = end;
+      addSpanTargets(`transition-boundary-${String(index + 1).padStart(3, '0')}`,
+        'transitions', 'transition-boundary', start, end, '', (s, e) => [
+          ['before', s - 0.05], ['midpoint', (s + e) / 2], ['after', e + 0.05],
+        ]);
+    }
+    cutMechanicalPayload = boundaries.cuts.map((cut) => ({
+      index: cut.index,
+      timeSeconds: Number(cut.time_seconds),
+      removedSeconds: Number(cut.removed_seconds),
+    }));
+  }
+  const mandatoryFrameCount = groupArtifactTargets(targets).length;
+  if (mandatoryFrameCount > MAX_ARTIFACT_VISION_FRAMES) {
+    throw new Error('mandatory artifact targets exceed the bounded frame limit');
+  }
+  const captionFrameReserve = Math.min(captionTargets.length, 8);
+  const cutPairBudget = Math.max(0, Math.floor((
+    MAX_ARTIFACT_VISION_FRAMES - mandatoryFrameCount - captionFrameReserve) / 2));
+  const sampledCutPairs = cutPairVisionSample(
+    cutPairs, cutPairBudget, durationSeconds);
+  for (const pair of sampledCutPairs) targets.push(...pair.targets);
+  const framesBeforeCaptions = groupArtifactTargets(targets).length;
+  const captionFrameBudget = MAX_ARTIFACT_VISION_FRAMES - framesBeforeCaptions;
+  const sampledCaptions = captionVisionSample(
+    captionTargets, captionFrameBudget, durationSeconds);
+  targets.push(...sampledCaptions);
+  const grouped = groupArtifactTargets(targets);
+  if (grouped.length > MAX_ARTIFACT_VISION_FRAMES) {
+    throw new Error('artifact vision plan exceeds the bounded frame limit');
+  }
+  const frames = grouped.map((frame, index) => ({
+    id: `vision-frame-${String(index + 1).padStart(3, '0')}`,
+    timeSeconds: frame.timeSeconds,
+    targets: frame.targets.map((target) => ({ ...target })),
+  }));
+  const mechanicalCaptionPayload = captions.map((caption) => ({
+    index: caption.index,
+    startSeconds: caption.startSeconds,
+    endSeconds: caption.endSeconds,
+    text: caption.text,
+    stateCount: Number.isSafeInteger(caption.stateCount) ? caption.stateCount : null,
+  }));
+  const mechanicalSha256 = crypto.createHash('sha256')
+    .update(JSON.stringify(mechanicalCaptionPayload)).digest('hex');
+  const sampledTargetIds = sampledCaptions.map((target) => target.id);
+  const samplingSha256 = crypto.createHash('sha256').update(JSON.stringify({
+    schema: CAPTION_SAMPLING_SCHEMA,
+    policy: CAPTION_SAMPLING_POLICY,
+    durationSeconds: Number(durationSeconds.toFixed(3)),
+    maximumVisionFrames: MAX_ARTIFACT_VISION_FRAMES,
+    maximumTargetsPerFrame: MAX_ARTIFACT_TARGETS_PER_FRAME,
+    captionDelivery,
+    captionMechanicalEventCount,
+    captionEvidenceSha256,
+    mechanicalSha256,
+    mandatoryFrameCount,
+    captionFrameBudget,
+    sampledTargetIds,
+  })).digest('hex');
+  const cutMechanicalSha256 = crypto.createHash('sha256')
+    .update(JSON.stringify(cutMechanicalPayload)).digest('hex');
+  const sampledCutPairIds = sampledCutPairs.map((pair) => pair.id);
+  const cutSamplingSha256 = crypto.createHash('sha256').update(JSON.stringify({
+    schema: CUT_SAMPLING_SCHEMA,
+    policy: CUT_SAMPLING_POLICY,
+    durationSeconds: Number(durationSeconds.toFixed(3)),
+    maximumVisionFrames: MAX_ARTIFACT_VISION_FRAMES,
+    mandatoryFrameCount,
+    captionFrameReserve,
+    cutPairBudget,
+    evidenceSha256: editBoundaryEvidenceSha256 || null,
+    mechanicalSha256: cutMechanicalSha256,
+    sampledCutPairIds,
+  })).digest('hex');
+  const cutSampling = boundaries !== null ? {
+    schema: CUT_SAMPLING_SCHEMA,
+    policy: CUT_SAMPLING_POLICY,
+    exhaustiveMechanicalValidation: true,
+    evidenceSha256: editBoundaryEvidenceSha256 || null,
+    mechanicalCutCount: cutPairs.length,
+    visionSampledCutCount: sampledCutPairs.length,
+    visionOmittedCutCount: cutPairs.length - sampledCutPairs.length,
+    pairIntegrity: true,
+    mandatoryFrameCount,
+    captionFrameReserve,
+    cutPairBudget,
+    firstPairId: cutPairs[0]?.id || null,
+    lastPairId: cutPairs.at(-1)?.id || null,
+    sampledCutPairIds,
+    mechanicalSha256: cutMechanicalSha256,
+    samplingSha256: cutSamplingSha256,
+  } : null;
+  const earlyCaption = captionTargets.find((target) => target.timeSeconds <= 2.5);
+  const captionSampling = {
+    schema: CAPTION_SAMPLING_SCHEMA,
+    policy: CAPTION_SAMPLING_POLICY,
+    exhaustiveMechanicalValidation: true,
+    deliveryMode: captionDelivery,
+    evidenceSha256: captionEvidenceSha256 || null,
+    mechanicalEventCount: captionMechanicalEventCount,
+    visionSampledEventCount: sampledCaptions.length,
+    visionOmittedEventCount: captionDelivery === 'burned'
+      ? captions.length - sampledCaptions.length : 0,
+    visionInapplicableEventCount: captionDelivery === 'sidecar'
+      ? captionMechanicalEventCount : 0,
+    mandatoryFrameCount,
+    captionFrameBudget,
+    earlyTargetId: earlyCaption?.id || null,
+    firstTargetId: captionTargets[0]?.id || null,
+    lastTargetId: captionTargets.at(-1)?.id || null,
+    sampledTargetIds,
+    mechanicalSha256,
+    samplingSha256,
+  };
+  if (categories.captions) {
+    categories.captions = {
+      ...categories.captions,
+      mechanicalEventCount: captionMechanicalEventCount,
+      visionSampledEventCount: sampledCaptions.length,
+      samplingPolicy: CAPTION_SAMPLING_POLICY,
+      samplingSha256,
+    };
+  }
+  if (categories.cuts) {
+    categories.cuts = {
+      ...categories.cuts,
+      mechanicalCutCount: cutPairs.length,
+      visionSampledCutCount: sampledCutPairs.length,
+      samplingPolicy: CUT_SAMPLING_POLICY,
+      samplingSha256: cutSamplingSha256,
+    };
+  }
+  return {
+    schema: ARTIFACT_VISION_PLAN_SCHEMA,
+    timeline: 'post_cut_seconds',
+    edlBound: !!edl,
+    durationSeconds: Number(durationSeconds.toFixed(3)),
+    categories,
+    captionSampling,
+    cutSampling,
+    frames,
+  };
+}
+
+function visionFrameBatches(records, maximum = MAX_FRAMES_TOTAL) {
+  if (!Array.isArray(records) || !records.length ||
+      records.length > MAX_ARTIFACT_VISION_FRAMES) {
+    throw new Error('artifact vision frames must be a bounded nonempty array');
+  }
+  if (!Number.isSafeInteger(maximum) || maximum < 1 ||
+      maximum > MAX_FRAMES_TOTAL) {
+    throw new Error('artifact vision batch size must be between 1 and 8');
+  }
+  const seen = new Set();
+  for (const [index, record] of records.entries()) {
+    if (!record || typeof record !== 'object' || Array.isArray(record) ||
+        typeof record.id !== 'string' || !record.id || seen.has(record.id) ||
+        !Number.isFinite(Number(record.timeSeconds))) {
+      throw new Error(`artifact vision frame ${index} is invalid`);
+    }
+    seen.add(record.id);
+  }
+  const batches = [];
+  for (let index = 0; index < records.length; index += maximum) {
+    batches.push(records.slice(index, index + maximum));
+  }
+  return batches;
+}
+
+function artifactVisionCoverage(plan, capturedFrames, reviewedTargetIds) {
+  if (!plan || plan.schema !== ARTIFACT_VISION_PLAN_SCHEMA ||
+      !Array.isArray(plan.frames) || !plan.frames.length) {
+    throw new Error('artifact vision plan is invalid');
+  }
+  const captured = new Map();
+  for (const frame of Array.isArray(capturedFrames) ? capturedFrames : []) {
+    if (frame && typeof frame.id === 'string' && !captured.has(frame.id)) {
+      captured.set(frame.id, frame);
+    }
+  }
+  const reviewed = new Set(
+    Array.isArray(reviewedTargetIds) ? reviewedTargetIds : []);
+  const plannedTargets = new Map();
+  for (const frame of plan.frames) {
+    if (!Array.isArray(frame.targets) || !frame.targets.length) {
+      throw new Error('artifact vision plan contains a targetless frame');
+    }
+    for (const target of frame.targets) {
+      if (!target || typeof target.id !== 'string' || !target.id ||
+          plannedTargets.has(target.id)) {
+        throw new Error('artifact vision plan target IDs are invalid');
+      }
+      plannedTargets.set(target.id, frame.id);
+    }
+  }
+  const missingFrameIds = plan.frames.filter((frame) => !captured.has(frame.id))
+    .map((frame) => frame.id);
+  const unreviewedFrameIds = plan.frames.filter((frame) =>
+    captured.has(frame.id) && frame.targets.some(
+      (target) => !reviewed.has(target.id))).map((frame) => frame.id);
+  const unreviewedTargetIds = plan.frames.flatMap((frame) =>
+    captured.has(frame.id) ? frame.targets.filter((target) =>
+      !reviewed.has(target.id)).map((target) => target.id) : []);
+  const categoryNames = new Set(Object.keys(plan.categories || {}));
+  for (const frame of plan.frames) {
+    for (const target of frame.targets || []) categoryNames.add(target.category);
+  }
+  const categories = Object.create(null);
+  const unobservedCategories = [];
+  for (const category of [...categoryNames].sort()) {
+    const categoryFrames = plan.frames.filter((frame) =>
+      (frame.targets || []).some((target) => target.category === category));
+    const plannedTargets = categoryFrames.reduce((total, frame) => total +
+      frame.targets.filter((target) => target.category === category).length, 0);
+    const capturedTargets = categoryFrames.reduce((total, frame) =>
+      total + (captured.has(frame.id) ? frame.targets.filter(
+        (target) => target.category === category).length : 0), 0);
+    const reviewedTargets = categoryFrames.reduce((total, frame) =>
+      total + (captured.has(frame.id) ? frame.targets.filter((target) =>
+        target.category === category && reviewed.has(target.id)).length : 0), 0);
+    const available = plan.categories?.[category]?.available !== false;
+    const status = !available ? 'unavailable' : plannedTargets === 0
+      ? 'not-planned' : reviewedTargets === plannedTargets
+        ? 'reviewed' : 'unobserved';
+    categories[category] = {
+      available, plannedTargets, capturedTargets, reviewedTargets, status,
+    };
+    if (status === 'unobserved') unobservedCategories.push(category);
+  }
+  const unknownReviewedTargetIds = [...reviewed].filter((id) =>
+    !plannedTargets.has(id)).sort();
+  const reviewedFrameCount = plan.frames.filter((frame) =>
+    captured.has(frame.id) && frame.targets.every(
+      (target) => reviewed.has(target.id))).length;
+  return {
+    schema: ARTIFACT_VISION_COVERAGE_SCHEMA,
+    complete: missingFrameIds.length === 0 && unreviewedFrameIds.length === 0 &&
+      unreviewedTargetIds.length === 0 && unknownReviewedTargetIds.length === 0 &&
+      unobservedCategories.length === 0,
+    plannedFrameCount: plan.frames.length,
+    plannedTargetCount: plannedTargets.size,
+    capturedFrameCount: plan.frames.length - missingFrameIds.length,
+    reviewedFrameCount,
+    reviewedTargetCount: [...reviewed].filter((id) =>
+      plannedTargets.has(id)).length,
+    missingFrameIds,
+    unreviewedFrameIds,
+    unreviewedTargetIds,
+    unknownReviewedTargetIds,
+    unobservedCategories,
+    categories,
+    captionSampling: plan.captionSampling || null,
+    cutSampling: plan.cutSampling || null,
+    frames: plan.frames.map((frame) => ({
+      id: frame.id,
+      timeSeconds: frame.timeSeconds,
+      targetIds: frame.targets.map((target) => target.id),
+      categories: [...new Set(frame.targets.map((target) => target.category))].sort(),
+      captured: captured.has(frame.id),
+      reviewed: captured.has(frame.id) && frame.targets.every(
+        (target) => reviewed.has(target.id)),
+      observedTargetIds: frame.targets.filter((target) =>
+        reviewed.has(target.id)).map((target) => target.id),
+    })),
+  };
+}
+
 async function extractFrames(file, probe, output, count, runtime, onChild) {
   const frames = [];
   for (const [index, seconds] of sampleTimes(probe.durationSeconds, count).entries()) {
@@ -274,6 +940,46 @@ async function extractFrames(file, probe, output, count, runtime, onChild) {
     if (fs.existsSync(frame) && fs.statSync(frame).size > 0) frames.push(frame);
   }
   return frames;
+}
+
+async function extractArtifactVisionFrames(file, plan, output, runtime, onChild,
+                                            shouldContinue = () => true) {
+  if (!plan || plan.schema !== ARTIFACT_VISION_PLAN_SCHEMA ||
+      !Array.isArray(plan.frames) || !plan.frames.length) {
+    throw new Error('artifact vision plan is invalid');
+  }
+  const captured = [];
+  const missing = [];
+  let captureBlocked = '';
+  for (const [index, planned] of plan.frames.entries()) {
+    if (!shouldContinue()) throw new Error('local vision was canceled');
+    if (captureBlocked) {
+      missing.push({ id: planned.id, timeSeconds: planned.timeSeconds,
+        error: 'capture skipped after an earlier FFmpeg failure' });
+      continue;
+    }
+    const frame = path.join(output,
+      `artifact-${String(index + 1).padStart(3, '0')}.jpg`);
+    try {
+      await runCommand(runtime.ffmpeg, [
+        '-hide_banner', '-loglevel', 'error', '-ss',
+        Number(planned.timeSeconds).toFixed(3), '-i', file,
+        '-frames:v', '1', '-vf',
+        'scale=640:640:force_original_aspect_ratio=decrease',
+        '-q:v', '3', '-y', frame,
+      ], { timeoutMs: 45000, onChild });
+      if (!fs.existsSync(frame) || fs.statSync(frame).size < 1) {
+        throw new Error('FFmpeg did not produce a frame');
+      }
+      captured.push({ ...planned, path: frame });
+    } catch (error) {
+      captureBlocked = bounded(error?.message || error, 500) ||
+        'artifact frame capture failed';
+      missing.push({ id: planned.id, timeSeconds: planned.timeSeconds,
+        error: captureBlocked });
+    }
+  }
+  return { captured, missing };
 }
 
 function assistantText(value) {
@@ -385,15 +1091,23 @@ async function analyzeMedia({
 }
 
 module.exports = {
+  ARTIFACT_VISION_COVERAGE_SCHEMA,
+  ARTIFACT_VISION_PLAN_SCHEMA,
   CACHE_SCHEMA,
   MODEL_ID,
   MODEL_REVISION,
   analyzeMedia,
+  artifactVisionCoverage,
+  artifactVisionPlan,
+  artifactCaptionRenderEvents,
   assistantText,
+  extractArtifactVisionFrames,
   extractFrames,
   fileFingerprint,
+  parseArtifactCaptions,
   parseSignalReport,
   probeVideo,
   sampleTimes,
   summarizeProbe,
+  visionFrameBatches,
 };

@@ -24,10 +24,13 @@ function deepFreeze(value) {
   return value;
 }
 
-const CURRENT_CREATIVE_CONSTRAINT_EXAMPLE = deepFreeze({
+// Schema-shape illustration only. Deliberately contains no source-video or
+// user-specific wording; the editing prompt requires replacing every value
+// from the current request and kept transcript before execution.
+const CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE = deepFreeze({
   schema_version: CREATIVE_CONSTRAINTS_SCHEMA,
   opener: {
-    exact_text: 'Is now a bad time?',
+    exact_text: 'REPLACE WITH EXACT OPENER',
     max_start_seconds: 3,
   },
   visual_policy: {
@@ -39,8 +42,8 @@ const CURRENT_CREATIVE_CONSTRAINT_EXAMPLE = deepFreeze({
   },
   required_graphic: {
     kind: 'callout',
-    text: 'BAD TIME VS MINUTE',
-    anchor_text: 'is now a bad time versus do you have a minute',
+    text: 'REPLACE DISPLAY COPY',
+    anchor_text: 'REPLACE WITH EXACT KEPT ANCHOR',
   },
   music_allowed: false,
 });
@@ -83,6 +86,12 @@ function exactCount(value, label) {
     throw new Error(`${label} must be an integer from 0 to 16`);
   }
   return value;
+}
+
+function wordTokens(value) {
+  return (canonicalText(value)
+    .replace(/[\u2018\u2019\u02bc\uff07]/g, "'")
+    .toLowerCase().match(/[a-z0-9']+/g) || []);
 }
 
 function assertStoryLink(constraints, storyPlan) {
@@ -160,8 +169,12 @@ function validateCreativeConstraints(raw, storyPlan = null, {
       throw new Error('required_graphic.text must be uppercase and at most four words');
     }
     const anchorText = canonicalString(
-      raw.required_graphic.anchor_text, 'required_graphic.anchor_text', 400,
+      raw.required_graphic.anchor_text, 'required_graphic.anchor_text', 200,
       requireCanonical);
+    const anchorWords = wordTokens(anchorText);
+    if (anchorWords.length < 5 || anchorWords.length > 20) {
+      throw new Error('required_graphic.anchor_text must contain 5-20 exact words');
+    }
     requiredGraphic = Object.freeze({ kind, text, anchor_text: anchorText });
   } else if (graphicsExact === 1) {
     throw new Error('creative constraints with one exact graphic require its specification');
@@ -207,7 +220,7 @@ function structuralCreativeConstraints(raw, storyPlan) {
 module.exports = Object.freeze({
   CREATIVE_CONSTRAINTS_SCHEMA,
   GRAPHIC_KINDS,
-  CURRENT_CREATIVE_CONSTRAINT_EXAMPLE,
+  CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE,
   validateCreativeConstraints,
   normalizeCreativeConstraints,
   structuralCreativeConstraints,

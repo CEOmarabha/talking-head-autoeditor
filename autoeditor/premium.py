@@ -17,7 +17,7 @@ Renderers are pure ffmpeg/Pillow:
                  untouched (so audio pacing is never damaged)
   * b-roll, video-only overlays from non-REJECT user clip-catalog rows
                  (audio continues under the insert = natural J-cut feel)
-  * graphics. Pillow gold/white keyword cards, upper third, faded via
+  * graphics. Pillow gold/white cards in a caption-safe lower lane, faded via
                  ffmpeg fade (restrained enterprise motion, no slideshow)
 """
 from __future__ import annotations
@@ -475,7 +475,8 @@ concrete reason for every event.
 8. Apply this pacing contract exactly: {style_rules} Consecutive event starts
 on each layer must be at least that layer's stated interval apart.
 9. If the transcript teaches numbered steps, signals, parts, pillars, stages,
-rules, principles, or ways, include at least one viz when Remotion is available.
+rules, principles, or ways, include at least one viz when Remotion is available,
+unless APPROVED TYPED CREATIVE CONSTRAINTS explicitly set broll_exact to 0.
 10. Apply the creator direction below. It may narrow the allowed visual grammar,
 but it cannot override transcript grounding, timing validation, collision rules,
 or any release gate.
@@ -551,8 +552,9 @@ Return a complete replacement JSON object using protocol
 contract from the director request. Fix every listed validator error. Check
 that every quote is copied from the transcript, every visual matches the words
 at that quote, the opening contract passes, the full runtime has no coverage
-gap over the style limit, framework language gets a viz, density is restrained,
-and events do not collide. This is a complete replacement, not a patch.
+gap over the style limit, framework language gets a viz unless typed constraints
+set broll_exact to 0, density is restrained, and events do not collide. This is
+a complete replacement, not a patch.
 
 VALIDATOR ERRORS FROM THE CURRENT CANDIDATE:
 {json.dumps(validator_errors)}
@@ -1075,6 +1077,257 @@ HF_PROJECT = Path(os.environ.get(
     "AUTOEDITOR_HYPERFRAMES_PROJECT", str(CFGH / "graphics-project")))
 HF_TIMEOUT = 120
 
+# Caption rendering owns the upper lane (8%-roughly 22% of the delivered
+# viewport). Graphics live in the opposite, lower lane. Keep these constants
+# independent of the pipeline implementation so either renderer can be tested
+# against the shared geometry contract without importing the other module.
+CAPTION_RESERVED_TOP_FRAC = 0.08
+CAPTION_RESERVED_BOTTOM_FRAC = 0.24
+# Conservative intersection of TikTok In-Feed's current 720x1280 LTR safe
+# template and the persistent controls/caption regions on Reels/Shorts.
+# TikTok's official template keeps key content 80 px from the left, 120 px
+# from the right, and 440 px above the bottom at 720x1280.  Do not let a
+# renderer-specific canvas silently weaken that contract.
+PLATFORM_SAFE_LEFT_FRAC = 80 / 720
+PLATFORM_SAFE_RIGHT_FRAC = 120 / 720
+PLATFORM_SAFE_BOTTOM_FRAC = 440 / 1280
+# Put graphics in the clear strip below the upper captions and above the
+# talking-head subject. This remains well inside TikTok's official top/bottom
+# safe edges while avoiding the nose/mouth collision produced by a nominally
+# platform-safe but subject-unsafe 60%-65.625% lane.
+GRAPHIC_LANE_TOP_FRAC = 0.26
+GRAPHIC_LANE_BOTTOM_FRAC = 0.38
+GRAPHIC_TEXT_MAX_CHARS = 44
+
+
+def _graphic_viewport(vid_w: int, vid_h: int,
+                      viewport: tuple[float, float, float, float] | None = None
+                      ) -> dict:
+    """Normalize the exact delivery viewport to an enclosed pixel rectangle."""
+    if min(int(vid_w), int(vid_h)) <= 0:
+        raise ValueError("graphic canvas dimensions must be positive")
+    try:
+        left, top, width, height = (
+            viewport if viewport is not None else (0.0, 0.0, vid_w, vid_h)
+        )
+        left, top, width, height = map(float, (left, top, width, height))
+    except (TypeError, ValueError):
+        raise ValueError("graphic viewport must contain four numbers") from None
+    values = (left, top, width, height)
+    if (not all(math.isfinite(value) for value in values)
+            or left < 0 or top < 0 or width <= 0 or height <= 0
+            or left + width > vid_w + 1e-6
+            or top + height > vid_h + 1e-6):
+        raise ValueError("graphic viewport must be inside the source canvas")
+    # A half-pixel crop boundary is valid in FFmpeg. Render strictly inside it
+    # so neither edge can be lost after chroma alignment or integer overlay.
+    x0 = int(math.ceil(left - 1e-9))
+    y0 = int(math.ceil(top - 1e-9))
+    x1 = int(math.floor(left + width + 1e-9))
+    y1 = int(math.floor(top + height + 1e-9))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError("graphic viewport has no complete deliverable pixels")
+    return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+
+
+def _graphic_lane_geometry(
+        vid_w: int, vid_h: int,
+        viewport: tuple[float, float, float, float] | None = None) -> dict:
+    """Return the only platform- and talking-head-safe graphic lane.
+
+    Fractions work in native portrait, landscape, and source canvases later
+    center-cropped to 9:16. The layer remains full-width so horizontal crop
+    safety is still governed by the existing text fit and creative validators.
+    """
+    view = _graphic_viewport(vid_w, vid_h, viewport)
+    x0 = view["x"] + int(math.ceil(
+        view["width"] * PLATFORM_SAFE_LEFT_FRAC
+    ))
+    x1 = view["x"] + view["width"] - int(math.ceil(
+        view["width"] * PLATFORM_SAFE_RIGHT_FRAC
+    ))
+    y0 = view["y"] + int(math.ceil(
+        view["height"] * GRAPHIC_LANE_TOP_FRAC
+    ))
+    y1 = view["y"] + int(math.floor(
+        view["height"] * GRAPHIC_LANE_BOTTOM_FRAC
+    ))
+    x1 = min(view["x"] + view["width"], max(x0 + 1, x1))
+    y1 = min(view["y"] + view["height"], max(y0 + 1, y1))
+    return {"x": x0, "y": y0, "width": x1 - x0,
+            "height": y1 - y0}
+
+
+def _graphic_caption_geometry_check(
+        vid_w: int, vid_h: int, layer: dict,
+        viewport: tuple[float, float, float, float] | None = None) -> dict:
+    """Release-bound proof that one resolved graphic misses captions."""
+    view = _graphic_viewport(vid_w, vid_h, viewport)
+    lane = _graphic_lane_geometry(vid_w, vid_h, viewport)
+    graphic_left = int(layer.get("x", lane["x"]))
+    graphic_width = int(layer.get("width", lane["width"]))
+    graphic_right = graphic_left + graphic_width
+    graphic_top = int(layer.get("y", lane["y"]))
+    graphic_height = int(layer.get("height", lane["height"]))
+    graphic_bottom = graphic_top + graphic_height
+    caption_top = view["y"] + int(round(
+        view["height"] * CAPTION_RESERVED_TOP_FRAC
+    ))
+    caption_bottom = view["y"] + int(round(
+        view["height"] * CAPTION_RESERVED_BOTTOM_FRAC
+    ))
+    in_frame = (
+        0 <= graphic_left < graphic_right <= vid_w
+        and 0 <= graphic_top < graphic_bottom <= vid_h
+    )
+    in_viewport = (
+        graphic_left >= view["x"]
+        and graphic_right <= view["x"] + view["width"]
+        and graphic_top >= view["y"]
+        and graphic_bottom <= view["y"] + view["height"]
+    )
+    platform_safe = (
+        graphic_left >= lane["x"]
+        and graphic_right <= lane["x"] + lane["width"]
+        and graphic_top >= lane["y"]
+        and graphic_bottom <= lane["y"] + lane["height"]
+    )
+    separate = (
+        graphic_right <= view["x"]
+        or graphic_left >= view["x"] + view["width"]
+        or graphic_bottom <= caption_top
+        or graphic_top >= caption_bottom
+    )
+    return {
+        "ok": in_frame and in_viewport and platform_safe and separate,
+        "graphic": [graphic_left, graphic_top, graphic_right, graphic_bottom],
+        "caption_reserved": [view["x"], caption_top,
+                             view["x"] + view["width"], caption_bottom],
+        "viewport": [view["x"], view["y"],
+                     view["x"] + view["width"],
+                     view["y"] + view["height"]],
+        "in_frame": in_frame,
+        "in_viewport": in_viewport,
+        "platform_safe": platform_safe,
+        "platform_safe_rect": [lane["x"], lane["y"],
+                               lane["x"] + lane["width"],
+                               lane["y"] + lane["height"]],
+        "separate": separate,
+    }
+
+
+def _comparison_parts(text: object) -> tuple[str, str] | None:
+    """Parse a compact X VS Y callout without inventing comparison text."""
+    match = re.fullmatch(r"\s*(.+?)\s+VS\.?\s+(.+?)\s*", str(text or ""), re.I)
+    if not match:
+        return None
+    left, right = (part.strip() for part in match.groups())
+    return (left, right) if left and right else None
+
+
+def _graphic_font(font_file: str, size: int):
+    """Use the intended display weight from bundled variable fonts."""
+    from PIL import ImageFont
+
+    font = ImageFont.truetype(font_file, size)
+    try:
+        variations = set(font.get_variation_names())
+        for weight in (b"Black", b"ExtraBold", b"Bold"):
+            if weight in variations:
+                font.set_variation_by_name(weight)
+                break
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return font
+
+
+def _graphic_text(value: object) -> str:
+    """Return validated display copy verbatim; never truncate approved text."""
+    return str(value or "").strip()
+
+
+def _graphic_items(value: object) -> list[dict]:
+    """Preserve every validated 2-5 bar item exactly and in order."""
+    if not isinstance(value, list):
+        return []
+    return [
+        {"label": _graphic_text(item.get("label")),
+         "value": float(item.get("value", 0))}
+        for item in value
+        if isinstance(item, dict)
+    ]
+
+
+def _graphic_copy_binding(event: dict) -> dict:
+    """Canonical renderer/receipt binding for exact approved display copy."""
+    kind = str(event.get("kind", "keyword")).lower()
+    return {
+        "text": _graphic_text(event.get("text", "")),
+        "items": _graphic_items(event.get("items")) if kind == "bars" else [],
+    }
+
+
+def _graphic_copy_integrity(events: list[dict], layers: list[dict]) -> dict:
+    """Compare approved copy with independently emitted renderer metadata."""
+    planned = [_graphic_copy_binding(event) for event in events]
+    rendered = [
+        {
+            "text": _graphic_text(layer.get("text", "")),
+            "items": _graphic_items(layer.get("items")),
+        }
+        for layer in layers
+    ]
+    receipts = [
+        {
+            **copy,
+            "ok": index < len(planned) and copy == planned[index],
+        }
+        for index, copy in enumerate(rendered)
+    ]
+    return {
+        "ok": (
+            len(receipts) == len(planned)
+            and rendered == planned
+            and all(item["ok"] for item in receipts)
+        ),
+        "events": receipts,
+    }
+
+
+def _hf_fit_font_size(text: str, preferred: int, available_width: int,
+                      *, minimum: int = 6, average_em: float = 0.72) -> int:
+    """Conservative deterministic fit for HyperFrames' bundled Work Sans.
+
+    Browser text metrics are not available while assembling markup, so use an
+    intentionally wide average-em bound.  The creative contract limits graphic
+    text to 44 characters; shrinking is preferable to deleting exact copy.
+    """
+    usable = max(1, int(available_width))
+    estimated_em = max(1.0, len(text) * average_em)
+    return max(minimum, min(int(preferred), int(usable / estimated_em)))
+
+
+def _fit_graphic_font(font_file: str, text: str, preferred: int,
+                      available_width: int, *, stroke: int = 0,
+                      minimum: int = 6):
+    """Fit exact Pillow copy to a measured single-line pixel width."""
+    from PIL import Image, ImageDraw
+
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    size = max(minimum, int(preferred))
+    usable = max(1, int(available_width))
+    while True:
+        font = _graphic_font(font_file, size)
+        box = probe.textbbox((0, 0), text or " ", font=font,
+                             stroke_width=max(0, int(stroke)))
+        width = box[2] - box[0]
+        if width <= usable or size <= minimum:
+            return font
+        size = max(
+            minimum,
+            min(size - 1, int(size * usable / max(1, width))),
+        )
+
 _HF_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="UTF-8" />
 <meta name="viewport" content="width={w}, height={h}" />
@@ -1128,14 +1381,21 @@ def _stat_parts(value: object) -> dict | None:
     }
 
 
-def _hf_kind_markup(kind: str, g: dict, dur: float,
-                    vid_w: int, vid_h: int) -> tuple[str, str] | None:
+def _hf_kind_markup(
+        kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
+        viewport: tuple[float, float, float, float] | None = None
+        ) -> tuple[str, str] | None:
     """Return (body_html, gsap_anim) for a graphic event, or None if the
     kind can't be expressed. Restrained enterprise motion, brand palette only."""
-    text = str(g.get("text", "")).strip()[:40]
+    text = _graphic_text(g.get("text", ""))
     safe_text = html.escape(text)
-    y = int(vid_h * 0.12)
-    fs = max(40, int(vid_h * 0.05))
+    lane = _graphic_lane_geometry(vid_w, vid_h, viewport)
+    canvas_w = lane["width"]
+    y = int(lane["height"] * 0.12)
+    fs = max(12, int(lane["height"] * 0.25))
+    text_fs = _hf_fit_font_size(
+        text, fs, int(canvas_w * 0.76), minimum=10
+    )
     out_at = max(0.4, dur - 0.4)
     if kind == "stat":
         value = str(g.get("value", text)).strip()
@@ -1146,9 +1406,9 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
                 f'<div class="clip" data-start="0" data-duration="{dur}" '
                 f'style="position:absolute;top:{y}px;width:100%;'
                 f'text-align:center;"><div id="num" class="gold stroke" '
-                f'style="font-size:{int(fs*1.9)}px;line-height:1.05;">'
+                f'style="font-size:{_hf_fit_font_size(value, int(fs*1.9), int(canvas_w*0.84), minimum=12)}px;line-height:1.05;">'
                 f'{safe_value}</div><div id="lbl" class="white stroke" '
-                f'style="font-size:{int(fs*0.62)}px;margin-top:8px;">'
+                f'style="font-size:{_hf_fit_font_size(text, int(fs*0.62), int(canvas_w*0.84), minimum=10)}px;margin-top:8px;">'
                 f'{safe_text}</div></div>'
             )
             anim = (
@@ -1166,7 +1426,7 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
                 f'style="position:absolute;top:{y}px;width:100%;text-align:center;">'
                 f'<div id="num" class="gold stroke" style="font-size:{int(fs*1.9)}px;'
                 f'line-height:1.05;">{currency}0{suffix}</div>'
-                f'<div id="lbl" class="white stroke" style="font-size:{int(fs*0.62)}px;'
+                f'<div id="lbl" class="white stroke" style="font-size:{_hf_fit_font_size(text, int(fs*0.62), int(canvas_w*0.84), minimum=10)}px;'
                 f'margin-top:8px;">{safe_text}</div></div>')
         anim = (
             f'const o={{v:0}};'
@@ -1181,40 +1441,109 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
     if kind == "callout":
         if not text:
             return None
+        comparison = _comparison_parts(text)
+        if comparison:
+            left, right = (html.escape(part) for part in comparison)
+            comparison_fs = max(6, min(
+                fs,
+                int(canvas_w * 0.72 /
+                    max(1.0, 0.62 * (len(left) + len(right)) + 2.5)),
+            ))
+            body = (
+                f'<div id="co" class="clip" data-start="0" '
+                f'data-duration="{dur}" style="position:absolute;top:{y}px;'
+                f'left:5%;width:90%;display:flex;align-items:center;'
+                f'justify-content:center;gap:{max(12, int(fs*0.3))}px;">'
+                f'<span id="cl" class="white stroke" '
+                f'style="font-size:{comparison_fs}px;white-space:nowrap;'
+                f'padding:{int(comparison_fs*0.18)}px {int(comparison_fs*0.34)}px;'
+                f'border-radius:{int(fs*0.3)}px;background:rgba(0,0,0,.78);">'
+                f'{left}</span><span id="cvs" class="gold stroke" '
+                f'style="font-size:{max(6, int(comparison_fs*0.55))}px;">VS</span>'
+                f'<span id="cr" class="white stroke" '
+                f'style="font-size:{comparison_fs}px;white-space:nowrap;'
+                f'padding:{int(comparison_fs*0.18)}px {int(comparison_fs*0.34)}px;'
+                f'border-radius:{int(fs*0.3)}px;background:rgba(0,0,0,.78);">'
+                f'{right}</span></div>'
+            )
+            anim = (
+                'tl.from("#cl",{opacity:0,x:-70,duration:0.45,'
+                'ease:"power3.out"},0);'
+                'tl.from("#cr",{opacity:0,x:70,duration:0.45,'
+                'ease:"power3.out"},0);'
+                'tl.from("#cvs",{opacity:0,scale:0.5,duration:0.3,'
+                'ease:"back.out(2)"},0.18);'
+                f'tl.to("#co",{{opacity:0,duration:0.35}},{out_at:.2f});'
+            )
+            return body, anim
         body = (f'<div id="co" class="clip" data-start="0" data-duration="{dur}" '
-                f'style="position:absolute;top:{y}px;width:100%;text-align:center;">'
+                f'style="position:absolute;top:{y}px;width:100%;text-align:center;'
+                f'white-space:nowrap;">'
                 f'<span id="dot" style="display:inline-block;width:{int(fs*0.4)}px;'
                 f'height:{int(fs*0.4)}px;border-radius:50%;background:{GOLD_HEX};'
                 f'margin-right:{int(fs*0.35)}px;vertical-align:middle;"></span>'
-                f'<span id="ct" class="white stroke" style="font-size:{fs}px;'
-                f'vertical-align:middle;">{text}</span></div>')
+                f'<span id="ct" class="white stroke" style="font-size:{text_fs}px;'
+                f'vertical-align:middle;">{safe_text}</span></div>')
         anim = (
             f'tl.from("#ct",{{opacity:0,x:120,duration:0.5,ease:"power3.out"}},0);'
             f'tl.from("#dot",{{scale:0,duration:0.35,ease:"back.out(2)"}},0.1);'
             f'tl.to("#co",{{opacity:0,duration:0.35}},{out_at:.2f});')
         return body, anim
     if kind == "bars":
-        items = [(str(it.get("label", ""))[:18], float(it.get("value", 0)))
-                 for it in (g.get("items") or []) if isinstance(it, dict)][:3]
+        items = [
+            (item["label"], item["value"])
+            for item in _graphic_items(g.get("items"))
+        ]
         if not items:
             return None
         vmax = max(v for _, v in items) or 1
+        bar_title_fs = _hf_fit_font_size(
+            text, max(7, int(fs * 0.48)), int(canvas_w * 0.84), minimum=6
+        )
+        longest_label = max((label for label, _value in items), key=len)
+        longest_value = max((f"{value:g}" for _label, value in items), key=len)
+        row_fs = min(
+            _hf_fit_font_size(
+                longest_label, max(7, int(fs * 0.55)),
+                int(canvas_w * 0.28), minimum=6,
+            ),
+            _hf_fit_font_size(
+                longest_value, max(7, int(fs * 0.55)),
+                int(canvas_w * 0.12), minimum=6,
+            ),
+            max(6, int(
+                (lane["height"] - bar_title_fs - 5)
+                / max(1, len(items)) * 0.68
+            )),
+        )
+        row_height = max(6, int(
+            (lane["height"] - bar_title_fs - 5) / max(1, len(items))
+        ))
         rows, anims = [], []
         for bi, (lbl, val) in enumerate(items):
-            pct = int(52 * val / vmax)
+            pct = int(42 * val / vmax)
             rows.append(
-                f'<div style="display:flex;align-items:center;margin-bottom:{int(fs*0.5)}px;">'
-                f'<div class="white stroke" style="width:22%;text-align:right;'
-                f'padding-right:14px;font-size:{int(fs*0.55)}px;">{lbl}</div>'
-                f'<div id="bar{bi}" style="height:{int(fs*0.62)}px;width:{pct}%;'
+                f'<div style="display:flex;align-items:center;height:{row_height}px;">'
+                f'<div class="white stroke" style="width:34%;text-align:right;'
+                f'padding-right:5px;font-size:{row_fs}px;white-space:nowrap;">'
+                f'{html.escape(lbl)}</div>'
+                f'<div id="bar{bi}" style="height:{max(3, int(row_fs*0.72))}px;'
+                f'width:{pct}%;'
                 f'background:{GOLD_HEX};border-radius:{int(fs*0.2)}px;'
                 f'box-shadow:0 3px 10px rgba(0,0,0.5);"></div>'
-                f'<div class="gold stroke" style="padding-left:12px;'
-                f'font-size:{int(fs*0.55)}px;">{val:g}</div></div>')
+                f'<div class="gold stroke" style="padding-left:5px;'
+                f'font-size:{row_fs}px;white-space:nowrap;">{val:g}</div></div>')
             anims.append(f'tl.from("#bar{bi}",{{width:0,duration:0.8,'
                          f'ease:"power3.out"}},{0.15*bi:.2f});')
-        body = (f'<div id="bwrap" class="clip" data-start="0" data-duration="{dur}" '
-                f'style="position:absolute;top:{y}px;width:100%;">{"".join(rows)}</div>')
+        body = (
+            f'<div id="bwrap" class="clip" data-start="0" '
+            f'data-duration="{dur}" style="position:absolute;top:{y}px;'
+            f'width:100%;"><div id="btitle" class="white stroke" '
+            f'style="font-size:{bar_title_fs}px;line-height:{bar_title_fs}px;'
+            f'text-align:center;white-space:nowrap;margin-bottom:2px;">'
+            f'{safe_text}</div>'
+            f'{"".join(rows)}</div>'
+        )
         anims.append(f'tl.from("#bwrap",{{opacity:0,duration:0.3}},0);')
         anims.append(f'tl.to("#bwrap",{{opacity:0,duration:0.35}},{out_at:.2f});')
         return body, "".join(anims)
@@ -1222,9 +1551,10 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
     if not text:
         return None
     body = (f'<div id="kw" class="clip" data-start="0" data-duration="{dur}" '
-            f'style="position:absolute;top:{y}px;width:100%;text-align:center;">'
-            f'<div id="kt" class="gold stroke" style="font-size:{fs}px;'
-            f'display:inline-block;">{text}'
+            f'style="position:absolute;top:{y}px;width:100%;text-align:center;'
+            f'white-space:nowrap;">'
+            f'<div id="kt" class="gold stroke" style="font-size:{text_fs}px;'
+            f'display:inline-block;">{safe_text}'
             f'<div id="rule" style="height:{max(4,int(fs*0.08))}px;background:#fff;'
             f'margin-top:{int(fs*0.3)}px;transform-origin:left;"></div></div></div>')
     anim = (
@@ -1234,14 +1564,17 @@ def _hf_kind_markup(kind: str, g: dict, dur: float,
     return body, anim
 
 
-def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
-                       out_seq: Path) -> bool:
+def _hf_render_graphic(
+        kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
+        out_seq: Path,
+        viewport: tuple[float, float, float, float] | None = None) -> bool:
     """Render one graphic via HyperFrames to an RGBA png-sequence in out_seq
     (f_%04d.png, GFX_FPS). Returns False on any failure (caller falls back
     to the Pillow engine, the render never blocks the pipeline)."""
     if not (HF_PROJECT / "index.html").exists():
         return False
-    mk = _hf_kind_markup(kind, g, dur, vid_w, vid_h)
+    lane = _graphic_lane_geometry(vid_w, vid_h, viewport)
+    mk = _hf_kind_markup(kind, g, dur, vid_w, vid_h, viewport=viewport)
     if not mk:
         return False
     body, anim = mk
@@ -1264,7 +1597,7 @@ def _hf_render_graphic(kind: str, g: dict, dur: float, vid_w: int, vid_h: int,
                 'font-display:block; }'
             )
         (project / "index.html").write_text(_HF_PAGE.format(
-            w=vid_w, h=vid_h, dur=f"{dur:.2f}", gold=GOLD_HEX,
+            w=lane["width"], h=lane["height"], dur=f"{dur:.2f}", gold=GOLD_HEX,
             font_face=font_face, body=body, anim=anim))
         before = {p.name for p in (project / "renders").glob("*") } \
             if (project / "renders").exists() else set()
@@ -1312,8 +1645,10 @@ def _alpha_env(t: float, dur: float, fade: float = 0.35) -> float:
     return 1.0
 
 
-def build_graphics(edl: dict, workdir: Path, font_file: str,
-                   vid_w: int, vid_h: int) -> list[dict]:
+def build_graphics(
+        edl: dict, workdir: Path, font_file: str, vid_w: int, vid_h: int,
+        viewport: tuple[float, float, float, float] | None = None
+        ) -> list[dict]:
     """Animated branded graphics as alpha PNG frame-sequences (Pillow),
     composited by ffmpeg overlay. Deterministic, no browser renderer.
 
@@ -1321,18 +1656,21 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
       keyword. ALL-CAPS card, fade + subtle rise, white rule sweeps in
       stat, big gold number COUNTS UP (e.g. 0->87%), label below
       callout, floating element: gold bullet + text slides in from right
-      bars, up to 3 horizontal bars grow (label left, value right)
+      bars, 2-5 horizontal bars grow (label left, value right)
     """
     from PIL import Image, ImageDraw, ImageFont
-    base = max(34, int(vid_h * 0.055))
-    f_big = ImageFont.truetype(font_file, int(base * 1.9))
-    f_med = ImageFont.truetype(font_file, base)
-    f_sml = ImageFont.truetype(font_file, int(base * 0.62))
+    lane = _graphic_lane_geometry(vid_w, vid_h, viewport)
+    canvas_w = lane["width"]
+    base = max(10, int(lane["height"] * 0.25))
+    f_big = _graphic_font(font_file, int(base * 1.9))
+    f_med = _graphic_font(font_file, base)
+    f_sml = _graphic_font(font_file, int(base * 0.62))
     stroke = max(2, base // 12)
     layers = []
 
     def canvas():
-        return Image.new("RGBA", (vid_w, int(vid_h * 0.30)), (0, 0, 0, 0))
+        return Image.new("RGBA", (lane["width"], lane["height"]),
+                         (0, 0, 0, 0))
 
     def fade_img(img, a):
         if a >= 0.999:
@@ -1356,7 +1694,9 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
             s, e = float(g["s"]), float(g["e"])
             dur = max(1.0, e - s)
             kind = str(g.get("kind", "keyword")).lower()
-            text = str(g.get("text", "")).strip()[:40]
+            text = _graphic_text(g.get("text", ""))
+            copy_binding = _graphic_copy_binding(g)
+            exact_items = copy_binding["items"]
             if not text and kind != "bars":
                 continue
 
@@ -1364,10 +1704,21 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
             # fallback (deterministic, never blocks), same chain pattern
             # as Pexels -> Pixabay -> Kling for b-roll.
             hf_seq = workdir / f"gfxseq_{i:03d}"
-            if _hf_render_graphic(kind, g, dur, vid_w, vid_h, hf_seq):
+            if _hf_render_graphic(
+                    kind, g, dur, vid_w, vid_h, hf_seq, viewport=viewport):
                 log(f"graphic {i} ({kind}) via hyperframes")
-                # full-frame render: position is baked into the HTML -> y=0
-                layers.append({"seq": str(hf_seq), "s": s, "e": e, "y": 0})
+                # HyperFrames renders exactly the same viewport-relative lane
+                # canvas as Pillow; composition supplies its source offsets.
+                layer = {
+                    "seq": str(hf_seq), "s": s, "e": e,
+                    "x": lane["x"], "y": lane["y"],
+                    "width": lane["width"], "height": lane["height"],
+                    "kind": kind, **copy_binding,
+                }
+                layer["caption_clearance"] = _graphic_caption_geometry_check(
+                    vid_w, vid_h, layer, viewport=viewport,
+                )
+                layers.append(layer)
                 continue
 
             if os.environ.get("AUTOEDITOR_REQUIRE_HYPERFRAMES") == "1":
@@ -1378,9 +1729,20 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                 parts = _stat_parts(g.get("value", text))
                 label = text
                 raw_value = str(g.get("value", label))
+                stat_value_font = _fit_graphic_font(
+                    font_file,
+                    parts["display"] if parts is not None else raw_value,
+                    int(base * 1.9), int(canvas_w * 0.84),
+                    stroke=stroke, minimum=12,
+                )
+                stat_label_font = _fit_graphic_font(
+                    font_file, label, int(base * 0.62),
+                    int(canvas_w * 0.84), stroke=max(1, stroke - 1),
+                )
 
                 def df(dr, img, t, dur, parts=parts, label=label,
-                       raw_value=raw_value):
+                       raw_value=raw_value, f_value=stat_value_font,
+                       f_label=stat_label_font):
                     if parts is None:
                         shown = raw_value
                     else:
@@ -1390,44 +1752,173 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                             + f"{cur:,.{parts['decimals']}f}"
                             + parts["suffix"]
                         )
-                    tw = dr.textlength(shown, font=f_big)
-                    dr.text(((vid_w - tw) / 2, 6), shown, font=f_big,
+                    tw = dr.textlength(shown, font=f_value)
+                    dr.text(((canvas_w - tw) / 2, 6), shown, font=f_value,
                             fill=(*GOLD_RGB, 255), stroke_width=stroke,
                             stroke_fill=(0, 0, 0, 255))
-                    lw = dr.textlength(label, font=f_sml)
-                    dr.text(((vid_w - lw) / 2, int(base * 2.15)), label,
-                            font=f_sml, fill=(*WHITE_RGB, 255),
+                    lw = dr.textlength(label, font=f_label)
+                    label_y = min(
+                        int(base * 2.15),
+                        max(1, lane["height"] - f_label.size - stroke - 2),
+                    )
+                    dr.text(((canvas_w - lw) / 2, label_y), label,
+                            font=f_label, fill=(*WHITE_RGB, 255),
                             stroke_width=stroke - 1, stroke_fill=(0, 0, 0, 255))
             elif kind == "callout":
-                def df(dr, img, t, dur, text=text):
-                    slide = (1 - _ease(t / 0.5)) * vid_w * 0.12
-                    tw = dr.textlength(text, font=f_med)
-                    x = (vid_w - tw) / 2 + slide
-                    y = int(base * 0.5)
-                    r = int(base * 0.28)
-                    dr.ellipse([x - r * 2.6, y + base * 0.28 - r,
-                                x - r * 2.6 + 2 * r, y + base * 0.28 + r],
-                               fill=(*GOLD_RGB, 255))
-                    dr.text((x, y), text, font=f_med, fill=(*WHITE_RGB, 255),
-                            stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
+                comparison = _comparison_parts(text)
+                if comparison:
+                    left, right = comparison
+                    probe = ImageDraw.Draw(canvas())
+                    comparison_size = max(10, int(base * 0.62))
+                    while True:
+                        f_cmp = _graphic_font(font_file, comparison_size)
+                        gap = max(8, int(comparison_size * 0.28))
+                        pill_pad = max(7, int(comparison_size * 0.24))
+                        left_w = probe.textlength(left, font=f_cmp)
+                        right_w = probe.textlength(right, font=f_cmp)
+                        vs_w = probe.textlength("VS", font=f_cmp)
+                        total = (left_w + right_w + vs_w + pill_pad * 4
+                                 + gap * 2)
+                        if total <= canvas_w * 0.82 or comparison_size <= 10:
+                            break
+                        comparison_size = max(
+                            10,
+                            min(comparison_size - 1,
+                                int(comparison_size * canvas_w * 0.82 / total)),
+                        )
+
+                    def df(dr, img, t, dur, left=left, right=right,
+                           f_cmp=f_cmp, gap=gap, pill_pad=pill_pad):
+                        progress = _ease(t / 0.5)
+                        divider = "VS"
+                        left_w = dr.textlength(left, font=f_cmp)
+                        right_w = dr.textlength(right, font=f_cmp)
+                        vs_w = dr.textlength(divider, font=f_cmp)
+                        total = left_w + right_w + vs_w + pill_pad * 4 + gap * 2
+                        x = max(10, (canvas_w - total) / 2)
+                        y = int((lane["height"] - base) / 2)
+                        slide = (1 - progress) * canvas_w * 0.08
+                        for label_index, (label, width, offset) in enumerate((
+                            (left, left_w, -slide), (right, right_w, slide)
+                        )):
+                            dr.rounded_rectangle(
+                                [x + offset, y - pill_pad / 2,
+                                 x + offset + width + pill_pad * 2,
+                                 y + base],
+                                radius=max(8, int(base * 0.25)),
+                                fill=(0, 0, 0, 218),
+                            )
+                            dr.text((x + offset + pill_pad, y), label,
+                                    font=f_cmp, fill=(*WHITE_RGB, 255),
+                                    stroke_width=max(1, stroke - 1),
+                                    stroke_fill=(0, 0, 0, 255))
+                            x += width + pill_pad * 2 + gap
+                            if label_index == 0:
+                                dr.text((x, y), divider, font=f_cmp,
+                                        fill=(*GOLD_RGB, 255),
+                                        stroke_width=max(1, stroke - 1),
+                                        stroke_fill=(0, 0, 0, 255))
+                                x += vs_w + gap
+                else:
+                    callout_font = _fit_graphic_font(
+                        font_file, text, base,
+                        int(canvas_w * 0.76), stroke=stroke,
+                    )
+
+                    def df(dr, img, t, dur, text=text,
+                           f_callout=callout_font):
+                        slide = (1 - _ease(t / 0.5)) * canvas_w * 0.12
+                        tw = dr.textlength(text, font=f_callout)
+                        x = (canvas_w - tw) / 2 + slide
+                        y = int(base * 0.5)
+                        r = int(base * 0.28)
+                        dr.ellipse([x - r * 2.6, y + base * 0.28 - r,
+                                    x - r * 2.6 + 2 * r, y + base * 0.28 + r],
+                                   fill=(*GOLD_RGB, 255))
+                        dr.text((x, y), text, font=f_callout,
+                                fill=(*WHITE_RGB, 255), stroke_width=stroke,
+                                stroke_fill=(0, 0, 0, 255))
             elif kind == "bars":
-                items = [(str(it.get("label", ""))[:18],
-                          float(it.get("value", 0)))
-                         for it in (g.get("items") or [])
-                         if isinstance(it, dict)][:3]
+                items = [
+                    (item["label"], item["value"])
+                    for item in exact_items
+                ]
                 if not items:
                     continue
                 vmax = max(v for _, v in items) or 1
 
-                def df(dr, img, t, dur, items=items, vmax=vmax):
+                bar_title_font = _fit_graphic_font(
+                    font_file, text, max(7, int(base * 0.48)),
+                    int(canvas_w * 0.84), stroke=max(1, stroke - 1),
+                    minimum=6,
+                )
+
+                # Measure both text columns before assigning the bar lane.
+                # A fixed 16% label gutter clipped even short labels after a
+                # landscape source was center-cropped to a narrow 9:16 view.
+                probe = ImageDraw.Draw(canvas())
+                row_height = max(
+                    5,
+                    int((lane["height"] - bar_title_font.size - 5)
+                        / len(items)),
+                )
+                bar_font_size = max(
+                    6,
+                    min(int(base * 0.62), int(row_height * 0.68)),
+                )
+                edge = max(stroke + 3, int(canvas_w * 0.03))
+                column_gap = max(stroke + 4, int(base * 0.16))
+                minimum_bar = max(12, int(canvas_w * 0.24))
+                while True:
+                    f_bar = _graphic_font(font_file, bar_font_size)
+                    max_label_w = max(
+                        probe.textlength(label, font=f_bar)
+                        for label, _value in items
+                    )
+                    max_value_w = max(
+                        probe.textlength(f"{value:g}", font=f_bar)
+                        for _label, value in items
+                    )
+                    available_bar = int(
+                        canvas_w - 2 * edge - max_label_w - max_value_w
+                        - 2 * column_gap
+                    )
+                    if available_bar >= minimum_bar or bar_font_size <= 6:
+                        break
+                    bar_font_size = max(
+                        6,
+                        min(
+                            bar_font_size - 1,
+                            int(bar_font_size * max(
+                                0.5,
+                                (canvas_w - 2 * edge - 2 * column_gap
+                                 - minimum_bar)
+                                / max(1.0, max_label_w + max_value_w),
+                            )),
+                        ),
+                    )
+                x0 = int(edge + max_label_w + column_gap)
+                bar_max = max(4, available_bar)
+
+                bh = max(3, min(int(base * 0.62), int(row_height * 0.58)))
+
+                def df(dr, img, t, dur, items=items, vmax=vmax,
+                       f_bar=f_bar, x0=x0, bar_max=bar_max,
+                       edge=edge, column_gap=column_gap,
+                       title=text, f_title=bar_title_font,
+                       row_height=row_height, bh=bh):
                     grow = _ease(t / (dur * 0.5))
-                    x0 = int(vid_w * 0.16)
-                    bar_max = int(vid_w * 0.52)
-                    bh = int(base * 0.62)
+                    title_w = dr.textlength(title, font=f_title)
+                    dr.text(((canvas_w - title_w) / 2, 1), title,
+                            font=f_title, fill=(*WHITE_RGB, 255),
+                            stroke_width=max(1, stroke - 1),
+                            stroke_fill=(0, 0, 0, 255))
+                    row_offset = f_title.size + 2
                     for bi, (lbl, val) in enumerate(items):
-                        y = int(base * 0.3 + bi * bh * 1.7)
-                        dr.text((x0 - dr.textlength(lbl, font=f_sml) - 14, y),
-                                lbl, font=f_sml, fill=(*WHITE_RGB, 255),
+                        y = int(row_offset + bi * row_height)
+                        dr.text((x0 - dr.textlength(lbl, font=f_bar)
+                                 - column_gap, y),
+                                lbl, font=f_bar, fill=(*WHITE_RGB, 255),
                                 stroke_width=stroke - 1,
                                 stroke_fill=(0, 0, 0, 255))
                         w = int(bar_max * (val / vmax) * grow)
@@ -1435,18 +1926,25 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                                              radius=bh // 3,
                                              fill=(*GOLD_RGB, 255))
                         if grow > 0.95:
-                            dr.text((x0 + w + 12, y),
-                                    f"{val:g}", font=f_sml,
+                            dr.text((x0 + w + column_gap, y),
+                                    f"{val:g}", font=f_bar,
                                     fill=(*GOLD_RGB, 255),
                                     stroke_width=stroke - 1,
                                     stroke_fill=(0, 0, 0, 255))
             else:  # keyword card (default / unknown kinds degrade here)
-                def df(dr, img, t, dur, text=text):
+                keyword_font = _fit_graphic_font(
+                    font_file, text, base, int(canvas_w * 0.84),
+                    stroke=stroke,
+                )
+
+                def df(dr, img, t, dur, text=text,
+                       f_keyword=keyword_font):
                     rise = (1 - _ease(t / 0.5)) * base * 0.5
-                    tw = dr.textlength(text, font=f_med)
-                    x = (vid_w - tw) / 2
+                    tw = dr.textlength(text, font=f_keyword)
+                    x = (canvas_w - tw) / 2
                     y = int(base * 0.4 + rise)
-                    dr.text((x, y), text, font=f_med, fill=(*GOLD_RGB, 255),
+                    dr.text((x, y), text, font=f_keyword,
+                            fill=(*GOLD_RGB, 255),
                             stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
                     sweep = _ease((t - 0.25) / 0.45)
                     if sweep > 0:
@@ -1456,8 +1954,16 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
                                      fill=(*WHITE_RGB, 230))
 
             seq = render_seq(i, dur, df)
-            layers.append({"seq": str(seq), "s": s, "e": e,
-                           "y": int(vid_h * 0.12)})
+            layer = {
+                "seq": str(seq), "s": s, "e": e,
+                "x": lane["x"], "y": lane["y"],
+                "width": lane["width"], "height": lane["height"],
+                "kind": kind, **copy_binding,
+            }
+            layer["caption_clearance"] = _graphic_caption_geometry_check(
+                vid_w, vid_h, layer, viewport=viewport,
+            )
+            layers.append(layer)
         except Exception as ex:
             log(f"graphic {i} ({g.get('kind')}) skipped: {type(ex).__name__}")
     rendered = {
@@ -1472,14 +1978,35 @@ def build_graphics(edl: dict, workdir: Path, font_file: str,
         ) not in rendered
     ]
     resolution = edl.setdefault("resolution", {})
+    copy_integrity = _graphic_copy_integrity(
+        edl.get("graphics", []), layers
+    )
     resolution.update({
         "planned_graphics": len(edl.get("graphics", [])),
         "resolved_graphics": len(layers),
         "unresolved_graphics": missing,
         "graphics_ok": not missing,
+        "graphics_caption_clearance": [
+            layer.get("caption_clearance", {"ok": False})
+            for layer in layers
+        ],
+        "graphics_caption_clearance_ok": bool(layers or not edl.get("graphics"))
+        and all(
+            layer.get("caption_clearance", {}).get("ok") is True
+            for layer in layers
+        ),
+        "graphics_copy_integrity": copy_integrity["events"],
     })
+    resolution["graphics_copy_integrity_ok"] = copy_integrity["ok"]
+    edl.setdefault("production_receipt", {})["graphics_copy_integrity"] = {
+        "ok": resolution["graphics_copy_integrity_ok"],
+        "events": resolution["graphics_copy_integrity"],
+    }
     resolution["ok"] = (
-        resolution.get("broll_ok", True) and resolution["graphics_ok"]
+        resolution.get("broll_ok", True)
+        and resolution["graphics_ok"]
+        and resolution["graphics_caption_clearance_ok"]
+        and resolution["graphics_copy_integrity_ok"]
     )
     return layers
 
@@ -1739,7 +2266,12 @@ def broll_layers(edl: dict, clips: list[dict],
         "resolved_broll": len(layers),
         "unresolved_broll": unresolved,
         "broll_ok": not unresolved,
-        "ok": not unresolved and graphics_state.get("graphics_ok", True),
+        "ok": (
+            not unresolved
+            and graphics_state.get("graphics_ok", True)
+            and graphics_state.get("graphics_caption_clearance_ok", True)
+            and graphics_state.get("graphics_copy_integrity_ok", True)
+        ),
         "broll_events": resolution,
     }
     return layers

@@ -15,9 +15,10 @@ from .creative_constraints import (
     CreativeConstraintsError,
     canonical_text as canonical_constraint_text,
     validate_creative_constraints,
+    word_tokens as constraint_word_tokens,
 )
 
-PROTOCOL_VERSION = "pse-creative-edl/2026-08-12.1"
+PROTOCOL_VERSION = "pse-creative-edl/2026-08-12.3"
 TIMELINE_SPACE = "post_cut_seconds"
 REQUIRED_TOP_LEVEL = (
     "protocol_version", "timeline_space",
@@ -117,12 +118,18 @@ _CONTRACT_PAYLOAD = json.dumps(
         "span_limits": _SPAN_LIMITS,
         "viz_templates": sorted(VIZ_TEMPLATES),
         "graphic_kinds": sorted(GRAPHIC_KINDS),
+        "graphic_display_limits": {
+            "text_characters": 44,
+            "bar_items": [2, 5],
+            "bar_label_characters": 26,
+        },
         "semantic_polarity": {
             "negation_words": sorted(_NEGATION_WORDS),
             "negation_mention_prefixes": sorted(_NEGATION_MENTION_PREFIXES),
             "negation_mention_follows": sorted(_NEGATION_MENTION_FOLLOWS),
             "question_heads": sorted(_QUESTION_HEADS),
             "assertion_heads": sorted(_ASSERTION_HEADS),
+            "negative_imperative_forms": ["do not", "don't"],
         },
     },
     ensure_ascii=True,
@@ -141,7 +148,7 @@ class CreativeContractError(ValueError):
 
 
 def _tokens(text: object) -> list[str]:
-    return re.findall(r"[a-z0-9']+", str(text or "").lower())
+    return constraint_word_tokens(text)
 
 
 def _content_tokens(text: object) -> set[str]:
@@ -176,9 +183,60 @@ def _logical_negation(tokens: list[str]) -> bool:
     return False
 
 
+_DO_IMPERATIVE_OBJECTS = {
+    "assignment",
+    "exercise",
+    "job",
+    "step",
+    "steps",
+    "task",
+    "thing",
+    "work",
+}
+
+
+def _do_is_imperative(text: str, tokens: list[str]) -> bool:
+    """Recognize explicit DO commands without guessing over ASR questions.
+
+    Missing ASR punctuation makes ``Do the results matter`` ambiguous.  Bias
+    that form toward a question so a graphic cannot turn it into an assertion;
+    only direct-object command forms are treated as imperatives.
+    """
+    if "?" in text or not tokens or tokens[0] != "do":
+        return False
+    if len(tokens) == 1:
+        return True
+    if tokens[1] in {"it", "so", "that", "this", "these", "those"}:
+        return True
+    return bool(
+        len(tokens) >= 3
+        and tokens[1] in {"a", "an", "my", "our", "the", "your"}
+        and tokens[2] in _DO_IMPERATIVE_OBJECTS
+    )
+
+
+def _negative_imperative(tokens: list[str]) -> bool:
+    """Recognize explicit negative commands, including contracted DON'T."""
+    return bool(
+        len(tokens) >= 2
+        and (
+            tokens[0] == "don't"
+            or (len(tokens) >= 3 and tokens[:2] == ["do", "not"])
+        )
+    )
+
+
 def _is_interrogative(text: str) -> bool:
     tokens = _tokens(text)
-    return bool("?" in text or (tokens and tokens[0] in _QUESTION_HEADS))
+    return bool(
+        "?" in text
+        or (
+            tokens
+            and tokens[0] in _QUESTION_HEADS
+            and not _negative_imperative(tokens)
+            and not _do_is_imperative(text, tokens)
+        )
+    )
 
 
 def _display_mood(text: str) -> str:
@@ -188,9 +246,13 @@ def _display_mood(text: str) -> str:
         return "fragment"
     if "?" in text:
         return "question"
-    # Without question punctuation, a negative callout such as NOT A BAD TIME
+    # Without question punctuation, a negative callout such as DO NOT WAIT
     # is an assertion/imperative, even when an auxiliary starts the string.
+    if _negative_imperative(tokens):
+        return "assertion"
     if _logical_negation(tokens):
+        return "assertion"
+    if _do_is_imperative(text, tokens):
         return "assertion"
     if tokens[0] in _QUESTION_HEADS:
         return "question"
@@ -760,14 +822,17 @@ def _max_visual_gap(edl: dict, duration: float) -> float:
 
 
 def _approved_opener_present(words: list[dict], constraints: dict) -> bool:
-    wanted = _tokens(constraints["opener"]["exact_text"])
-    heard = [_tokens(word.get("w", "")) for word in words]
-    flattened = [tokens[0] if tokens else "" for tokens in heard]
+    wanted = canonical_constraint_text(constraints["opener"]["exact_text"])
+    expected_words = wanted.split(" ")
     limit = float(constraints["opener"]["max_start_seconds"])
-    for start in range(len(flattened) - len(wanted) + 1):
+    for start in range(len(words) - len(expected_words) + 1):
         if float(words[start].get("s", limit + 1)) > limit:
             break
-        if flattened[start:start + len(wanted)] == wanted:
+        heard = canonical_constraint_text(" ".join(
+            str(word.get("w", ""))
+            for word in words[start:start + len(expected_words)]
+        ))
+        if heard == wanted:
             return True
     return False
 
@@ -904,8 +969,12 @@ def validate_edl(raw: dict, words: list[dict], clips: list[dict],
     gap_limit = configured_gap
     coverage_ok = gap_limit is None or max_gap <= gap_limit
     framework = _has_framework_language(words)
+    framework_diagram_required = not (
+        approved is not None and policy["broll_exact"] == 0
+    )
     diagram_ok = (
         not framework
+        or not framework_diagram_required
         or any(event.get("viz") for event in edl["broll"])
     )
     score = (

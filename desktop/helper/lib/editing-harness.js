@@ -9,7 +9,7 @@ const {
 } = require('./story-plan');
 const {
   CREATIVE_CONSTRAINTS_SCHEMA,
-  CURRENT_CREATIVE_CONSTRAINT_EXAMPLE,
+  CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE,
   normalizeCreativeConstraints,
 } = require('./creative-constraints');
 
@@ -495,7 +495,7 @@ Executable operation contract:
 ${JSON.stringify(operationContract)}
 
 Respond as one JSON object exactly shaped like this JSON example:
-{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}],"storyPlan":{"schema_version":"${STORY_PLAN_SCHEMA}","timeline":"${STORY_TIMELINE}","target_duration":{"min_seconds":35,"max_seconds":45},"hook_anchor_id":"hook","closer_anchor_id":"closer","keep_ranges":[{"anchor_id":"hook","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":0,"source_end_word":12,"source_start_seconds":0.0,"source_end_seconds":4.2},{"anchor_id":"closer","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":100,"source_end_word":112,"source_start_seconds":36.0,"source_end_seconds":40.0}]},"creativeConstraints":${JSON.stringify(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE)}}
+{"message":"direct conversational answer","summary":"executable changes or empty","operations":[{"op":"set_edit_style","style":"short"}],"storyPlan":{"schema_version":"${STORY_PLAN_SCHEMA}","timeline":"${STORY_TIMELINE}","target_duration":{"min_seconds":35,"max_seconds":45},"hook_anchor_id":"hook","closer_anchor_id":"closer","keep_ranges":[{"anchor_id":"hook","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":0,"source_end_word":12,"source_start_seconds":0.0,"source_end_seconds":4.2},{"anchor_id":"closer","anchor_text":"exact whitespace-joined transcript words for this entire kept range","source_start_word":100,"source_end_word":112,"source_start_seconds":36.0,"source_end_seconds":40.0}]},"creativeConstraints":${JSON.stringify(CREATIVE_CONSTRAINTS_SCHEMA_EXAMPLE)}}
 
 Story-cut contract for this request:
 - A storyPlan is ${storyPlanRequired ? 'MANDATORY' : 'not required'} for an executable response.
@@ -525,18 +525,26 @@ Creative-constraint contract for this request:
   required_graphic.anchor_text must be an exact contiguous excerpt of the kept
   story transcript. exact_text is 1-160 canonical characters and its finite
   max_start_seconds is 0-10. Graphic copy is 1-44 canonical uppercase
-  characters and at most four words; anchor_text is 1-400 canonical characters;
-  kind is only keyword, stat, callout, or bars.
+  characters and at most four words. anchor_text is an exact 5-20-word
+  kept-transcript quote of at most 200 canonical characters; kind is only
+  keyword, stat, callout, or bars.
 - graphics_exact and broll_exact are literal counts, not suggestions. Exactly
   one graphic requires the non-null required_graphic shown; all other graphic
   counts require null. Counts are integer 0-16; max_visual_gap_seconds is null
   or a finite 1-300; opening flags and music_allowed are true booleans.
   music_allowed=false means no music may be planned.
-- The current approved example is exactly one comparison callout, zero B-roll,
-  and no music: ${JSON.stringify(CURRENT_CREATIVE_CONSTRAINT_EXAMPLE)}
-- Copy the current user's actual approved opener and graphic anchor from the
-  kept source transcript. If those exact constraints cannot be grounded in the
-  storyPlan, return operations as [] and explain that rendering is blocked.
+- The JSON above is a schema-shape illustration only. Every REPLACE value is a
+  placeholder, never source content, approval, or a product default. Its
+  numbers, booleans, kind, counts, null, and music flag illustrate JSON types,
+  not the current user's choices.
+- Replace every placeholder and type example. For a first proposal, derive
+  concrete typed values from this request's user intent and kept source
+  transcript; clearly present those values as proposed, not yet approved. If
+  the user supplied approved constraints, preserve them exactly. Proposed
+  values become approved only when the user asks to apply or render that
+  proposal. Never reuse values from another video or session. If exact values
+  cannot be grounded in the storyPlan, return operations as [] and explain that
+  rendering is blocked.
 
 For an attached-video editing request, the message must cover: a clear video
 summary; strongest hook and useful moments; the proposed edit; format, pacing,
