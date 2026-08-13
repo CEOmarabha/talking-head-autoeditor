@@ -82,7 +82,9 @@ function storyTranscript(mediaAnalysis) {
     const duration = Number(video?.technical?.durationSeconds);
     const timedWords = video?.timedWords;
     if (!finite(duration) || duration <= 0 || !Array.isArray(timedWords) ||
-        !timedWords.length) {
+        !timedWords.length || video?.timedWordsComplete !== true ||
+        !Number.isSafeInteger(video?.timedWordCount) ||
+        video.timedWordCount !== timedWords.length) {
       return Object.freeze({ complete: false, sourceDuration: 0, words: [] });
     }
     let priorStart = -1;

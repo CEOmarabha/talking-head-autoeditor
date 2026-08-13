@@ -33,13 +33,19 @@ sizes are recorded beside this file in `runtime-manifest.json`.
 - faster-whisper 1.2.1, MIT License.
 - CTranslate2 4.8.1, MIT License.
 - Hugging Face faster-whisper small and medium model files, MIT License.
+- The offline ASR and dialogue-cleanup capability probes embed a short AAC
+  transcode of OpenAI Whisper's `tests/jfk.flac` test fixture from revision
+  6e3be77e1a105e59086e3e21ff5f609fd6fa89a5. The source fixture and exact
+  revision are recorded in each probe receipt; no audio is downloaded at run
+  time. OpenAI Whisper is MIT licensed.
 - Transformers.js 4.2.0, Apache License 2.0.
 - ONNX Runtime Web 1.26.0 development build at commit
   b7804b056c30aa35c1748f8e4e239d0e2ff25d6d, MIT License.
 - HuggingFaceTB SmolVLM2-256M-Video-Instruct at revision
   067788b187b95ebe7b2e040b3e4299e342e5b8fd, Apache License 2.0. The
-  quantized model is downloaded into the app's local browser cache on first
-  use and runs on the user's computer.
+  quantized model is packaged with an exact per-file hash lock and runs only
+  on the user's computer; the vision worker does not fetch model files at run
+  time.
 - HyperFrames 0.7.99, Apache License 2.0.
 - Remotion 4.0.507, Remotion License. Individuals and organizations of up to
   three people qualify for the free license. Other collaborations and

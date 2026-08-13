@@ -47,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          lfs: true
           persist-credentials: false
 
       - name: Set native temporary artifact directory
@@ -162,6 +163,9 @@ jobs:
             exit 1
           }
           cp packaging/THIRD_PARTY_NOTICES.md "$STAGE/licenses/THIRD_PARTY_NOTICES.md"
+          cp desktop/helper/vision/LICENSE.transformers.txt \
+            "$STAGE/licenses/Apache-2.0.txt"
+          test -s "$STAGE/licenses/Apache-2.0.txt"
           LOCK="packaging/requirements-${TARGET_OS}-${TARGET_ARCH}.txt"
           cp "$LOCK" "$STAGE/licenses/PYTHON_REQUIREMENTS_LOCK.txt"
           python -m pip freeze --all > "$STAGE/licenses/PYTHON_PACKAGES.txt"
@@ -197,6 +201,12 @@ jobs:
             -o "$STAGE/licenses/WorkSans-OFL.txt"
           test -s "$STAGE/models/faster-whisper-small/model.bin"
           test -s "$STAGE/models/faster-whisper-medium/model.bin"
+          VISION_PACK=smolvlm2-067788b187b95ebe
+          mkdir -p "$STAGE/models/vision"
+          cp -R "packaging/vision-model-packs/$VISION_PACK" \
+            "$STAGE/models/vision/$VISION_PACK"
+          python packaging/extract_cached_vision_model.py --verify-only \
+            --output "$STAGE/models/vision/$VISION_PACK"
 
       - name: Bundle FFmpeg and FFprobe on macOS
         if: runner.os == 'macOS'
@@ -447,6 +457,288 @@ jobs:
             }
           done
 
+      - name: Exercise staged frozen production probes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import signal
+          import shutil
+          import subprocess
+          import tempfile
+
+          MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
+          MAX_PROBE_FILE_BYTES = 128 * 1024 * 1024
+          MAX_PROBE_FILES = 512
+          MAX_PROBE_TREE_BYTES = 512 * 1024 * 1024
+          PROBE_TIMEOUT_SECONDS = 300
+          FIXTURE_TIMEOUT_SECONDS = 120
+          PROCESS_TREE_GRACE_SECONDS = 5
+          PROCESS_TREE_KILL_TIMEOUT_SECONDS = 20
+
+          checkout = Path.cwd().resolve()
+          stage = (checkout / "desktop" / "helper-staging").resolve()
+          suffix = ".exe" if os.name == "nt" else ""
+          engine = (stage / "engine" / f"autoeditor-engine{suffix}").resolve()
+          ffmpeg = (stage / "bin" / f"ffmpeg{suffix}").resolve()
+          ffprobe = (stage / "bin" / f"ffprobe{suffix}").resolve()
+          small_model = (stage / "models" / "faster-whisper-small").resolve()
+          fonts = (stage / "fonts").resolve()
+          work_sans = fonts / "WorkSans-Variable.ttf"
+          required_files = (engine, ffmpeg, ffprobe, work_sans)
+          if any(not item.is_file() or item.stat().st_size < 1
+                 for item in required_files):
+              raise SystemExit("staged frozen production probe input is unavailable")
+          if (not small_model.is_dir()
+                  or not (small_model / "model.bin").is_file()):
+              raise SystemExit("staged frozen production probe model is unavailable")
+
+          runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+          if not runner_temp.is_dir():
+              raise SystemExit("runner temporary directory is unavailable")
+
+          def bounded_tree() -> None:
+              files = 0
+              total = 0
+              for item in probe_root.rglob("*"):
+                  if item.is_symlink() or (
+                          hasattr(item, "is_junction") and item.is_junction()):
+                      raise RuntimeError("production probe created a link")
+                  if not item.is_file():
+                      continue
+                  size = item.stat().st_size
+                  files += 1
+                  total += size
+                  if size > MAX_PROBE_FILE_BYTES:
+                      raise RuntimeError("production probe file exceeded its bound")
+              if files > MAX_PROBE_FILES or total > MAX_PROBE_TREE_BYTES:
+                  raise RuntimeError("production probe tree exceeded its bound")
+
+          def terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+              if os.name == "nt":
+                  try:
+                      subprocess.run(
+                          ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL,
+                          timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS,
+                          check=False,
+                      )
+                  except (OSError, subprocess.TimeoutExpired):
+                      pass
+              else:
+                  try:
+                      os.killpg(process.pid, signal.SIGTERM)
+                  except ProcessLookupError:
+                      pass
+                  try:
+                      process.wait(timeout=PROCESS_TREE_GRACE_SECONDS)
+                  except subprocess.TimeoutExpired:
+                      pass
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+              if process.poll() is None:
+                  process.kill()
+              try:
+                  process.wait(timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS)
+              except subprocess.TimeoutExpired as error:
+                  raise RuntimeError(
+                      "production probe process tree could not be terminated"
+                  ) from error
+
+          def run_command(label: str, argv: list[str], timeout: int) -> str:
+              process_group = (
+                  {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                  if os.name == "nt" else {"start_new_session": True}
+              )
+              process = subprocess.Popen(
+                  argv, cwd=probe_root, env=probe_env,
+                  stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                  **process_group,
+              )
+              try:
+                  stdout_bytes, stderr_bytes = process.communicate(timeout=timeout)
+              except subprocess.TimeoutExpired as error:
+                  terminate_process_tree(process)
+                  try:
+                      stdout_bytes, stderr_bytes = process.communicate(
+                          timeout=PROCESS_TREE_KILL_TIMEOUT_SECONDS
+                      )
+                  except subprocess.TimeoutExpired as drain_error:
+                      raise RuntimeError(
+                          f"{label} process pipes did not close after termination"
+                      ) from drain_error
+                  raise RuntimeError(f"{label} exceeded its timeout") from error
+              if (len(stdout_bytes) > MAX_COMMAND_OUTPUT_BYTES
+                      or len(stderr_bytes) > MAX_COMMAND_OUTPUT_BYTES):
+                  raise RuntimeError(f"{label} output exceeded its bound")
+              if process.returncode != 0:
+                  raise RuntimeError(
+                      f"{label} failed with exit code {process.returncode}"
+                  )
+              try:
+                  stdout = stdout_bytes.decode("utf-8")
+              except UnicodeDecodeError as error:
+                  raise RuntimeError(f"{label} output was not UTF-8") from error
+              bounded_tree()
+              return stdout
+
+          def run_probe(
+              label: str, arguments: list[str], event_name: str,
+              schema_version: str,
+          ) -> None:
+              stdout = run_command(
+                  label, [str(engine), *arguments], PROBE_TIMEOUT_SECONDS
+              )
+              events = []
+              for line in stdout.splitlines():
+                  try:
+                      value = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(value, dict) and value.get("event") == event_name:
+                      events.append(value)
+              if len(events) != 1:
+                  raise RuntimeError(f"{label} emitted no exact engine event")
+              event = events[0]
+              checks = event.get("checks")
+              if (event.get("schema_version") != schema_version
+                      or not isinstance(checks, dict) or not checks
+                      or any(value is not True for value in checks.values())
+                      or event.get("errors") != {}
+                      or not isinstance(event.get("result"), dict)):
+                  raise RuntimeError(f"{label} engine event failed its contract")
+              print(json.dumps({
+                  "event": "autoeditor-release-frozen-production-probe",
+                  "probe": label,
+                  "engine_event": event_name,
+                  "checks": sorted(checks),
+              }, sort_keys=True))
+
+          probe_root = Path(tempfile.mkdtemp(
+              prefix="autoeditor-frozen-probes-", dir=runner_temp
+          )).resolve()
+          try:
+              probe_root.chmod(0o700)
+              probe_env = os.environ.copy()
+              probe_env.update({
+                  "AUTOEDITOR_BUNDLED_FONTS": str(fonts),
+                  "AUTOEDITOR_FFMPEG": str(ffmpeg),
+                  "AUTOEDITOR_FFPROBE": str(ffprobe),
+                  "AUTOEDITOR_WHISPER_SMALL": str(small_model),
+                  "HF_HOME": str(probe_root / "hf-home"),
+                  "HF_HUB_DISABLE_TELEMETRY": "1",
+                  "HF_HUB_OFFLINE": "1",
+                  "TEMP": str(probe_root),
+                  "TMP": str(probe_root),
+                  "TMPDIR": str(probe_root),
+                  "TRANSFORMERS_OFFLINE": "1",
+                  "XDG_CACHE_HOME": str(probe_root / "xdg-cache"),
+              })
+              caption_source = probe_root / "caption-source.mp4"
+              caption_output = probe_root / "caption-rendered.mp4"
+              sfx_source = probe_root / "sfx-source.mp4"
+              sfx_output = probe_root / "sfx-rendered.mp4"
+              music_source = probe_root / "music-source.mp4"
+              music_output = probe_root / "music-rendered.mp4"
+
+              run_command("caption source fixture", [
+                  str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
+                  "-y", "-f", "lavfi", "-i",
+                  "color=c=0x203040:s=180x320:r=30:d=2.000",
+                  "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                  str(caption_source),
+              ], FIXTURE_TIMEOUT_SECONDS)
+              run_command("SFX source fixture", [
+                  str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
+                  "-y", "-f", "lavfi", "-i",
+                  "color=c=0x142238:s=160x90:r=30:d=3.000",
+                  "-f", "lavfi", "-i",
+                  "anullsrc=channel_layout=stereo:sample_rate=48000:d=3.000",
+                  "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
+                  "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a",
+                  "aac", "-ar", "48000", "-ac", "2", "-shortest",
+                  str(sfx_source),
+              ], FIXTURE_TIMEOUT_SECONDS)
+              run_command("music source fixture", [
+                  str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
+                  "-y", "-f", "lavfi", "-i",
+                  "color=c=0x142238:s=160x90:r=30:d=4.000",
+                  "-f", "lavfi", "-i",
+                  "sine=frequency=880:sample_rate=48000:duration=1.100",
+                  "-filter_complex",
+                  "[1:a]adelay=1450:all=1,apad=whole_dur=4,"
+                  "atrim=duration=4,aformat=sample_rates=48000:"
+                  "channel_layouts=stereo[a]",
+                  "-map", "0:v:0", "-map", "[a]", "-c:v", "libx264",
+                  "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a",
+                  "aac", "-ar", "48000", "-ac", "2", "-shortest",
+                  str(music_source),
+              ], FIXTURE_TIMEOUT_SECONDS)
+
+              run_probe(
+                  "caption", ["--caption-render-self-test", str(caption_source),
+                  str(caption_output), str(probe_root)],
+                  "autoeditor-engine-caption-render-self-test",
+                  "autoeditor-engine-caption-render-self-test/v1",
+              )
+              run_probe(
+                  "SFX", ["--sfx-production-self-test", str(sfx_source),
+                  str(sfx_output), str(probe_root)],
+                  "autoeditor-engine-sfx-production-self-test",
+                  "autoeditor-sfx-production-self-test/v1",
+              )
+              run_probe(
+                  "music", ["--music-production-self-test", str(music_source),
+                  str(music_output), str(probe_root)],
+                  "autoeditor-engine-music-production-self-test",
+                  "autoeditor-music-production-self-test/v1",
+              )
+              run_probe(
+                  "ASR", ["--asr-capability-self-test",
+                  str(probe_root / "ASR_RUNTIME_PROBE_RECEIPT.json"),
+                  str(probe_root)],
+                  "autoeditor-engine-asr-capability-self-test",
+                  "autoeditor-asr-runtime-probe/v1",
+              )
+              run_probe(
+                  "render", ["--render-capability-self-test",
+                  str(probe_root /
+                      "RENDER_CAPABILITY_RUNTIME_PROBE_RECEIPT.json"),
+                  str(probe_root)],
+                  "autoeditor-engine-render-capability-self-test",
+                  "autoeditor-render-capability-runtime-probe/v1",
+              )
+              run_probe(
+                  "dialogue", ["--dialogue-cleanup-capability-self-test",
+                  str(probe_root /
+                      "DIALOGUE_CLEANUP_RUNTIME_PROBE_RECEIPT.json"),
+                  str(probe_root)],
+                  "autoeditor-engine-dialogue-cleanup-capability-self-test",
+                  "autoeditor-dialogue-cleanup-runtime-probe/v1",
+              )
+              bounded_tree()
+          finally:
+              if probe_root.is_symlink() or (
+                      hasattr(probe_root, "is_junction")
+                      and probe_root.is_junction()):
+                  raise RuntimeError("refusing linked production probe cleanup")
+              cleanup_root = probe_root.resolve()
+              if (cleanup_root.parent != runner_temp
+                      or not cleanup_root.name.startswith(
+                          "autoeditor-frozen-probes-")
+                      or cleanup_root == runner_temp):
+                  raise RuntimeError("refusing unsafe production probe cleanup")
+              shutil.rmtree(cleanup_root)
+              if cleanup_root.exists():
+                  raise RuntimeError("production probe cleanup failed")
+          PY
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -478,6 +770,25 @@ jobs:
           [[ "${{ matrix.target_os }}" == "windows" ]] && ENGINE="${ENGINE}.exe"
           "$ENGINE" --audio-decoder-self-test
           python -m unittest tests.test_safety tests.test_asr
+          python -m unittest -q \
+            tests.test_sequence_plan tests.test_sequence_render \
+            tests.test_story_pipeline_contract tests.test_edit_policy \
+            tests.test_project_intent_policy_bridge tests.test_project_intent_authority \
+            tests.test_project_intent_pipeline_authority \
+            tests.test_runtime_capabilities \
+            tests.test_transition_plan tests.test_transition_render \
+            tests.test_render_capability_runtime_probe \
+            tests.test_render_capability_engine_entry \
+            tests.test_sfx_plan tests.test_sfx_render tests.test_sfx_production \
+            tests.test_sfx_engine_entry tests.test_asr_runtime_probe \
+            tests.test_asr_engine_entry \
+            tests.test_cached_vision_model \
+            tests.test_dialogue_cleanup_runtime_probe \
+            tests.test_dialogue_cleanup_engine_entry \
+            tests.test_music_plan tests.test_music_render \
+            tests.test_music_production tests.test_music_engine_entry \
+            tests.test_visual_quality_deterministic \
+            tests.test_visual_quality_production
 
       - name: Bundle pinned Node, HyperFrames, Remotion and rendering browser
         shell: bash
@@ -620,6 +931,8 @@ jobs:
           npm cache clean --force >/dev/null 2>&1 || true
           test -s desktop/helper-staging/models/faster-whisper-small/model.bin
           test -s desktop/helper-staging/models/faster-whisper-medium/model.bin
+          python packaging/extract_cached_vision_model.py --verify-only \
+            --output desktop/helper-staging/models/vision/smolvlm2-067788b187b95ebe
           find desktop/helper-staging \
             \( -name '.DS_Store' -o -name '._*' \) -delete
           if [[ "${{ runner.os }}" == "macOS" ]]; then

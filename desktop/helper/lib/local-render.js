@@ -3,6 +3,20 @@ const crypto = require('crypto');
 const path = require('path');
 const { structuralStoryPlan } = require('./story-plan');
 const { structuralCreativeConstraints } = require('./creative-constraints');
+const { validateSequencePlan } = require('./sequence-plan');
+const {
+  projectIntentSha256,
+  validateProjectIntent,
+} = require('./project-intent');
+const {
+  resolveProjectIntentPolicy,
+  validateCapabilityManifest,
+} = require('./project-intent-policy-bridge');
+const {
+  editPolicySha256,
+  validateEditPolicy,
+} = require('./edit-policy');
+const { validateTransitionCarrier } = require('./transition-proposal');
 
 const MAX_INPUTS = 20;
 const MAX_SCRIPT_CHARS = 200000;
@@ -14,10 +28,41 @@ const MAX_TRANSCRIPT_CHARS = 20000;
 const MAX_HISTORY_ENTRIES = 12;
 const MAX_HISTORY_CONTENT_CHARS = 2000;
 const MAX_HISTORY_TOTAL_CHARS = 12000;
-const MAX_PROPOSAL_CHARS = 100000;
+const MAX_PROPOSAL_CHARS = 512000;
 const MAX_PROPOSAL_DEPTH = 12;
-const MAX_PROPOSAL_VALUES = 2000;
+// The closed sequence-plan contract permits 256 segments. A fully grounded
+// segment contains nested anchor/transition objects, so the former 2,000-value
+// generic JSON ceiling rejected valid maximum-size plans before the typed
+// validator could inspect them. The byte and depth bounds remain authoritative.
+const MAX_PROPOSAL_VALUES = 8192;
 const MAX_PATH_CHARS = 32768;
+const PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION =
+  'autoeditor-project-intent-authority/v2';
+const AUTHORITY_KEYS = Object.freeze([
+  'approved_proposal_sha256',
+  'authorization_hmac_sha256',
+  'authorization_id',
+  'capability_manifest',
+  'capability_manifest_sha256',
+  'edit_policy',
+  'edit_policy_sha256',
+  'project_intent',
+  'project_intent_sha256',
+  'schema_version',
+]);
+const LOWER_SHA256 = /^[0-9a-f]{64}$/;
+const AUTHORIZATION_ID = /^[0-9a-f]{32}$/;
+const APPLY_PROPOSAL_KEYS = new Set([
+  'creativeConstraints',
+  'operations',
+  'projectIntent',
+  'sequencePlan',
+  'sequenceSourceManifest',
+  'storyPlan',
+  'summary',
+  'transitionPlan',
+  'transitionSequenceManifest',
+]);
 
 // Python remains authoritative for engine CLI and revision mappings. This
 // frozen metadata is only the desktop-side project allowlist and join layout.
@@ -300,19 +345,306 @@ function normalizeProposal(raw) {
   return JSON.parse(serialized);
 }
 
+function asciiCompare(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function exactObjectKeys(value, expected, label) {
+  if (!isPlainObject(value)) throw new TypeError(`${label} must be an object`);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string')) {
+    throw new Error(`${label} has unsupported keys`);
+  }
+  const actual = [...keys].sort(asciiCompare);
+  if (actual.length !== expected.length ||
+      actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} has invalid keys`);
+  }
+  return value;
+}
+
+function pythonString(value) {
+  let result = '"';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (character === '"') result += '\\"';
+    else if (character === '\\') result += '\\\\';
+    else if (character === '\b') result += '\\b';
+    else if (character === '\f') result += '\\f';
+    else if (character === '\n') result += '\\n';
+    else if (character === '\r') result += '\\r';
+    else if (character === '\t') result += '\\t';
+    else if (codePoint >= 0x20 && codePoint <= 0x7e) result += character;
+    else if (codePoint <= 0xffff) {
+      result += `\\u${codePoint.toString(16).padStart(4, '0')}`;
+    } else {
+      const adjusted = codePoint - 0x10000;
+      const high = 0xd800 + (adjusted >> 10);
+      const low = 0xdc00 + (adjusted & 0x3ff);
+      result += `\\u${high.toString(16)}\\u${low.toString(16)}`;
+    }
+  }
+  return `${result}"`;
+}
+
+function stableAuthorityJson(value) {
+  function encode(item) {
+    if (item === null || typeof item === 'boolean') return JSON.stringify(item);
+    if (typeof item === 'string') return pythonString(item);
+    if (typeof item === 'number' && Number.isFinite(item)) {
+      return JSON.stringify(item);
+    }
+    if (Array.isArray(item)) return `[${item.map(encode).join(',')}]`;
+    if (isPlainObject(item)) {
+      return `{${Object.keys(item).sort(asciiCompare).map((key) =>
+        `${pythonString(key)}:${encode(item[key])}`).join(',')}}`;
+    }
+    throw new Error('project intent authority must be canonical JSON');
+  }
+  return encode(value);
+}
+
+function sha256Canonical(value) {
+  return crypto.createHash('sha256')
+    .update(stableAuthorityJson(value), 'utf8').digest('hex');
+}
+
+function signingKeyBytes(value) {
+  if (typeof value !== 'string' || !LOWER_SHA256.test(value)) {
+    throw new Error('project intent authority signing key is invalid');
+  }
+  return Buffer.from(value, 'hex');
+}
+
+function authorityUnsigned(value) {
+  return {
+    schema_version: value.schema_version,
+    authorization_id: value.authorization_id,
+    approved_proposal_sha256: value.approved_proposal_sha256,
+    project_intent: value.project_intent,
+    project_intent_sha256: value.project_intent_sha256,
+    edit_policy: value.edit_policy,
+    edit_policy_sha256: value.edit_policy_sha256,
+    capability_manifest: value.capability_manifest,
+    capability_manifest_sha256: value.capability_manifest_sha256,
+  };
+}
+
+function authorityHmac(value, signingKey) {
+  return crypto.createHmac('sha256', signingKeyBytes(signingKey))
+    .update(stableAuthorityJson(authorityUnsigned(value)), 'utf8').digest('hex');
+}
+
+function deepFreezeJson(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const item of Object.values(value)) deepFreezeJson(item);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function normalizeProjectIntentAuthority(raw, proposal, { signingKey = '' } = {}) {
+  const value = exactObjectKeys(raw, AUTHORITY_KEYS, 'project intent authority');
+  if (value.schema_version !== PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION) {
+    throw new Error('project intent authority schema is unsupported');
+  }
+  if (typeof value.authorization_id !== 'string' ||
+      !AUTHORIZATION_ID.test(value.authorization_id)) {
+    throw new Error('project intent authority authorization_id is invalid');
+  }
+  for (const name of [
+    'approved_proposal_sha256', 'authorization_hmac_sha256',
+    'capability_manifest_sha256',
+    'edit_policy_sha256', 'project_intent_sha256',
+  ]) {
+    if (typeof value[name] !== 'string' || !LOWER_SHA256.test(value[name])) {
+      throw new Error(`project intent authority ${name} is invalid`);
+    }
+  }
+
+  const projectIntent = validateProjectIntent(value.project_intent);
+  const capabilityManifest = validateCapabilityManifest(value.capability_manifest);
+  const editPolicy = validateEditPolicy(value.edit_policy);
+  if (!proposal || !Object.prototype.hasOwnProperty.call(proposal, 'projectIntent')) {
+    throw new Error('project intent authority requires the approved projectIntent');
+  }
+  const approvedIntent = validateProjectIntent(proposal.projectIntent);
+  if (stableAuthorityJson(approvedIntent) !== stableAuthorityJson(projectIntent)) {
+    throw new Error('project intent authority does not match the approved proposal');
+  }
+  if (value.project_intent_sha256 !== projectIntentSha256(projectIntent) ||
+      value.approved_proposal_sha256 !== sha256Canonical(proposal) ||
+      value.capability_manifest_sha256 !== sha256Canonical(capabilityManifest) ||
+      value.edit_policy_sha256 !== editPolicySha256(editPolicy)) {
+    throw new Error('project intent authority digest does not match');
+  }
+  const resolved = resolveProjectIntentPolicy(projectIntent, capabilityManifest);
+  if (stableAuthorityJson(resolved) !== stableAuthorityJson(editPolicy)) {
+    throw new Error('project intent authority policy was not resolved from its manifest');
+  }
+
+  const clean = {
+    schema_version: PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION,
+    authorization_id: value.authorization_id,
+    approved_proposal_sha256: value.approved_proposal_sha256,
+    project_intent: projectIntent,
+    project_intent_sha256: value.project_intent_sha256,
+    edit_policy: editPolicy,
+    edit_policy_sha256: value.edit_policy_sha256,
+    capability_manifest: capabilityManifest,
+    capability_manifest_sha256: value.capability_manifest_sha256,
+    authorization_hmac_sha256: value.authorization_hmac_sha256,
+  };
+  if (signingKey) {
+    const expected = Buffer.from(authorityHmac(clean, signingKey), 'hex');
+    const actual = Buffer.from(clean.authorization_hmac_sha256, 'hex');
+    if (!crypto.timingSafeEqual(actual, expected)) {
+      throw new Error('project intent authority signature does not match');
+    }
+  }
+  return deepFreezeJson(clean);
+}
+
+function buildProjectIntentAuthority(projectIntent, editPolicy,
+                                     capabilityManifest, {
+                                       authorizationId,
+                                       signingKey,
+                                       approvedProposal,
+                                     } = {}) {
+  const project = validateProjectIntent(projectIntent);
+  const policy = validateEditPolicy(editPolicy);
+  const manifest = validateCapabilityManifest(capabilityManifest);
+  if (typeof authorizationId !== 'string' || !AUTHORIZATION_ID.test(authorizationId)) {
+    throw new Error('project intent authority authorization_id is invalid');
+  }
+  signingKeyBytes(signingKey);
+  if (!isPlainObject(approvedProposal) ||
+      !Object.prototype.hasOwnProperty.call(approvedProposal, 'projectIntent')) {
+    throw new Error('project intent authority requires the full approved proposal');
+  }
+  const approvedIntent = validateProjectIntent(approvedProposal.projectIntent);
+  if (stableAuthorityJson(approvedIntent) !== stableAuthorityJson(project)) {
+    throw new Error('project intent authority proposal does not match projectIntent');
+  }
+  const unsigned = {
+    schema_version: PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION,
+    authorization_id: authorizationId,
+    approved_proposal_sha256: sha256Canonical(approvedProposal),
+    project_intent: project,
+    project_intent_sha256: projectIntentSha256(project),
+    edit_policy: policy,
+    edit_policy_sha256: editPolicySha256(policy),
+    capability_manifest: manifest,
+    capability_manifest_sha256: sha256Canonical(manifest),
+  };
+  return normalizeProjectIntentAuthority({
+    ...unsigned,
+    authorization_hmac_sha256: authorityHmac(unsigned, signingKey),
+  }, approvedProposal, { signingKey });
+}
+
+function attachProjectIntentAuthority(request, authority, signingKey) {
+  requirePlainObject(request, 'local apply request');
+  if (!request.proposal ||
+      !Object.prototype.hasOwnProperty.call(request.proposal, 'projectIntent')) {
+    throw new Error('project intent authority cannot be attached without projectIntent');
+  }
+  if (Object.prototype.hasOwnProperty.call(request, 'projectIntentAuthority')) {
+    throw new Error('project intent authority was supplied more than once');
+  }
+  const clean = normalizeProjectIntentAuthority(
+    authority, request.proposal, { signingKey });
+  return { ...request, projectIntentAuthority: clean };
+}
+
+async function authorizeProjectIntentRequest(request, preflight, {
+  authorizationId = crypto.randomBytes(16).toString('hex'),
+  signingKey = crypto.randomBytes(32).toString('hex'),
+  isCurrent = () => true,
+} = {}) {
+  requirePlainObject(request, 'local apply request');
+  if (!request.proposal ||
+      !Object.prototype.hasOwnProperty.call(request.proposal, 'projectIntent')) {
+    return { request, signingKey: '' };
+  }
+  if (!preflight || typeof preflight.resolveProjectIntentPolicy !== 'function' ||
+      typeof preflight.requireTrustedManifest !== 'function') {
+    throw new Error('trusted project intent preflight is unavailable');
+  }
+  if (typeof isCurrent !== 'function') {
+    throw new TypeError('project intent ownership check must be a function');
+  }
+  const policy = await preflight.resolveProjectIntentPolicy(
+    request.proposal.projectIntent);
+  if (!isCurrent()) throw new Error('project intent authorization was canceled');
+  const transitionCarrier = validateTransitionCarrier(request.proposal, policy);
+  if (transitionCarrier && (
+      stableAuthorityJson(transitionCarrier.transitionPlan) !==
+        stableAuthorityJson(request.proposal.transitionPlan) ||
+      stableAuthorityJson(transitionCarrier.transitionSequenceManifest) !==
+        stableAuthorityJson(request.proposal.transitionSequenceManifest))) {
+    throw new Error('transition carrier changed during project intent authorization');
+  }
+  const manifest = await preflight.requireTrustedManifest();
+  if (!isCurrent()) throw new Error('project intent authorization was canceled');
+  const authority = buildProjectIntentAuthority(
+    request.proposal.projectIntent, policy, manifest,
+    { authorizationId, signingKey, approvedProposal: request.proposal });
+  return {
+    request: attachProjectIntentAuthority(request, authority, signingKey),
+    signingKey,
+  };
+}
+
 function normalizeApplyRequest(input, validateProposal) {
   requirePlainObject(input, 'local apply request');
+  if (Object.prototype.hasOwnProperty.call(input, 'projectIntentAuthority')) {
+    throw new Error('project intent authority must be generated by the trusted desktop');
+  }
   const request = normalizeLocalRequest(input);
   const proposal = normalizeProposal(input.proposal);
+  const unsupportedProposalKeys = Object.keys(proposal)
+    .filter((key) => !APPLY_PROPOSAL_KEYS.has(key));
+  if (unsupportedProposalKeys.length) {
+    throw new Error('proposal contains unsupported fields');
+  }
   const hasStoryPlan = Object.prototype.hasOwnProperty.call(proposal, 'storyPlan');
   const hasCreativeConstraints = Object.prototype.hasOwnProperty.call(
     proposal, 'creativeConstraints');
+  const hasSequencePlan = Object.prototype.hasOwnProperty.call(
+    proposal, 'sequencePlan');
+  const hasSequenceManifest = Object.prototype.hasOwnProperty.call(
+    proposal, 'sequenceSourceManifest');
+  const hasTransitionPlan = Object.prototype.hasOwnProperty.call(
+    proposal, 'transitionPlan');
+  const hasTransitionManifest = Object.prototype.hasOwnProperty.call(
+    proposal, 'transitionSequenceManifest');
   if (hasStoryPlan !== hasCreativeConstraints) {
     throw new Error('story plan and creative constraints must be supplied together');
   }
   if (hasStoryPlan) {
     structuralStoryPlan(proposal.storyPlan);
     structuralCreativeConstraints(proposal.creativeConstraints, proposal.storyPlan);
+  }
+  if (hasSequencePlan !== hasSequenceManifest ||
+      (hasSequencePlan && (hasStoryPlan || hasCreativeConstraints))) {
+    throw new Error('sequence plan and source manifest must be supplied together and cannot mix with a story plan');
+  }
+  if (hasSequencePlan) {
+    validateSequencePlan(proposal.sequencePlan, proposal.sequenceSourceManifest);
+  }
+  if (Object.prototype.hasOwnProperty.call(proposal, 'projectIntent')) {
+    proposal.projectIntent = validateProjectIntent(proposal.projectIntent);
+  }
+  if (hasTransitionPlan !== hasTransitionManifest) {
+    throw new Error('transition plan and sequence manifest must be supplied together');
+  }
+  if (hasTransitionPlan) {
+    const carrier = validateTransitionCarrier(proposal);
+    proposal.transitionPlan = carrier.transitionPlan;
+    proposal.transitionSequenceManifest = carrier.transitionSequenceManifest;
   }
   if (validateProposal !== undefined) {
     if (typeof validateProposal !== 'function') {
@@ -418,12 +750,17 @@ function engineProgress(line) {
 
 module.exports = {
   PROJECT_ARGS,
+  PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION,
   normalizeVideoPaths,
   normalizeOutputDir,
   normalizeResultPath,
   normalizeLocalRequest,
   normalizeChatRequest,
   normalizeApplyRequest,
+  normalizeProjectIntentAuthority,
+  buildProjectIntentAuthority,
+  attachProjectIntentAuthority,
+  authorizeProjectIntentRequest,
   normalizeLocalSettings,
   settingsForLocalRender,
   joinPlan,

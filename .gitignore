@@ -11,6 +11,7 @@ __pycache__/
 
 # node
 node_modules/
+.local-tools/
 package-lock.json
 !desktop/package-lock.json
 !packaging/helper-runtime/package-lock.json
@@ -36,7 +37,12 @@ out/
 # desktop build
 desktop/node_modules/
 desktop/dist/
+desktop/helper-dist/
+desktop/helper-staging/
+desktop/team-dist/
 desktop/staging/
+.semantic-visual-work/
+.eval-vision-*/
 packaging/build/
 packaging/dist/
 
@@ -47,3 +53,9 @@ webapp/worker/.dev.vars
 
 webapp/helper.zip
 webapp/helper_dist/__pycache__/
+
+# local-only / oversize (do not publish)
+.tmp-ci-repro-f81/
+.tmp-ci-repro-f81-full/
+desktop/team-dist/
+*.onnx

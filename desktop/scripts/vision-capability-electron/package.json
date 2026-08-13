@@ -1,0 +1,5 @@
+{
+  "name": "autoeditor-vision-capability-electron-harness",
+  "private": true,
+  "main": "main.js"
+}

@@ -1,7 +1,7 @@
 /** AutoEditor: one-window local editor around the frozen render daemon. */
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } =
+const { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, session, shell } =
   require('electron');
 const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
@@ -12,7 +12,7 @@ const { runEditingChat } = require('./lib/editing-harness');
 const {
   analyzeMedia,
   artifactCaptionRenderEvents,
-  artifactVisionCoverage,
+  artifactFrameCaptureCoverage,
   artifactVisionPlan,
   extractArtifactVisionFrames,
   parseArtifactCaptions,
@@ -20,8 +20,10 @@ const {
 } = require('./lib/media-analysis');
 const {
   artifactAudioQaReceipt,
+  ARTIFACT_SEMANTIC_CANDIDATE_TOKEN_IDS,
+  ARTIFACT_SEMANTIC_THRESHOLDS,
   parseArtifactReview,
-  reviewArtifactFrames,
+  reviewArtifactFramesCalibrated,
   reviewIssueText,
   reviewPasses,
 } = require('./lib/artifact-quality');
@@ -35,6 +37,7 @@ const {
 } = require('./lib/preference-learning');
 const {
   normalizeApplyRequest,
+  authorizeProjectIntentRequest,
   normalizeChatRequest,
   normalizeLocalRequest,
   normalizeLocalSettings,
@@ -45,12 +48,49 @@ const {
   settingsForLocalRender,
   engineProgress,
 } = require('./lib/local-render');
+const {
+  compileSequencePlan,
+  sequencePlanSha256,
+  sourceManifestSha256: sourceManifestContractSha256,
+} = require('./lib/sequence-plan');
+const {
+  compileTransitionPlan,
+  transitionPlanSha256,
+  transitionSequenceManifestSha256,
+} = require('./lib/transition-plan');
+const {
+  createRuntimeCapabilityPreflight,
+} = require('./lib/runtime-capability-preflight');
+const { CAPABILITY_CHECK_IDS } = require('./lib/runtime-capabilities');
+const {
+  createVisionProtocolHandler,
+  installedVisionModelPackPath,
+  MODEL_PACK_TREE_SHA256,
+  sourceVisionModelPackPath,
+  validateVisionModelPack,
+  validateVisionRuntimeAssets,
+  VISION_RUNTIME_LOCK_SHA256,
+  visionModelRuntimeBindings,
+} = require('./lib/vision-model-pack');
+const {
+  readArtifactQaReport: readTrustedArtifactQaReport,
+  readContractJsonSidecar: readTrustedContractJsonSidecar,
+  readContractTextSidecar: readTrustedContractTextSidecar,
+  validateMusicProductionArtifactBinding,
+  validateSfxProductionArtifactBinding,
+  validateProjectIntentArtifactBinding,
+} = require('./lib/artifact-contract');
 
 let win = null;
 let activeRender = null;
 let activeChat = null;
+let runtimeCapabilityPreflight = null;
+let quitDrainStarted = false;
+let quitDrainComplete = false;
 let actionSequence = 0;
 let visionSequence = 0;
+let visionSessionNetworkAttempts = 0;
+let visionSessionNetworkEnforced = false;
 const pendingVision = new Map();
 const returnedOutputs = new Map();
 const returnedProposals = new Set();
@@ -81,13 +121,6 @@ const PROVIDER_LINKS = Object.freeze({
   elevenApiKeys: 'https://elevenlabs.io/app/settings/api-keys',
   remotionDashboard: 'https://remotion.pro/dashboard',
 });
-const VISION_RUNTIME_FILES = Object.freeze({
-  'ort-wasm-simd-threaded.asyncify.mjs': 'text/javascript; charset=utf-8',
-  'ort-wasm-simd-threaded.asyncify.wasm': 'application/wasm',
-  'ort-wasm-simd-threaded.mjs': 'text/javascript; charset=utf-8',
-  'ort-wasm-simd-threaded.wasm': 'application/wasm',
-});
-
 protocol.registerSchemesAsPrivileged([{
   scheme: 'autoeditor-vision',
   privileges: {
@@ -111,6 +144,136 @@ function browserParts() {
 
 function runtimePaths() {
   const root = RES;
+  const fonts = PACKAGED
+    ? path.join(root, 'fonts')
+    : path.join(__dirname, 'renderer');
+  const visionDir = path.join(__dirname, 'vision');
+  const visionModelPack = PACKAGED
+    ? installedVisionModelPackPath(root)
+    : sourceVisionModelPackPath(root);
+  const visionModelBindings = visionModelRuntimeBindings(visionModelPack);
+  const capabilityCodeFiles = PACKAGED
+    ? [
+      { name: 'desktop-app-asar', path: path.join(root, 'app.asar') },
+      {
+        name: 'caption-font',
+        path: path.join(fonts, 'WorkSans-Variable.ttf'),
+      },
+      {
+        name: 'whisper-small-model',
+        path: path.join(root, 'models', 'faster-whisper-small'),
+      },
+      ...visionModelBindings,
+    ]
+    : [
+      {
+        name: 'capability-check-runner',
+        path: path.join(__dirname, 'lib', 'runtime-capability-check-runner.js'),
+      },
+      {
+        name: 'capability-preflight',
+        path: path.join(__dirname, 'lib', 'runtime-capability-preflight.js'),
+      },
+      {
+        name: 'capability-producer',
+        path: path.join(__dirname, 'lib', 'runtime-capability-probe.js'),
+      },
+      {
+        name: 'capability-contract',
+        path: path.join(__dirname, 'lib', 'runtime-capabilities.js'),
+      },
+      {
+        name: 'capability-policy-bridge',
+        path: path.join(__dirname, 'lib', 'project-intent-policy-bridge.js'),
+      },
+      {
+        name: 'edit-policy',
+        path: path.join(__dirname, 'lib', 'edit-policy.js'),
+      },
+      {
+        name: 'artifact-contract',
+        path: path.join(__dirname, 'lib', 'artifact-contract.js'),
+      },
+      {
+        name: 'sfx-production',
+        path: path.join(__dirname, '..', '..', 'autoeditor',
+          'sfx_production.py'),
+      },
+      {
+        name: 'music-production',
+        path: path.join(__dirname, '..', '..', 'autoeditor',
+          'music_production.py'),
+      },
+      {
+        name: 'project-intent',
+        path: path.join(__dirname, 'lib', 'project-intent.js'),
+      },
+      {
+        name: 'desktop-main',
+        path: __filename,
+      },
+      {
+        name: 'process-tree',
+        path: path.join(__dirname, '..', 'lib', 'process-tree.js'),
+      },
+      {
+        name: 'caption-font',
+        path: path.join(fonts, 'WorkSans-Variable.ttf'),
+      },
+      {
+        name: 'asr-runtime-probe',
+        path: path.join(__dirname, '..', '..', 'autoeditor',
+          'asr_runtime_probe.py'),
+      },
+      {
+        name: 'dialogue-cleanup-runtime-probe',
+        path: path.join(__dirname, '..', '..', 'autoeditor',
+          'dialogue_cleanup_runtime_probe.py'),
+      },
+      {
+        name: 'render-capability-runtime-probe',
+        path: path.join(__dirname, '..', '..', 'autoeditor',
+          'render_capability_runtime_probe.py'),
+      },
+      {
+        name: 'vision-model-pack-contract',
+        path: path.join(__dirname, 'lib', 'vision-model-pack.js'),
+      },
+      {
+        name: 'semantic-choice-contract',
+        path: path.join(__dirname, 'lib', 'calibrated-semantic-choice.js'),
+      },
+      {
+        name: 'semantic-qualification-contract',
+        path: path.join(__dirname, 'lib', 'semantic-visual-qualification.js'),
+      },
+      {
+        name: 'semantic-promotion-gate',
+        path: path.join(__dirname, 'lib',
+          'calibrated-semantic-promotion-gate.js'),
+      },
+      {
+        name: 'visual-quality-contract',
+        path: path.join(__dirname, 'lib', 'artifact-quality.js'),
+      },
+      {
+        name: 'visual-quality-fixtures',
+        path: path.join(__dirname, 'lib', 'visual-quality-fixtures.js'),
+      },
+      {
+        name: 'visual-quality-runtime-probe',
+        path: path.join(__dirname, 'lib', 'visual-quality-runtime-probe.js'),
+      },
+      {
+        name: 'vision-worker-bundle',
+        path: path.join(visionDir, 'vision-worker.bundle.js'),
+      },
+      {
+        name: 'whisper-small-model',
+        path: path.join(root, 'models', 'faster-whisper-small'),
+      },
+      ...visionModelBindings,
+    ];
   return {
     root,
     daemon: path.join(root, 'helper', exe('autoeditor-helper-daemon')),
@@ -120,7 +283,7 @@ function runtimePaths() {
     smallModel: path.join(root, 'models', 'faster-whisper-small'),
     mediumModel: path.join(root, 'models', 'faster-whisper-medium'),
     profiles: path.join(root, 'profiles'),
-    fonts: path.join(root, 'fonts'),
+    fonts,
     caBundle: path.join(root, 'certs', 'cacert.pem'),
     notices: path.join(root, 'licenses', 'THIRD_PARTY_NOTICES.md'),
     node: path.join(root, 'node', exe('node')),
@@ -131,8 +294,36 @@ function runtimePaths() {
     browser: path.join(root, 'browser', ...browserParts()),
     hyperframesProject: path.join(root, 'creative', 'hyperframes-graphics'),
     remotionProject: path.join(root, 'creative', 'remotion-viz'),
-    visionDir: path.join(__dirname, 'vision'),
+    runtimeManifest: path.join(root, 'runtime-manifest.json'),
+    capabilityCodeFiles,
+    visionDir,
+    visionModelPack,
   };
+}
+
+function initializeRuntimeCapabilityPreflight() {
+  if (runtimeCapabilityPreflight) return runtimeCapabilityPreflight;
+  const runtime = runtimePaths();
+  const probeEnv = daemonEnv({
+    deepseekApiKey: '', pexelsApiKey: '', pixabayApiKey: '',
+    elevenLabsApiKey: '', remotionKey: 'free-license',
+  });
+  probeEnv.AUTOEDITOR_CREATIVE_SMOKE_TEST = '1';
+  // The daemon otherwise treats Remotion as optional in creative smoke mode.
+  // A chart capability pass must execute the real bundled Remotion fixture.
+  probeEnv.AUTOEDITOR_REQUIRE_REMOTION = '1';
+  runtimeCapabilityPreflight = createRuntimeCapabilityPreflight({
+    runtime,
+    userData: app.getPath('userData'),
+    env: probeEnv,
+    // The fixed checks run sequentially and now include real ASR, dialogue
+    // cleanup, caption, SFX, and music renders.  Keep every subprocess
+    // individually bounded while allowing slower supported machines enough
+    // time to complete the full local proof without a misleading timeout.
+    checkTimeoutMs: 120000,
+    globalTimeoutMs: 15 * 60 * 1000,
+  });
+  return runtimeCapabilityPreflight;
 }
 
 function settingsFile() {
@@ -398,9 +589,7 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
     remotion: fs.existsSync(p.remotionCli) &&
       fs.existsSync(path.join(p.remotionProject, 'src', 'index.ts')),
     browser: fs.existsSync(p.browser),
-    localVision: fs.existsSync(path.join(p.visionDir, 'vision-worker.bundle.js')) &&
-      Object.keys(VISION_RUNTIME_FILES).every((file) =>
-        fs.existsSync(path.join(p.visionDir, file))),
+    localVision: false,
     // Artifact smoke and screenshot capture are noninteractive. On macOS an
     // ad-hoc acceptance build can block on its first Keychain lookup. Saving
     // settings and starting any local action still require the OS keystore.
@@ -409,6 +598,11 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
     codecs: false,
     filters: false,
   };
+  try {
+    validateVisionRuntimeAssets(p.visionDir);
+    validateVisionModelPack(p.visionModelPack);
+    checks.localVision = true;
+  } catch (_) { checks.localVision = false; }
   if (checkDisk) {
     try {
       const stat = fs.statfsSync(app.getPath('userData'));
@@ -421,10 +615,21 @@ function preflight({ checkKeystore = true, checkDisk = true } = {}) {
     const filters = commandOutput(p.ffmpeg, ['-hide_banner', '-filters']);
     const needed = ['fps', 'aresample', 'adelay', 'atrim', 'concat', 'scale',
       'pad', 'setsar', 'overlay', 'chromakey', 'despill', 'alphaextract',
-      'dilation', 'erosion', 'alphamerge', 'huesaturation', 'loudnorm'];
+      'dilation', 'erosion', 'alphamerge', 'huesaturation', 'loudnorm',
+      'colorspace'];
     checks.filters = needed.every((name) => filters.includes(name));
   }
-  return { ok: Object.values(checks).every(Boolean), checks };
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    // Observational until the typed project-intent path requests a policy.
+    // Legacy rendering remains governed by its existing artifact gates.
+    capabilityProbe: runtimeCapabilityPreflight?.snapshot() || {
+      status: 'idle', trusted: false, baselineReady: false,
+      availableCapabilities: [], passedChecks: 0, completedChecks: 0,
+      totalChecks: CAPABILITY_CHECK_IDS.length, failureCode: '',
+    },
+  };
 }
 
 function daemonEnv(settings) {
@@ -434,7 +639,9 @@ function daemonEnv(settings) {
     'WORKER_TOKEN', 'AUTOEDITOR_WEB_API', 'PEXELS_API_KEY', 'PIXABAY_API_KEY',
     'ELEVENLABS_API_KEY', 'REMOTION_LICENSE_KEY', 'OPENAI_API_KEY',
     'ANTHROPIC_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-    'TELEGRAM_HOME_CHANNEL']) delete env[key];
+    'TELEGRAM_HOME_CHANNEL', 'AUTOEDITOR_PROJECT_INTENT_AUTHORITY_KEY']) {
+    delete env[key];
+  }
   Object.assign(env, {
     DEEPSEEK_API_KEY: settings.deepseekApiKey || '',
     PEXELS_API_KEY: settings.pexelsApiKey || '',
@@ -497,34 +704,28 @@ function activeRenderState() {
 }
 
 function registerVisionProtocol() {
-  const root = runtimePaths().visionDir;
-  protocol.handle('autoeditor-vision', (request) => {
-    try {
-      const url = new URL(request.url);
-      const file = url.pathname.replace(/^\//, '');
-      const contentType = VISION_RUNTIME_FILES[file];
-      if (request.method !== 'GET' || url.hostname !== 'runtime' ||
-          url.search || !contentType || file.includes('/') || file.includes('\\')) {
-        return new Response('Not found', { status: 404 });
-      }
-      const target = path.join(root, file);
-      const stat = fs.statSync(target);
-      if (!stat.isFile() || stat.size < 1 || stat.size > 32 * 1024 * 1024) {
-        return new Response('Not found', { status: 404 });
-      }
-      return new Response(fs.readFileSync(target), { headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        'Content-Type': contentType,
-        'Cross-Origin-Resource-Policy': 'cross-origin',
-      } });
-    } catch (_) {
-      return new Response('Not found', { status: 404 });
-    }
+  const runtime = runtimePaths();
+  const handler = createVisionProtocolHandler({
+    modelPackRoot: runtime.visionModelPack,
+    runtimeRoot: runtime.visionDir,
   });
+  protocol.handle('autoeditor-vision', handler);
 }
 
-function readVisionFrame(file) {
+function enforceVisionSessionNetworkBoundary() {
+  if (visionSessionNetworkEnforced) return;
+  session.defaultSession.webRequest.onBeforeRequest({
+    urls: ['http://*/*', 'https://*/*'],
+  }, (_details, callback) => {
+    visionSessionNetworkAttempts += 1;
+    callback({ cancel: true });
+  });
+  session.defaultSession.setPermissionRequestHandler(
+    (_contents, _permission, callback) => callback(false));
+  visionSessionNetworkEnforced = true;
+}
+
+function readVisionFrame(file, expected = null) {
   const handle = fs.openSync(file, 'r');
   try {
     const before = fs.fstatSync(handle);
@@ -544,6 +745,17 @@ function readVisionFrame(file) {
         data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) {
       throw new Error('a local vision frame was not a complete JPEG');
     }
+    if (expected !== null) {
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
+          Object.keys(expected).sort().join('\0') !== 'sha256\0size_bytes' ||
+          !/^[0-9a-f]{64}$/.test(expected.sha256 || '') ||
+          !Number.isSafeInteger(expected.size_bytes) ||
+          expected.size_bytes !== data.length ||
+          crypto.createHash('sha256').update(data).digest('hex') !==
+            expected.sha256) {
+        throw new Error('a local vision frame no longer matched its trusted capture');
+      }
+    }
     return `data:image/jpeg;base64,${data.toString('base64')}`;
   } finally {
     fs.closeSync(handle);
@@ -551,7 +763,8 @@ function readVisionFrame(file) {
 }
 
 function requestVision(framePaths, action, {
-  mode = 'media-analysis', context = '',
+  mode = 'media-analysis', context = '', expectedFrames = null,
+  includeRuntime = false,
 } = {}) {
   if (!win || win.isDestroyed() || !isActiveAction(action)) {
     return Promise.reject(new Error('the local vision window is unavailable'));
@@ -559,7 +772,12 @@ function requestVision(framePaths, action, {
   if (!Array.isArray(framePaths) || framePaths.length < 1 || framePaths.length > 8) {
     return Promise.reject(new Error('local vision requires between 1 and 8 frames'));
   }
-  const images = framePaths.map(readVisionFrame);
+  if (expectedFrames !== null && (!Array.isArray(expectedFrames) ||
+      expectedFrames.length !== framePaths.length)) {
+    return Promise.reject(new Error('local vision frame evidence is invalid'));
+  }
+  const images = framePaths.map((file, index) =>
+    readVisionFrame(file, expectedFrames?.[index] || null));
   const id = ++visionSequence;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -567,7 +785,10 @@ function requestVision(framePaths, action, {
       sendVisionCancel(id, 'timeout');
       reject(new Error('the local vision model exceeded 30 minutes'));
     }, VISION_TIMEOUT_MS);
-    pendingVision.set(id, { action, mode, resolve, reject, timer });
+    pendingVision.set(id, {
+      action, includeRuntime: includeRuntime === true, mode,
+      resolve, reject, timer,
+    });
     send('helper-vision-request', {
       id, images,
       mode: String(mode).slice(0, 80),
@@ -605,7 +826,7 @@ function handleVisionProgress(event, value) {
       typeof value.line !== 'string') return;
   processLocalEvent({
     event: 'local-progress',
-    stage: pending.mode === 'artifact-quality'
+    stage: ['artifact-quality', 'artifact-assertion'].includes(pending.mode)
       ? 'artifact-quality' : 'media-analysis',
     line: value.line.replace(/\0/g, '').trim().slice(0, 1000),
   }, pending.action);
@@ -625,7 +846,9 @@ function handleVisionResult(event, value) {
   if (value.status === 'complete' && typeof value.result === 'string') {
     const result = value.result.replace(/\0/g, '').trim().slice(0, 5000);
     if (result) {
-      pending.resolve(result);
+      pending.resolve(pending.includeRuntime
+        ? Object.freeze({ result, runtime: value.runtime })
+        : result);
       return;
     }
   }
@@ -669,11 +892,39 @@ function lineReader(onLine) {
   };
 }
 
+function pythonJsonString(value) {
+  let result = '"';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (character === '"') result += '\\"';
+    else if (character === '\\') result += '\\\\';
+    else if (character === '\b') result += '\\b';
+    else if (character === '\f') result += '\\f';
+    else if (character === '\n') result += '\\n';
+    else if (character === '\r') result += '\\r';
+    else if (character === '\t') result += '\\t';
+    else if (codePoint >= 0x20 && codePoint <= 0x7e) result += character;
+    else if (codePoint <= 0xffff) {
+      result += `\\u${codePoint.toString(16).padStart(4, '0')}`;
+    } else {
+      const adjusted = codePoint - 0x10000;
+      result += `\\u${(0xd800 + (adjusted >> 10)).toString(16)}`;
+      result += `\\u${(0xdc00 + (adjusted & 0x3ff)).toString(16)}`;
+    }
+  }
+  return `${result}"`;
+}
+
 function stableJson(value) {
+  if (typeof value === 'string') return pythonJsonString(value);
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+    `${pythonJsonString(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function sameCanonical(left, right) {
+  return stableJson(left) === stableJson(right);
 }
 
 function sha256Text(value) {
@@ -934,7 +1185,7 @@ function rememberProposal(event) {
       event.proposal.operations.length < 1) return;
   try {
     const encoded = stableJson(event.proposal);
-    if (encoded.length <= 100000) returnedProposals.add(encoded);
+    if (encoded.length <= 512000) returnedProposals.add(encoded);
   } catch (_) { /* malformed daemon output is not applicable */ }
 }
 
@@ -1031,6 +1282,64 @@ function markRenderFinished(action) {
     running: !!activeRender, rendering: !!activeRender,
     chatting: !!activeChat, activeRender: activeRenderState(),
   });
+}
+
+async function semanticArtifactReviewCapability() {
+  const snapshot = runtimeCapabilityPreflight?.snapshot();
+  const advertised = !!snapshot && snapshot.trusted === true &&
+    snapshot.baselineReady === true && Array.isArray(snapshot.availableCapabilities) &&
+    snapshot.availableCapabilities.includes('visual_quality_analysis');
+  if (!advertised) {
+    return Object.freeze({
+      available: false,
+      status: String(snapshot?.status || 'idle'),
+      failureCode: String(snapshot?.failureCode || ''),
+    });
+  }
+  try {
+    const manifest = await runtimeCapabilityPreflight.requireTrustedManifest();
+    if (typeof runtimeCapabilityPreflight.requireSemanticVisualQualification !==
+        'function') {
+      return Object.freeze({
+        available: false,
+        status: 'qualification_unavailable',
+        failureCode: 'semantic_visual_qualification_unavailable',
+      });
+    }
+    const qualification = await runtimeCapabilityPreflight
+      .requireSemanticVisualQualification();
+    const qualified = !!qualification && qualification.qualified === true &&
+      qualification.schemaVersion ===
+        'autoeditor-semantic-visual-qualification-result/v1' &&
+      /^[0-9a-f]{64}$/.test(qualification.resultSha256 || '') &&
+      qualification.modelSha256 === MODEL_PACK_TREE_SHA256 &&
+      qualification.runtimeSha256 === VISION_RUNTIME_LOCK_SHA256 &&
+      Array.isArray(qualification.backends) &&
+      qualification.backends.join('\0') === 'webgpu\0wasm';
+    const available = qualified &&
+      Array.isArray(manifest?.available_capabilities) &&
+      manifest.available_capabilities.includes('visual_quality_analysis');
+    return Object.freeze({
+      available,
+      status: available ? 'ready' : 'required_checks_failed',
+      failureCode: available ? '' : 'visual_quality_analysis_unavailable',
+      ...(available ? {
+        capabilityManifestSha256: sha256Text(stableJson(manifest)),
+        capabilityProbeReceiptSha256: manifest.probe_receipt_sha256,
+        qualificationResultSha256: qualification.resultSha256,
+        qualificationSchema: qualification.schemaVersion,
+        qualifiedBackends: Object.freeze([...qualification.backends]),
+        modelSha256: qualification.modelSha256,
+        runtimeSha256: qualification.runtimeSha256,
+      } : {}),
+    });
+  } catch (error) {
+    return Object.freeze({
+      available: false,
+      status: 'failed',
+      failureCode: String(error?.code || 'runtime_revalidation_failed'),
+    });
+  }
 }
 
 function quarantineRejectedArtifact(artifact) {
@@ -1227,20 +1536,14 @@ function contractSidecarFile(contract, name, required = true) {
 
 function readContractJsonSidecar(outputDir, contract, name, label,
                                  required = true) {
-  const file = contractSidecarFile(contract, name, required);
-  if (!file) return null;
-  const receipt = readBoundedJsonSidecar(outputDir, file, label);
-  sidecarBinding(contract, name, receipt, required);
-  return receipt;
+  return readTrustedContractJsonSidecar(
+    outputDir, contract, name, label, required);
 }
 
 function readContractTextSidecar(outputDir, contract, name, label,
                                  required = true) {
-  const file = contractSidecarFile(contract, name, required);
-  if (!file) return null;
-  const receipt = readBoundedTextSidecar(outputDir, file, label);
-  sidecarBinding(contract, name, receipt, required);
-  return receipt;
+  return readTrustedContractTextSidecar(
+    outputDir, contract, name, label, required);
 }
 
 function artifactQaReleaseBinding(report, contract, promotion,
@@ -1267,33 +1570,8 @@ function artifactQaReleaseBinding(report, contract, promotion,
 }
 
 function readArtifactQaReport(outputDir, event, artifactSha256, artifactBytes) {
-  const promotion = artifactPromotionTarget(event, outputDir);
-  const requested = typeof event?.qaReport === 'string' && event.qaReport
-    ? path.basename(event.qaReport) : 'QA_REPORT.json';
-  if (requested !== 'QA_REPORT.json') {
-    throw new Error('the engine QA report path is invalid');
-  }
-  const receipt = readBoundedJsonSidecar(outputDir, requested, 'engine QA report');
-  const report = receipt.report;
-  if (report?.schema !== 'autoeditor-engine-qa/v2' || report.pass !== true ||
-      !report.artifact_contract || typeof report.artifact_contract !== 'object') {
-    throw new Error('the engine QA report lacks the versioned artifact contract');
-  }
-  const contract = report.artifact_contract;
-  const contractKeys = [
-    'schema', 'mode', 'delivery', 'edl', 'captions', 'caption_render',
-    'edit_boundaries', 'audio_mix',
-  ];
-  if (Object.keys(contract).length !== contractKeys.length ||
-      contractKeys.some((key) => !Object.prototype.hasOwnProperty.call(
-        contract, key)) ||
-      contract.schema !== 'autoeditor-engine-artifact-contract/v1' ||
-      (contract.mode !== 'generic-baseline' && contract.mode !== 'premium-edl')) {
-    throw new Error('the engine QA artifact mode is invalid');
-  }
-  const release = artifactQaReleaseBinding(
-    report, contract, promotion, artifactSha256, artifactBytes);
-  return { ...receipt, contract, release };
+  return readTrustedArtifactQaReport(
+    outputDir, event, artifactSha256, artifactBytes);
 }
 
 function readArtifactCaptions(outputDir, contract, durationSeconds) {
@@ -1314,8 +1592,12 @@ function writeVisionQaReport(action, report) {
 
 function visionReport({ action, staged, artifactStat, qaReceipt, edlReceipt,
                         captionReceipt, captionRenderReceipt, boundaryReceipt,
-                        mixReceipt, audioQa, plan, capture, reviewed, coverage,
-                        review, artifactSha256 = '', error = '' }) {
+                        mixReceipt, sequenceReceipt, projectIntentBinding,
+                        musicProductionReceipt, musicProductionBinding,
+                        sfxProductionReceipt, sfxProductionBinding,
+                        audioQa, plan, capture, reviewed, coverage, review,
+                        semanticReview,
+                        artifactSha256 = '', error = '' }) {
   const planSummary = plan ? {
     schema: plan.schema,
     timeline: plan.timeline,
@@ -1328,10 +1610,30 @@ function visionReport({ action, staged, artifactStat, qaReceipt, edlReceipt,
     cutSampling: plan.cutSampling || null,
     sha256: sha256Text(stableJson(plan)),
   } : null;
-  return {
-    schema: 'autoeditor-final-vision-qa/v3',
-    pass: !error && !!coverage?.complete && reviewPasses(review) &&
-      audioQa?.pass === true,
+  const expectedAuthority = action?.payload?.projectIntentAuthority;
+  const authoritySummary = projectIntentBinding || (expectedAuthority ? {
+    validated: false,
+    authorizationId: expectedAuthority.authorization_id || '',
+    projectIntentSha256: expectedAuthority.project_intent_sha256 || '',
+    editPolicySha256: expectedAuthority.edit_policy_sha256 || '',
+    capabilityManifestSha256:
+      expectedAuthority.capability_manifest_sha256 || '',
+    capabilityProbeReceiptSha256:
+      expectedAuthority.capability_manifest?.probe_receipt_sha256 || '',
+  } : null);
+  const semantic = semanticReview || {
+    mode: 'semantic-model', available: true, performed: true,
+    capability: 'visual_quality_analysis', reason: '',
+  };
+  const deterministicOnly = semantic.mode === 'deterministic-only' &&
+    semantic.available === false && semantic.performed === false;
+  const report = {
+    schema: authoritySummary
+      ? 'autoeditor-final-vision-qa/v7'
+      : 'autoeditor-final-vision-qa/v6',
+    pass: !error && !!coverage?.complete && audioQa?.pass === true &&
+      qaReceipt?.deterministicVisualQa?.record?.pass === true &&
+      (deterministicOnly || reviewPasses(review)),
     artifact: path.basename(staged?.approved || ''),
     artifactBytes: Number(artifactStat?.size || 0),
     artifactSha256,
@@ -1360,24 +1662,66 @@ function visionReport({ action, staged, artifactStat, qaReceipt, edlReceipt,
     audioMix: mixReceipt ? {
       file: mixReceipt.file, bytes: mixReceipt.bytes, sha256: mixReceipt.sha256,
     } : null,
+    sequence: sequenceReceipt ? {
+      file: sequenceReceipt.file, bytes: sequenceReceipt.bytes,
+      sha256: sequenceReceipt.sha256,
+      orderedSegmentIds: sequenceReceipt.report?.ordered_segment_ids || [],
+      totalDurationMs: sequenceReceipt.report?.total_duration_ms || null,
+      compileReceiptSha256:
+        sequenceReceipt.report?.sequence_compile_receipt_sha256 || '',
+    } : null,
+    ...(authoritySummary
+      ? { projectIntentAuthority: authoritySummary }
+      : {}),
+    ...(musicProductionReceipt ? { typedMusicProduction: {
+      file: musicProductionReceipt.file,
+      bytes: musicProductionReceipt.bytes,
+      sha256: musicProductionReceipt.sha256,
+      validated: musicProductionBinding?.validated === true,
+      mode: musicProductionBinding?.mode || '',
+      regionCount: musicProductionBinding?.regionCount ?? null,
+      productionReceiptSha256:
+        musicProductionBinding?.productionReceiptSha256 || '',
+    } } : {}),
+    ...(sfxProductionReceipt ? { typedSfxProduction: {
+      file: sfxProductionReceipt.file,
+      bytes: sfxProductionReceipt.bytes,
+      sha256: sfxProductionReceipt.sha256,
+      validated: sfxProductionBinding?.validated === true,
+      mode: sfxProductionBinding?.mode || '',
+      cueCount: sfxProductionBinding?.cueCount ?? null,
+      productionReceiptSha256:
+        sfxProductionBinding?.productionReceiptSha256 || '',
+    } } : {}),
     audioQa: audioQa || null,
+    deterministicVisualQa: qaReceipt?.deterministicVisualQa ? {
+      file: qaReceipt.deterministicVisualQa.file,
+      bytes: qaReceipt.deterministicVisualQa.bytes,
+      sha256: qaReceipt.deterministicVisualQa.sha256,
+      analyzerReceiptSha256:
+        qaReceipt.deterministicVisualQa.record.analysis.receipt_sha256,
+      checkCount: qaReceipt.deterministicVisualQa.summary.check_count,
+      semanticEvaluation: false,
+    } : null,
     plan: planSummary,
     coverage: coverage || null,
     coverageSha256: coverage ? sha256Text(stableJson(coverage)) : '',
+    semanticReview: semantic,
     captureFailures: Array.isArray(capture?.missing) ? capture.missing.map((item) => ({
       id: String(item?.id || '').slice(0, 100),
       timeSeconds: Number(item?.timeSeconds),
       error: String(item?.error || '').replace(/\0/g, '').trim().slice(0, 500),
     })) : [],
     batches: Array.isArray(reviewed?.batches) ? reviewed.batches : [],
-    review: review || parseArtifactReview(''),
+    review: semantic.performed ? (review || parseArtifactReview('')) : null,
     error: String(error || '').replace(/\0/g, '').trim().slice(0, 2000),
     reviewedAt: new Date().toISOString(),
     actionId: action.id,
   };
+  return report;
 }
 
-function retryRejectedRender(action, artifact, issue) {
+async function retryRejectedRender(action, artifact, issue) {
   if (action.canceled || activeRender !== action) return false;
   const priorAttempts = Number(action.payload?.visionAttempt || 0);
   if (priorAttempts >= 1) return false;
@@ -1394,6 +1738,16 @@ function retryRejectedRender(action, artifact, issue) {
     visionAttempt: priorAttempts + 1,
   };
   delete payload.creativeBriefSha256;
+  // The daemon consumes ProjectIntent authority exactly once.  A repair is a
+  // new render of the same approved proposal and must receive a newly measured,
+  // newly signed authority instead of replaying the first process's carrier.
+  delete payload.projectIntentAuthority;
+  const retryRequest = payload.proposal
+    ? normalizeApplyRequest(payload) : normalizeLocalRequest(payload);
+  const resultContext = {
+    ...action.resultContext,
+    planSha256: planSha256(retryRequest),
+  };
   processLocalEvent({
     event: 'local-progress', stage: 'artifact-repair', measurable: false,
     message: 'The first draft failed visual QA. Re-editing it automatically...',
@@ -1401,10 +1755,59 @@ function retryRejectedRender(action, artifact, issue) {
   }, action);
   action.qaPending = false;
   if (activeRender === action) activeRender = null;
-  const retryRequest = payload.proposal
-    ? normalizeApplyRequest(payload) : normalizeLocalRequest(payload);
-  localProcess('--local-render', retryRequest, 'render', action.settings,
-    { ...action.resultContext, planSha256: planSha256(retryRequest) });
+  if (!Object.prototype.hasOwnProperty.call(
+    retryRequest.proposal || {}, 'projectIntent')) {
+    try {
+      localProcess('--local-render', retryRequest, 'render', action.settings,
+        resultContext);
+    } catch (error) {
+      send('helper-render', {
+        event: 'local-error', actionId: action.id, kind: 'render',
+        stage: 'artifact repair',
+        error: `AutoEditor could not start the visual repair: ${
+          error.message || String(error)}`,
+      });
+      send('helper-state', {
+        running: false, rendering: false, chatting: !!activeChat,
+        activeRender: null,
+      });
+    }
+    return true;
+  }
+
+  let reservation = null;
+  try {
+    reservation = reserveLocalRender(
+      retryRequest, action.settings, resultContext);
+    const authorized = await authorizeProjectIntentRequest(
+      retryRequest, initializeRuntimeCapabilityPreflight(), {
+        isCurrent: () => activeRender === reservation && !reservation.canceled,
+      });
+    if (activeRender !== reservation || reservation.canceled) {
+      throw new Error('project intent repair authorization was canceled');
+    }
+    reservation.projectIntentAuthorityKey = authorized.signingKey;
+    localProcess('--local-render', authorized.request, 'render', action.settings,
+      resultContext, reservation);
+  } catch (error) {
+    if (reservation) reservation.projectIntentAuthorityKey = '';
+    const failedAction = reservation || action;
+    if (!failedAction.canceled) {
+      send('helper-render', {
+        event: 'local-error', actionId: failedAction.id, kind: 'render',
+        stage: 'ProjectIntent repair authorization',
+        error: `AutoEditor could not authorize the visual repair: ${
+          error.message || String(error)}`,
+      });
+    }
+    if (reservation) markRenderFinished(reservation);
+    else {
+      send('helper-state', {
+        running: false, rendering: false, chatting: !!activeChat,
+        activeRender: null,
+      });
+    }
+  }
   return true;
 }
 
@@ -1427,12 +1830,23 @@ async function reviewArtifact(event, action) {
   let captionRenderReceipt = null;
   let boundaryReceipt = null;
   let mixReceipt = null;
+  let sequenceReceipt = null;
+  let projectIntentReceipt = null;
+  let projectIntentBinding = null;
+  let musicProductionReceipt = null;
+  let musicProductionBinding = null;
+  let sfxProductionReceipt = null;
+  let sfxProductionBinding = null;
   let audioQa = null;
   let plan = null;
   let capture = { captured: [], missing: [] };
   let reviewed = { reviewedFrameIds: [], reviewedTargetIds: [], batches: [] };
   let coverage = null;
   let review = parseArtifactReview('');
+  let semanticReview = {
+    mode: 'not-decided', available: false, performed: false,
+    capability: 'visual_quality_analysis', reason: '',
+  };
   try {
     const promotion = artifactPromotionTarget(event, action.outputDir);
     artifact = promotion.pending;
@@ -1455,6 +1869,11 @@ async function reviewArtifact(event, action) {
     });
     assertVisionAction(action);
     const contract = qaReceipt.contract;
+    if (!qaReceipt.deterministicVisualQa ||
+        qaReceipt.deterministicVisualQa.record?.pass !== true) {
+      throw new Error(
+        'engine QA lacks verified deterministic visual-quality evidence');
+    }
     boundaryReceipt = readContractJsonSidecar(
       action.outputDir, contract, 'edit_boundaries', 'edit-boundary receipt');
     captionReceipt = readArtifactCaptions(
@@ -1463,6 +1882,341 @@ async function reviewArtifact(event, action) {
       action.outputDir, contract, 'caption_render', 'caption-render receipt', false);
     mixReceipt = readContractJsonSidecar(
       action.outputDir, contract, 'audio_mix', 'audio-mix receipt');
+    sequenceReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'sequence', 'approved-sequence receipt', false);
+    projectIntentReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'project_intent',
+      'ProjectIntent render receipt', false);
+    musicProductionReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'music_production',
+      'typed music production receipt', false);
+    sfxProductionReceipt = readContractJsonSidecar(
+      action.outputDir, contract, 'sfx_production',
+      'typed SFX production receipt', false);
+    const projectIntentExpected = Object.prototype.hasOwnProperty.call(
+      action.payload?.proposal || {}, 'projectIntent');
+    if (projectIntentExpected && !projectIntentReceipt) {
+      throw new Error(
+        'the approved ProjectIntent lacks its exact engine render receipt');
+    }
+    if (projectIntentExpected && !sfxProductionReceipt) {
+      throw new Error(
+        'the approved ProjectIntent lacks its typed SFX production receipt');
+    }
+    if (projectIntentExpected && !musicProductionReceipt) {
+      throw new Error(
+        'the approved ProjectIntent lacks its typed music production receipt');
+    }
+    if (!projectIntentExpected && musicProductionReceipt) {
+      throw new Error('engine QA returned an orphaned typed music receipt');
+    }
+    if (!projectIntentExpected && sfxProductionReceipt) {
+      throw new Error('engine QA returned an orphaned typed SFX receipt');
+    }
+    if (!projectIntentExpected && projectIntentReceipt) {
+      throw new Error('engine QA returned an orphaned ProjectIntent receipt');
+    }
+    if (projectIntentExpected &&
+        contract.schema !== 'autoeditor-engine-artifact-contract/v5') {
+      throw new Error('the approved ProjectIntent lacks its v5 artifact contract');
+    }
+    if (!projectIntentExpected &&
+        contract.schema !== 'autoeditor-engine-artifact-contract/v3') {
+      throw new Error('the legacy render lacks its v3 artifact contract');
+    }
+    if (!projectIntentExpected &&
+        qaReceipt.report?.checks?.project_intent_authority) {
+      throw new Error('legacy engine QA returned an orphaned ProjectIntent check');
+    }
+    const sequenceCheck = qaReceipt.report?.checks?.approved_source_sequence;
+    const approvedPlan = action.payload?.proposal?.sequencePlan;
+    const approvedManifest = action.payload?.proposal?.sequenceSourceManifest;
+    const sequenceExpected = approvedPlan !== undefined || approvedManifest !== undefined;
+    if ((approvedPlan !== undefined) !== (approvedManifest !== undefined)) {
+      throw new Error('the approved sequence proposal lost its source manifest');
+    }
+    if (sequenceExpected && !sequenceReceipt) {
+      throw new Error('the approved sequence lacks its exact engine receipt');
+    }
+    if (!sequenceExpected && sequenceReceipt) {
+      throw new Error('engine QA returned an unapproved source sequence');
+    }
+    if (sequenceReceipt) {
+      const receipt = sequenceReceipt.report;
+      const legacyKeys = [
+        'schema_version', 'sequence_compile_receipt',
+        'sequence_compile_receipt_sha256', 'sequence_compile',
+        'sequence_timing_receipt', 'sequence_timing_receipt_sha256',
+        'ordered_segment_ids',
+        'segment_durations_ms', 'hard_cut_boundaries_ms',
+        'total_duration_ms', 'synthesized_silence_source_ids',
+        'used_audio_source_ids',
+        'output_sha256', 'output_bytes', 'output_file',
+      ];
+      const transitionKeys = [
+        'source_total_duration_ms', 'boundaries',
+        'transition_compile_receipt', 'transition_compile_receipt_sha256',
+        'transition_executor_receipt', 'transition_executor_receipt_sha256',
+        'transition_topology', 'transition_topology_sha256',
+        'transition_artifact_receipt', 'transition_artifact_receipt_sha256',
+      ];
+      const v2 = receipt?.schema_version ===
+        'autoeditor-sequence-handoff-receipt/v2';
+      const keys = v2 ? [...legacyKeys, ...transitionKeys] : legacyKeys;
+      const approvedTransitionPlan = action.payload?.proposal?.transitionPlan;
+      const approvedTransitionManifest =
+        action.payload?.proposal?.transitionSequenceManifest;
+      const transitionExpected = approvedTransitionPlan !== undefined ||
+        approvedTransitionManifest !== undefined;
+      const compiledSequence = compileSequencePlan(approvedPlan, approvedManifest);
+      const cumulativeHardCuts = [];
+      let hardCutPosition = 0;
+      for (const duration of compiledSequence.ffmpeg_segments
+        .slice(0, -1).map((item) => item.duration_ms)) {
+        hardCutPosition += duration;
+        cumulativeHardCuts.push(hardCutPosition);
+      }
+      if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+          Object.keys(receipt).length !== keys.length ||
+          keys.some((key) => !Object.prototype.hasOwnProperty.call(receipt, key)) ||
+          !['autoeditor-sequence-handoff-receipt/v1',
+            'autoeditor-sequence-handoff-receipt/v2']
+            .includes(receipt.schema_version) ||
+          v2 !== transitionExpected ||
+          (approvedTransitionPlan === undefined) !==
+            (approvedTransitionManifest === undefined) ||
+          !receipt.sequence_compile ||
+          receipt.sequence_compile.receipt_sha256 !==
+            receipt.sequence_compile_receipt_sha256 ||
+          !sameCanonical(receipt.sequence_compile, compiledSequence) ||
+          !sameCanonical(receipt.sequence_compile_receipt,
+            compiledSequence.receipt) ||
+          receipt.sequence_compile_receipt_sha256 !==
+            compiledSequence.receipt_sha256 ||
+          sha256Text(stableJson(receipt.sequence_timing_receipt)) !==
+            receipt.sequence_timing_receipt_sha256 ||
+          !sequenceCheck || sequenceCheck.ok !== true ||
+          sequenceCheck.sequence_compile_receipt_sha256 !==
+            receipt.sequence_compile_receipt_sha256 ||
+          JSON.stringify(sequenceCheck.ordered_segment_ids) !==
+            JSON.stringify(receipt.ordered_segment_ids) ||
+          sequenceCheck.expected_duration_ms !== receipt.total_duration_ms ||
+          receipt.sequence_compile_receipt.sequence_plan_sha256 !==
+            sequencePlanSha256(approvedPlan) ||
+          receipt.sequence_compile_receipt.source_manifest_sha256 !==
+            sourceManifestContractSha256(approvedManifest) ||
+          !Array.isArray(receipt.segment_durations_ms) ||
+          !Array.isArray(receipt.hard_cut_boundaries_ms) ||
+          receipt.segment_durations_ms.length !== receipt.ordered_segment_ids.length ||
+          !sameCanonical(receipt.segment_durations_ms,
+            compiledSequence.ffmpeg_segments.map((item) => item.duration_ms)) ||
+          (!v2 && (!sameCanonical(receipt.hard_cut_boundaries_ms,
+            cumulativeHardCuts) || receipt.total_duration_ms !==
+              compiledSequence.receipt.total_duration_ms))) {
+        throw new Error('engine QA does not validate the approved source sequence');
+      }
+      if (v2) {
+        const compiledTransition = compileTransitionPlan(
+          approvedTransitionPlan, approvedTransitionManifest,
+          action.payload.projectIntentAuthority.edit_policy);
+        const executor = receipt.transition_executor_receipt;
+        const topology = receipt.transition_topology;
+        const boundaries = receipt.boundaries;
+        const artifactEvidence = receipt.transition_artifact_receipt;
+        const expectedCarrier = {
+          sequence_plan_sha256: sequencePlanSha256(approvedPlan),
+          source_manifest_sha256:
+            sourceManifestContractSha256(approvedManifest),
+          transition_plan_sha256:
+            transitionPlanSha256(approvedTransitionPlan),
+          transition_sequence_manifest_sha256:
+            transitionSequenceManifestSha256(approvedTransitionManifest),
+        };
+        const publicExecutorKeys = [
+          'schema_version', 'output_file', 'sequence_plan_sha256',
+          'sequence_compile_receipt_sha256', 'source_manifest_sha256',
+          'compiled_segments_sha256', 'ordered_segment_ids', 'segment_count',
+          'source_duration_ms', 'transition_plan_sha256',
+          'transition_sequence_manifest_sha256',
+          'transition_compile_receipt_sha256', 'compiled_boundaries_sha256',
+          'ordered_boundary_ids', 'boundary_count',
+          'non_hard_transition_count', 'expected_output_duration_ms',
+          'frame_rate', 'topology_sha256', 'filter_complex_sha256',
+          'timing_receipt_sha256', 'argv_sha256',
+        ];
+        const artifactKeys = [
+          'schema_version', 'output_file', 'output_sha256', 'output_bytes',
+          'source_total_duration_ms', 'expected_output_duration_ms',
+          'measured_output_duration_ms', 'sequence_compile_receipt_sha256',
+          'transition_compile_receipt_sha256',
+          'transition_executor_receipt_sha256', 'transition_topology_sha256',
+          'filter_complex_sha256', 'argv_sha256',
+        ];
+        const executorDigestKeys = [
+          'sequence_plan_sha256', 'sequence_compile_receipt_sha256',
+          'source_manifest_sha256', 'compiled_segments_sha256',
+          'transition_plan_sha256',
+          'transition_sequence_manifest_sha256',
+          'transition_compile_receipt_sha256',
+          'compiled_boundaries_sha256', 'topology_sha256',
+          'filter_complex_sha256', 'timing_receipt_sha256', 'argv_sha256',
+        ];
+        let cumulativeOverlap = 0;
+        let cumulativeOutput = compiledSequence.ffmpeg_segments[0].duration_ms;
+        const projectedBoundaries = [];
+        const projectedHardCuts = [];
+        const topologyValid = Array.isArray(topology) &&
+          topology.length === compiledTransition.compiled_boundaries.length &&
+          topology.every((item, index) => {
+            const compiledBoundary =
+              compiledTransition.compiled_boundaries[index];
+            const duration = compiledBoundary.duration_ms;
+            cumulativeOutput += compiledSequence.ffmpeg_segments[index + 1]
+              .duration_ms - duration;
+            const projected = {
+              boundary_index: index,
+              kind: compiledBoundary.kind,
+              output_start_ms:
+                compiledBoundary.output_boundary_ms - duration,
+              output_end_ms: compiledBoundary.output_boundary_ms,
+              overlap_ms: duration,
+            };
+            projectedBoundaries.push(projected);
+            if (compiledBoundary.kind === 'hard_cut') {
+              projectedHardCuts.push(compiledBoundary.output_boundary_ms);
+            }
+            cumulativeOverlap += duration;
+            return item && typeof item === 'object' &&
+              Object.keys(item).length === 10 &&
+              item.boundary_index === index &&
+              item.boundary_id === compiledBoundary.boundary_id &&
+              item.left_node === (index === 0
+                ? `segment:${receipt.ordered_segment_ids[0]}`
+                : `boundary:${compiledTransition.compiled_boundaries[index - 1]
+                  .boundary_id}`) &&
+              item.right_segment_id === receipt.ordered_segment_ids[index + 1] &&
+              item.kind === compiledBoundary.kind &&
+              item.duration_ms === duration &&
+              item.output_boundary_ms === compiledBoundary.output_boundary_ms &&
+              item.video_primitive ===
+                compiledBoundary.video_ffmpeg_primitive_tokens[0] &&
+              item.audio_primitive ===
+                compiledBoundary.audio_ffmpeg_primitive_tokens[0] &&
+              item.output_duration_ms === cumulativeOutput;
+          });
+        if (!sameCanonical(receipt.transition_compile_receipt,
+          compiledTransition.receipt) ||
+            receipt.transition_compile_receipt_sha256 !==
+              compiledTransition.receipt_sha256 ||
+            receipt.source_total_duration_ms !==
+              compiledSequence.receipt.total_duration_ms ||
+            receipt.total_duration_ms !== compiledTransition.receipt.output_duration_ms ||
+            !sameCanonical(projectIntentReceipt.report.approved_transition_carrier,
+              expectedCarrier) ||
+            !executor || Object.keys(executor).length !== publicExecutorKeys.length ||
+            publicExecutorKeys.some((key) =>
+              !Object.prototype.hasOwnProperty.call(executor, key)) ||
+            executor.schema_version !==
+              'autoeditor-transition-render-public-receipt/v1' ||
+            typeof executor.output_file !== 'string' ||
+            !executor.output_file ||
+            path.basename(executor.output_file) !== executor.output_file ||
+            executor.output_file !== receipt.output_file ||
+            executorDigestKeys.some((key) =>
+              !/^[0-9a-f]{64}$/.test(executor[key] || '')) ||
+            sha256Text(stableJson(executor)) !==
+              receipt.transition_executor_receipt_sha256 ||
+            executor.sequence_plan_sha256 !== expectedCarrier.sequence_plan_sha256 ||
+            executor.source_manifest_sha256 !== expectedCarrier.source_manifest_sha256 ||
+            executor.transition_plan_sha256 !==
+              expectedCarrier.transition_plan_sha256 ||
+            executor.transition_sequence_manifest_sha256 !==
+              expectedCarrier.transition_sequence_manifest_sha256 ||
+            executor.sequence_compile_receipt_sha256 !==
+              receipt.sequence_compile_receipt_sha256 ||
+            executor.compiled_segments_sha256 !==
+              compiledSequence.receipt.compiled_segments_sha256 ||
+            !sameCanonical(executor.ordered_segment_ids,
+              receipt.ordered_segment_ids) ||
+            executor.segment_count !== receipt.ordered_segment_ids.length ||
+            executor.source_duration_ms !== receipt.source_total_duration_ms ||
+            executor.transition_compile_receipt_sha256 !==
+              receipt.transition_compile_receipt_sha256 ||
+            executor.compiled_boundaries_sha256 !==
+              compiledTransition.receipt.compiled_boundaries_sha256 ||
+            !sameCanonical(executor.ordered_boundary_ids,
+              compiledTransition.receipt.ordered_boundary_ids) ||
+            executor.boundary_count !==
+              compiledTransition.receipt.boundary_count ||
+            executor.non_hard_transition_count !==
+              compiledTransition.receipt.non_hard_transition_count ||
+            executor.topology_sha256 !== receipt.transition_topology_sha256 ||
+            executor.expected_output_duration_ms !== receipt.total_duration_ms ||
+            !sameCanonical(executor.frame_rate,
+              compiledTransition.receipt.frame_rate) ||
+            executor.timing_receipt_sha256 !==
+              receipt.sequence_timing_receipt_sha256 ||
+            !topologyValid ||
+            sha256Text(stableJson(topology)) !== receipt.transition_topology_sha256 ||
+            !sameCanonical(boundaries, projectedBoundaries) ||
+            !sameCanonical(receipt.hard_cut_boundaries_ms, projectedHardCuts) ||
+            receipt.source_total_duration_ms - cumulativeOverlap !==
+              receipt.total_duration_ms ||
+            !artifactEvidence ||
+            Object.keys(artifactEvidence).length !== artifactKeys.length ||
+            artifactKeys.some((key) =>
+              !Object.prototype.hasOwnProperty.call(artifactEvidence, key)) ||
+            artifactEvidence.schema_version !==
+              'autoeditor-transition-artifact-receipt/v1' ||
+            sha256Text(stableJson(artifactEvidence)) !==
+              receipt.transition_artifact_receipt_sha256 ||
+            artifactEvidence.output_file !== receipt.output_file ||
+            artifactEvidence.output_sha256 !== receipt.output_sha256 ||
+            artifactEvidence.output_bytes !== receipt.output_bytes ||
+            artifactEvidence.source_total_duration_ms !==
+              receipt.source_total_duration_ms ||
+            artifactEvidence.expected_output_duration_ms !==
+              receipt.total_duration_ms ||
+            !Number.isSafeInteger(
+              artifactEvidence.measured_output_duration_ms) ||
+            Math.abs(artifactEvidence.measured_output_duration_ms -
+              receipt.total_duration_ms) > 100 ||
+            artifactEvidence.sequence_compile_receipt_sha256 !==
+              receipt.sequence_compile_receipt_sha256 ||
+            artifactEvidence.transition_compile_receipt_sha256 !==
+              receipt.transition_compile_receipt_sha256 ||
+            artifactEvidence.transition_executor_receipt_sha256 !==
+              receipt.transition_executor_receipt_sha256 ||
+            artifactEvidence.transition_topology_sha256 !==
+              receipt.transition_topology_sha256 ||
+            artifactEvidence.filter_complex_sha256 !==
+              executor.filter_complex_sha256 ||
+            artifactEvidence.argv_sha256 !== executor.argv_sha256 ||
+            sequenceCheck.transition_compile_receipt_sha256 !==
+              receipt.transition_compile_receipt_sha256 ||
+            sequenceCheck.transition_executor_receipt_sha256 !==
+              receipt.transition_executor_receipt_sha256 ||
+            sequenceCheck.transition_topology_sha256 !==
+              receipt.transition_topology_sha256 ||
+            sequenceCheck.transition_artifact_receipt_sha256 !==
+              receipt.transition_artifact_receipt_sha256) {
+          throw new Error(
+            'engine QA does not validate the approved transition sequence');
+        }
+      } else if (
+          Object.prototype.hasOwnProperty.call(
+            sequenceCheck, 'transition_compile_receipt_sha256') ||
+          Object.prototype.hasOwnProperty.call(
+            sequenceCheck, 'transition_executor_receipt_sha256') ||
+          Object.prototype.hasOwnProperty.call(
+            sequenceCheck, 'transition_topology_sha256') ||
+          Object.prototype.hasOwnProperty.call(
+            sequenceCheck, 'transition_artifact_receipt_sha256')) {
+        throw new Error('legacy sequence QA contains orphaned transition evidence');
+      }
+    } else if (sequenceCheck) {
+      throw new Error('engine QA sequence check lacks its exact sidecar binding');
+    }
     audioQa = artifactAudioQaReceipt(qaReceipt, mixReceipt, artifactSha256);
     if (!audioQa.pass) {
       throw new Error(`deterministic final audio QA failed: ${audioQa.note}`);
@@ -1479,6 +2233,69 @@ async function reviewArtifact(event, action) {
     const captionVisionEvents = captionRenderReceipt
       ? artifactCaptionRenderEvents(
         captionRenderReceipt.report, probe.durationSeconds) : [];
+    if (projectIntentReceipt) {
+      musicProductionBinding = validateMusicProductionArtifactBinding({
+        receipt: musicProductionReceipt,
+        outputDir: action.outputDir,
+        approvedAuthority: action.payload?.projectIntentAuthority,
+        engineCheck:
+          qaReceipt.report?.checks?.project_intent_music_production,
+        expectedEngineEnvelopeSha256:
+          projectIntentReceipt.report?.engine_envelope_sha256,
+      });
+      sfxProductionBinding = validateSfxProductionArtifactBinding({
+        receipt: sfxProductionReceipt,
+        outputDir: action.outputDir,
+        approvedAuthority: action.payload?.projectIntentAuthority,
+        engineCheck: qaReceipt.report?.checks?.project_intent_sfx_production,
+        audioMixReceipt: mixReceipt,
+        expectedEngineEnvelopeSha256:
+          projectIntentReceipt.report?.engine_envelope_sha256,
+        expectedMusicOutput: musicProductionBinding.output,
+      });
+      const transitionBoundaries = Array.isArray(
+        sequenceReceipt?.report?.boundaries)
+        ? sequenceReceipt.report.boundaries : [];
+      const transitionCompile =
+        sequenceReceipt?.report?.transition_compile_receipt;
+      const transitionPolicy = transitionCompile &&
+        typeof transitionCompile === 'object' &&
+        !Array.isArray(transitionCompile) &&
+        transitionCompile.policy &&
+        typeof transitionCompile.policy === 'object' &&
+        !Array.isArray(transitionCompile.policy)
+        ? transitionCompile.policy : null;
+      projectIntentBinding = validateProjectIntentArtifactBinding({
+        receipt: projectIntentReceipt,
+        approvedProposal: action.payload?.proposal,
+        approvedAuthority: action.payload?.projectIntentAuthority,
+        engineCheck: qaReceipt.report?.checks?.project_intent_authority,
+        observed: {
+          duration_ms: Math.round(probe.durationSeconds * 1000),
+          width: probe.video.width,
+          height: probe.video.height,
+          caption_delivery: captionDelivery,
+          caption_event_count: captionDelivery === 'burned'
+            ? captionVisionEvents.length
+            : (captionReceipt?.events?.length || 0),
+          graphic_event_count: Array.isArray(edlReceipt?.edl?.graphics)
+            ? edlReceipt.edl.graphics.length : 0,
+          added_music_present: musicProductionBinding.addedMusicPresent,
+          sfx_cue_count: sfxProductionBinding.cueCount,
+          sfx_policy_usage: sfxProductionBinding.policyUsage,
+          sfx_policy_bound: sfxProductionBinding.policyBound,
+          transition_event_count: transitionBoundaries.length,
+          non_hard_transition_count: transitionBoundaries.filter(
+            (boundary) => boundary?.kind !== 'hard_cut').length,
+          transition_policy_usage:
+            typeof transitionPolicy?.usage === 'string'
+              ? transitionPolicy.usage : 'unverified',
+          transition_policy_bound: !!transitionPolicy &&
+            transitionCompile.edit_policy_sha256 ===
+              action.payload?.projectIntentAuthority?.edit_policy_sha256,
+        },
+      });
+    }
     plan = artifactVisionPlan(probe.durationSeconds, edlReceipt?.edl || null, {
       requireEdl: premium,
       captions: captionVisionEvents,
@@ -1495,60 +2312,141 @@ async function reviewArtifact(event, action) {
         if (activeRender === action && !action.canceled) action.proc = child;
       }, () => activeRender === action && !action.canceled);
     assertVisionAction(action);
-    coverage = artifactVisionCoverage(plan, capture.captured, []);
+    coverage = artifactFrameCaptureCoverage(plan, capture.captured);
     if (capture.missing.length || capture.captured.length !== plan.frames.length) {
       const missing = capture.missing.map((frame) =>
         `${frame.id}@${Number(frame.timeSeconds).toFixed(3)}s`).join(', ');
       const issue = `final visual QA could not capture every planned frame: ${missing}`;
       throw new Error(issue);
     }
-    const batchCount = Math.ceil(capture.captured.length / 8);
-    processLocalEvent({
-      event: 'local-progress', stage: 'artifact-quality', measurable: false,
-      message: `Watching ${capture.captured.length} exact QA frames in ${batchCount} local vision batch${batchCount === 1 ? '' : 'es'}...`,
-      line: `Exact visual plan includes ${plan.frames.length} frames across anchors, captions, boundaries, and planned visual events.`,
-    }, action);
-    reviewed = await reviewArtifactFrames(capture.captured, {
-      approvedBrief: action.payload?.creativeBrief || '',
-      captionDelivery: plan.captionSampling.deliveryMode,
-      requestBatch: async (frames, context) => {
-        assertVisionAction(action);
-        const result = await requestVision(
-          frames.map((frame) => frame.path), action,
-          { mode: 'artifact-quality', context });
-        assertVisionAction(action);
-        return result;
-      },
-    });
-    review = reviewed.review;
-    assertVisionAction(action);
-    coverage = artifactVisionCoverage(
-      plan, capture.captured, reviewed.reviewedTargetIds);
+    const semanticCapability = await semanticArtifactReviewCapability();
+    if (!semanticCapability.available && projectIntentExpected) {
+      semanticReview = {
+        mode: 'required-unavailable', available: false, performed: false,
+        capability: 'visual_quality_analysis',
+        reason: semanticCapability.failureCode || semanticCapability.status,
+      };
+      throw new Error(
+        'the approved ProjectIntent requires a currently trusted visual quality capability');
+    }
+    if (semanticCapability.available) {
+      semanticReview = {
+        mode: 'semantic-model', available: true, attempted: true,
+        performed: false,
+        capability: 'visual_quality_analysis', reason: '',
+      };
+      processLocalEvent({
+        event: 'local-progress', stage: 'artifact-quality', measurable: false,
+        message: 'Running bounded calibrated semantic assertions...',
+        line: `All ${plan.frames.length} planned frames were decoded; only applicable, evidence-bearing still-image targets enter the calibrated semantic gate.`,
+      }, action);
+      if (!visionSessionNetworkEnforced) {
+        throw new Error('the local semantic visual session is not offline');
+      }
+      const networkAttemptsBefore = visionSessionNetworkAttempts;
+      reviewed = await reviewArtifactFramesCalibrated(capture.captured, {
+        artifactSha256,
+        candidateTokenIds: ARTIFACT_SEMANTIC_CANDIDATE_TOKEN_IDS,
+        captionDelivery: plan.captionSampling.deliveryMode,
+        modelSha256: MODEL_PACK_TREE_SHA256,
+        runtimeSha256: VISION_RUNTIME_LOCK_SHA256,
+        thresholds: ARTIFACT_SEMANTIC_THRESHOLDS,
+        requestAssertion: async (frame, invocation) => {
+          assertVisionAction(action);
+          const result = await requestVision([frame.path], action, {
+            mode: invocation.mode,
+            context: JSON.stringify(invocation.model_request),
+            expectedFrames: [{
+              sha256: frame.sha256, size_bytes: frame.size_bytes,
+            }],
+            includeRuntime: true,
+          });
+          assertVisionAction(action);
+          return result;
+        },
+      });
+      review = reviewed.review;
+      assertVisionAction(action);
+      if (visionSessionNetworkAttempts !== networkAttemptsBefore) {
+        throw new Error(
+          'the local semantic visual session attempted a network request');
+      }
+      if (!reviewed.coverage?.complete) {
+        throw new Error('calibrated semantic visual coverage was incomplete');
+      }
+      semanticReview = Object.freeze({
+        ...semanticReview,
+        performed: true,
+        reviewSchema: review.schema,
+        modelSha256: MODEL_PACK_TREE_SHA256,
+        runtimeSha256: VISION_RUNTIME_LOCK_SHA256,
+        backend: reviewed.runtime.backend,
+        semanticCoverageSha256:
+          sha256Text(stableJson(reviewed.coverage)),
+        calibratedReviewSha256: sha256Text(stableJson(review)),
+        semanticReceiptSetSha256:
+          sha256Text(stableJson(reviewed.batches)),
+        capabilityManifestSha256:
+          semanticCapability.capabilityManifestSha256,
+        capabilityProbeReceiptSha256:
+          semanticCapability.capabilityProbeReceiptSha256,
+        qualificationResultSha256:
+          semanticCapability.qualificationResultSha256,
+        networkBoundary: Object.freeze({
+          attemptedRequests: 0,
+          enforced: true,
+          scope: 'electron-session',
+        }),
+      });
+    } else {
+      // The pinned local model failed its real positive/defective qualification,
+      // so legacy renders never call it or claim semantic visual approval. Exact
+      // artifact, receipt, audio, timeline, caption, boundary, and frame-decode
+      // gates above still bind the bytes released to the user.
+      semanticReview = {
+        mode: 'deterministic-only', available: false, performed: false,
+        capability: 'visual_quality_analysis',
+        reason: semanticCapability.failureCode || semanticCapability.status,
+      };
+      processLocalEvent({
+        event: 'local-progress', stage: 'artifact-quality', measurable: false,
+        message: 'Verifying deterministic artifact and decoded-frame evidence...',
+        line: 'Semantic visual approval is unavailable and is not claimed; exact local evidence gates remain mandatory.',
+      }, action);
+    }
     await assertVisionArtifactUnchanged(
       artifact, artifactStat, artifactSha256);
     assertVisionAction(action);
     const report = visionReport({
       action, staged, artifactStat, qaReceipt, edlReceipt, captionReceipt,
-      captionRenderReceipt, boundaryReceipt, mixReceipt, audioQa, plan, capture,
-      reviewed, coverage, review, artifactSha256,
+      captionRenderReceipt, boundaryReceipt, mixReceipt, sequenceReceipt,
+      projectIntentBinding, sfxProductionReceipt, sfxProductionBinding,
+      musicProductionReceipt, musicProductionBinding,
+      audioQa, plan, capture, reviewed, coverage, review, semanticReview,
+      artifactSha256,
     });
     writeVisionQaReport(action, report);
     if (!coverage.complete) {
-      const categories = coverage.unobservedCategories.join(', ') || 'unknown';
+      const categories = (coverage.unobservedCategories ||
+        coverage.uncapturedCategories || []).join(', ') || 'unknown';
       throw new Error(
         `Final visual QA coverage was incomplete; unobserved categories: ${categories}`);
     }
-    if (!reviewPasses(review)) {
+    if (semanticReview.performed && !reviewPasses(review)) {
       const issue = reviewIssueText(review);
-      if (retryRejectedRender(action, artifact, issue)) return;
+      if (await retryRejectedRender(action, artifact, issue)) return;
       throw new Error(`Final visual QA rejected the draft: ${issue}`);
     }
     event.visionQa = {
       pass: true,
-      score: review.score,
+      semanticPass: semanticReview.performed ? true : null,
+      semanticReviewMode: semanticReview.mode,
+      score: semanticReview.performed ? review.score : null,
       coverageComplete: true,
       plannedFrames: coverage.plannedFrameCount,
-      reviewedFrames: coverage.reviewedFrameCount,
+      capturedFrames: coverage.capturedFrameCount,
+      reviewedFrames: semanticReview.performed
+        ? reviewed.reviewedFrameIds.length : 0,
       batches: reviewed.batches.length,
       artifactMode: qaReceipt.contract.mode,
       engineQaSha256: qaReceipt.sha256,
@@ -1556,10 +2454,38 @@ async function reviewArtifact(event, action) {
       captionsSha256: captionReceipt?.sha256 || '',
       editBoundariesSha256: boundaryReceipt.sha256,
       audioMixSha256: mixReceipt.sha256,
+      sequenceSha256: sequenceReceipt?.sha256 || '',
+      deterministicVisualQaSha256:
+        qaReceipt.deterministicVisualQa.sha256,
+      deterministicVisualAnalyzerReceiptSha256:
+        qaReceipt.deterministicVisualQa.record.analysis.receipt_sha256,
+      ...(projectIntentBinding ? {
+        projectIntentRenderReceiptSha256:
+          projectIntentBinding.renderReceiptSha256,
+        projectIntentAuthoritySha256:
+          projectIntentBinding.engineEnvelopeSha256,
+        musicProductionReceiptSha256:
+          musicProductionBinding.productionReceiptSha256,
+        sfxProductionReceiptSha256:
+          sfxProductionBinding.productionReceiptSha256,
+      } : {}),
       deterministicAudioPass: audioQa.pass,
-      sfxCueCount: audioQa.sfx.boundCueCount,
+      musicRegionCount: musicProductionBinding?.regionCount ?? 0,
+      sfxCueCount: sfxProductionBinding?.cueCount ?? audioQa.sfx.boundCueCount,
       perceptualAudioReviewed: false,
       coverageSha256: report.coverageSha256,
+      semanticCoverageSha256:
+        semanticReview.performed ? semanticReview.semanticCoverageSha256 : '',
+      calibratedReviewSha256: semanticReview.performed
+        ? semanticReview.calibratedReviewSha256 : '',
+      semanticReceiptSetSha256: semanticReview.performed
+        ? semanticReview.semanticReceiptSetSha256 : '',
+      semanticCapabilityManifestSha256: semanticReview.performed
+        ? semanticReview.capabilityManifestSha256 : '',
+      semanticCapabilityProbeReceiptSha256: semanticReview.performed
+        ? semanticReview.capabilityProbeReceiptSha256 : '',
+      semanticQualificationResultSha256: semanticReview.performed
+        ? semanticReview.qualificationResultSha256 : '',
     };
     const metadata = await approvedResultMetadata(action);
     assertVisionAction(action);
@@ -1585,18 +2511,19 @@ async function reviewArtifact(event, action) {
           batches: progress.receipts || [],
         };
       }
-      if (plan) {
+      if (plan && (!coverage || coverage.complete !== true)) {
         try {
-          coverage = artifactVisionCoverage(
-            plan, capture.captured, reviewed.reviewedTargetIds);
+          coverage = artifactFrameCaptureCoverage(plan, capture.captured);
         } catch (_) { coverage = null; }
       }
       try {
         writeVisionQaReport(action, visionReport({
           action, staged, artifactStat, qaReceipt, edlReceipt, captionReceipt,
-          captionRenderReceipt, boundaryReceipt, mixReceipt, audioQa, plan,
-          capture, reviewed, coverage, review, artifactSha256,
-          error: error?.message || error,
+          captionRenderReceipt, boundaryReceipt, mixReceipt, sequenceReceipt,
+          projectIntentBinding, musicProductionReceipt,
+          musicProductionBinding, sfxProductionReceipt, sfxProductionBinding,
+          audioQa, plan, capture, reviewed, coverage,
+          review, semanticReview, artifactSha256, error: error?.message || error,
         }));
       } catch (reportError) {
         error = new Error(`${error?.message || error}; final vision QA report failed: ${
@@ -1682,9 +2609,8 @@ function processLocalEvent(event, action) {
   return true;
 }
 
-function localProcess(mode, payload, kind, settings, resultContext = null) {
-  const p = runtimePaths();
-  const action = {
+function newLocalAction(payload, kind, settings, resultContext = null) {
+  return {
     id: ++actionSequence,
     kind,
     outputDir: kind === 'render' ? payload.outputDir : '',
@@ -1703,16 +2629,74 @@ function localProcess(mode, payload, kind, settings, resultContext = null) {
     resultContext: kind === 'render' && resultContext
       ? { ...resultContext, sourceInputs: [...(resultContext.sourceInputs || [])] }
       : null,
+    projectIntentAuthorityKey: '',
   };
-  const child = spawn(p.daemon, [mode], {
-    env: daemonEnv(settings), windowsHide: true, cwd: p.root,
+}
+
+function reserveLocalRender(payload, settings, resultContext = null) {
+  if (activeRender) throw new Error('An edit is already rendering');
+  const action = newLocalAction(payload, 'render', settings, resultContext);
+  action.stage = 'policy-authorization';
+  action.message = 'Authorizing the approved expert edit policy...';
+  activeRender = action;
+  processLocalEvent({
+    event: 'local-progress', stage: action.stage, measurable: false,
+    message: action.message,
+    line: 'Binding the approved ProjectIntent to the measured local runtime.',
+  }, action);
+  send('helper-state', {
+    running: true, rendering: true, chatting: !!activeChat,
+    activeRender: activeRenderState(),
+  });
+  return action;
+}
+
+function localProcess(mode, payload, kind, settings, resultContext = null,
+                      reservedAction = null) {
+  const p = runtimePaths();
+  const action = reservedAction || newLocalAction(
+    payload, kind, settings, resultContext);
+  if (reservedAction) {
+    if (kind !== 'render' || activeRender !== action || action.canceled) {
+      throw new Error('project intent render ownership was canceled');
+    }
+    action.outputDir = payload.outputDir;
+    action.payload = { ...payload };
+    action.settings = { ...settings };
+    action.resultContext = resultContext
+      ? { ...resultContext, sourceInputs: [...(resultContext.sourceInputs || [])] }
+      : null;
+    action.stage = 'starting';
+    action.message = 'Starting the local edit...';
+    action.lastActivityAt = Date.now();
+  }
+  const childEnv = daemonEnv(settings);
+  if (kind === 'render' && action.projectIntentAuthorityKey) {
+    childEnv.AUTOEDITOR_PROJECT_INTENT_AUTHORITY_KEY =
+      action.projectIntentAuthorityKey;
+  }
+  let child;
+  try {
+    child = spawn(p.daemon, [mode], {
+      env: childEnv, windowsHide: true, cwd: p.root,
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
-  });
+    });
+  } finally {
+    action.projectIntentAuthorityKey = '';
+  }
   child.__autoeditorProcessGroup = process.platform !== 'win32';
   action.proc = child;
-  if (kind === 'render') activeRender = action;
-  else activeChat = action;
+  if (kind === 'render') {
+    // A reserved ProjectIntent action already owns activeRender. Keep that
+    // exact identity in the render slot; it must never overwrite chat state.
+    if (reservedAction && activeRender !== action) {
+      throw new Error('project intent render ownership changed before spawn');
+    }
+    activeRender = action;
+  } else {
+    activeChat = action;
+  }
   if (kind === 'render') {
     processLocalEvent({
       event: 'local-progress', stage: 'starting', measurable: false,
@@ -1746,7 +2730,9 @@ function localProcess(mode, payload, kind, settings, resultContext = null) {
   child.on('close', (code) => {
     stdout.flush();
     stderr.flush();
-    if (kind === 'render' && activeRender === action && !action.qaPending) activeRender = null;
+    if (kind === 'render' && activeRender === action && !action.qaPending && !action.canceled) {
+      activeRender = null;
+    }
     if (kind === 'chat' && activeChat === action) activeChat = null;
     if (!action.terminal && !action.canceled) {
       send('helper-render', {
@@ -1888,7 +2874,7 @@ function chatLocal(raw) {
           line: `Local media analysis stopped safely: ${detail}`,
         }, action);
         mediaAnalysis = {
-          schema: 'autoeditor-local-media-analysis/v2',
+          schema: 'autoeditor-local-media-analysis/v4',
           videos: [], originalVideosUploaded: false, error: detail,
         };
       }
@@ -1998,29 +2984,74 @@ function applyLocal(raw) {
     requireDialogSelection(request);
   }
   const settings = requireReady();
-  localProcess('--local-render', request, 'render',
-    settingsForLocalRender(settings), {
-      sourceInputs: revisionMetadata?.sourceInputs || request.inputs,
-      sourceSha256: revisionMetadata?.sourceSha256 || '',
-      planSha256: planSha256(request),
-      priorResult: revisionInput,
-    });
-  return { ok: true };
+  const renderSettings = settingsForLocalRender(settings);
+  const resultContext = {
+    sourceInputs: revisionMetadata?.sourceInputs || request.inputs,
+    sourceSha256: revisionMetadata?.sourceSha256 || '',
+    planSha256: planSha256(request),
+    priorResult: revisionInput,
+  };
+  if (!Object.prototype.hasOwnProperty.call(
+    request.proposal, 'projectIntent')) {
+    // Compatibility invariant: the legacy request bytes and spawn path are
+    // unchanged when no typed ProjectIntent was explicitly proposed/approved.
+    localProcess('--local-render', request, 'render', renderSettings, resultContext);
+    return { ok: true };
+  }
+
+  // Ownership is reserved synchronously before the first lazy capability
+  // await. Concurrent applies cannot race policy resolution or start a daemon.
+  const reservation = reserveLocalRender(request, renderSettings, resultContext);
+  return (async () => {
+    try {
+      const authorized = await authorizeProjectIntentRequest(
+        request, initializeRuntimeCapabilityPreflight(), {
+          isCurrent: () => activeRender === reservation && !reservation.canceled,
+        });
+      if (activeRender !== reservation || reservation.canceled) {
+        throw new Error('project intent authorization was canceled');
+      }
+      reservation.projectIntentAuthorityKey = authorized.signingKey;
+      localProcess('--local-render', authorized.request, 'render', renderSettings,
+        resultContext, reservation);
+    } catch (error) {
+      reservation.projectIntentAuthorityKey = '';
+      if (activeRender === reservation) activeRender = null;
+      send('helper-state', {
+        running: !!activeRender, rendering: !!activeRender, chatting: !!activeChat,
+        activeRender: activeRenderState(),
+      });
+      throw error;
+    }
+    return { ok: true };
+  })();
 }
 
 async function cancelLocal() {
   const action = activeRender;
   if (!action) return { ok: true, canceled: false };
   action.canceled = true;
-  activeRender = null;
+  action.stage = 'canceling';
+  action.message = 'Stopping the local edit...';
+  action.projectIntentAuthorityKey = '';
   rejectPendingVisionForAction(action, 'local vision was canceled');
-  await stopProcessTree(action.proc);
+  send('helper-state', {
+    running: true, rendering: true, chatting: !!activeChat,
+    activeRender: activeRenderState(),
+  });
+  await Promise.allSettled([
+    stopProcessTree(action.proc),
+    runtimeCapabilityPreflight?.cancel() || Promise.resolve(false),
+  ]);
+  if (activeRender === action) activeRender = null;
   send('helper-render', {
     event: 'local-canceled', actionId: action.id, kind: 'render',
     stage: 'canceled', line: 'Edit canceled',
   });
-  send('helper-state', { running: false, rendering: false,
-    chatting: !!activeChat, activeRender: null });
+  send('helper-state', {
+    running: !!activeRender, rendering: !!activeRender,
+    chatting: !!activeChat, activeRender: activeRenderState(),
+  });
   return { ok: true, canceled: true };
 }
 
@@ -2199,15 +3230,34 @@ app.whenReady().then(() => {
     app.exit(smokeTest() ? 0 : 1);
     return;
   }
+  initializeRuntimeCapabilityPreflight();
   registerVisionProtocol();
+  enforceVisionSessionNetworkBoundary();
   setupIpc();
   createWindow();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (quitDrainComplete) return;
+  event.preventDefault();
+  if (quitDrainStarted) return;
+  quitDrainStarted = true;
   rejectPendingVision('AutoEditor is closing');
-  if (activeRender) stopProcessTree(activeRender.proc);
-  if (activeChat?.proc) stopProcessTree(activeChat.proc);
+  const render = activeRender;
+  const chat = activeChat;
+  if (render) {
+    render.canceled = true;
+    render.projectIntentAuthorityKey = '';
+  }
+  if (chat) chat.canceled = true;
+  void Promise.allSettled([
+    stopProcessTree(render?.proc),
+    stopProcessTree(chat?.proc),
+    runtimeCapabilityPreflight?.cancel() || Promise.resolve(false),
+  ]).finally(() => {
+    quitDrainComplete = true;
+    app.quit();
+  });
 });
 app.on('window-all-closed', () => app.quit());
 

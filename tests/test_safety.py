@@ -320,6 +320,10 @@ class SafetyContracts(unittest.TestCase):
                 "python_utf8_mode",
                 payload["required_local_capabilities"],
             )
+            self.assertIn(
+                "local_vision_model",
+                payload["required_local_capabilities"],
+            )
             self.assertEqual(
                 payload["receipt_algorithm"],
                 "macho-codesign-content-v1",
@@ -1246,7 +1250,7 @@ class SafetyContracts(unittest.TestCase):
                         self.wfile.write(bytes([byte]))
                         self.wfile.flush()
                         time.sleep(0.04)
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:
                     pass
 
             def log_message(self, _format, *args):
@@ -1255,7 +1259,11 @@ class SafetyContracts(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(
             ("127.0.0.1", 0), TrickleHandler
         )
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         thread.start()
         started = time.monotonic()
         try:
@@ -1263,11 +1271,11 @@ class SafetyContracts(unittest.TestCase):
                 f"http://127.0.0.1:{server.server_port}/",
                 {"x": 1}, {}, 0.12,
             )
+            elapsed = time.monotonic() - started
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=1)
-        elapsed = time.monotonic() - started
         self.assertEqual(result, {"_transport_error": "timeout"})
         self.assertLess(elapsed, 1.0)
 
@@ -2398,6 +2406,31 @@ class SafetyContracts(unittest.TestCase):
             for probe in result["probes"]
         ))
 
+    def test_receipt_proven_silent_video_uses_frame_timeline_verification(self):
+        reference = bytes([80]) * (160 * 45)
+
+        def fake_run(command, check=False):
+            self.assertIn("rawvideo", command)
+            return mock.Mock(stdout=reference)
+
+        with mock.patch.object(pipeline, "run", side_effect=fake_run), \
+                mock.patch.object(pipeline, "_dur", return_value=8.0):
+            result = pipeline.verify_silent_video_timeline(
+                Path("master.mp4"), Path("reference.mp4"), 8.0
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "intentional_silent_video_timeline")
+        self.assertGreaterEqual(result["probes_used"], 2)
+
+    def test_silent_video_timeline_rejects_missing_frames(self):
+        with mock.patch.object(
+                pipeline, "run", return_value=mock.Mock(stdout=b"")), \
+                mock.patch.object(pipeline, "_dur", return_value=8.0):
+            result = pipeline.verify_silent_video_timeline(
+                Path("master.mp4"), Path("reference.mp4"), 8.0
+            )
+        self.assertFalse(result["ok"])
+
     def test_internal_sync_visual_threshold_allows_encode_noise_only(self):
         self.assertEqual(pipeline.SYNC_VISUAL_MAE_MAX, 13.0)
         source = inspect.getsource(pipeline.verify_sync)
@@ -3021,6 +3054,41 @@ class SafetyContracts(unittest.TestCase):
         self.assertFalse(missing_burn["ok"])
         self.assertTrue(sidecar_mode["ok"])
 
+    def test_no_speech_caption_gate_is_explicitly_not_applicable(self):
+        result = pipeline._caption_delivery_check(
+            [], True, False, None, no_speech=True
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "not_applicable_no_speech")
+        self.assertFalse(pipeline._caption_delivery_check(
+            [], True, True, None, no_speech=True
+        )["ok"])
+
+    def test_empty_silent_transcript_is_identity_not_zero_percent_loss(self):
+        check = pipeline._word_integrity_check(
+            [], [], intentional_silence=True
+        )
+        self.assertTrue(check["ok"])
+        self.assertEqual(check["ratio"], 1.0)
+        self.assertEqual(check["mode"], "not_applicable_no_speech")
+        self.assertFalse(pipeline._word_integrity_check([], [
+            {"w": "unexpected", "s": 0.0, "e": 0.3},
+        ], intentional_silence=True)["ok"])
+
+    def test_intentional_silence_requires_a_complete_audio_source_partition(self):
+        receipt = {
+            "ordered_segment_ids": ["seg-a", "seg-b"],
+            "synthesized_silence_source_ids": ["source-a", "source-b"],
+            "used_audio_source_ids": [],
+        }
+        self.assertTrue(pipeline.intentional_silent_sequence_mode(
+            receipt, [], [], None
+        ))
+        receipt["used_audio_source_ids"] = ["source-b"]
+        self.assertFalse(pipeline.intentional_silent_sequence_mode(
+            receipt, [], [], None
+        ))
+
     def test_caption_safe_area_blocks_unsafe_burned_layout(self):
         words = [{"w": "hello", "s": 0.0, "e": 0.3}]
         fake_ffmpeg = subprocess.CompletedProcess(
@@ -3300,7 +3368,7 @@ class SafetyContracts(unittest.TestCase):
         source = Path(pipeline.__file__).read_text(encoding="utf-8")
         assignment = source.index("final_words = transcribe(main_out_v, work)")
         retake_gate = source.index("residue = verify_no_retakes(final_words")
-        source_gate = source.index("ssync = verify_sync_source(master")
+        source_gate = source.index("verify_sync_source(master", assignment)
         self.assertLess(assignment, retake_gate)
         self.assertLess(assignment, source_gate)
 
@@ -3454,7 +3522,7 @@ class SafetyContracts(unittest.TestCase):
             "integrity_words, words = _integrity_and_caption_words(", source
         )
         self.assertIn(
-            'SequenceMatcher(a=[_n(w["w"]) for w in integrity_words]',
+            "_word_integrity_check(\n        integrity_words, final_words,",
             source,
         )
 
@@ -3543,6 +3611,117 @@ class SafetyContracts(unittest.TestCase):
         self.assertEqual(accepted["color_transfer"], "bt709")
         self.assertFalse(rejected["ok"])
         self.assertIn("lacks explicit BT.709", rejected["note"])
+
+    def test_color_normalization_is_pixel_conversion_not_metadata_only(self):
+        conversion = pipeline.color_normalization_filter({
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "color_range": "pc",
+            "color_space": "bt470bg",
+            "color_transfer": "bt470bg",
+            "color_primaries": "bt470bg",
+        })
+        self.assertEqual(conversion, (
+            "colorspace=ispace=bt470bg:itrc=bt470bg:iprimaries=bt470bg:"
+            "irange=pc:all=bt709:range=tv:format=yuv420p:fast=0:dither=fsb"
+        ))
+        self.assertNotIn("setparams", conversion)
+
+        measured = {
+            "duration": 10.0, "width": 1920, "height": 1080,
+            "fps": "30/1", "codec_name": "h264", "pix_fmt": "yuv420p",
+            "color_range": "tv", "color_space": "bt709",
+            "color_transfer": "bt709", "color_primaries": "bt709",
+        }
+        with mock.patch.object(pipeline, "run") as execute:
+            pipeline.cfr_normalize(
+                Path("source.mp4"), Path("."), source_info=measured
+            )
+        command = execute.call_args.args[0]
+        self.assertEqual(
+            command[command.index("-filter_threads") + 1], "1"
+        )
+        self.assertLess(command.index("-filter_threads"), command.index("-i"))
+        video_filter = command[command.index("-vf") + 1]
+        self.assertTrue(video_filter.startswith("colorspace="))
+        self.assertTrue(video_filter.endswith(",fps=30"))
+
+    def test_color_normalization_rejects_unknown_and_hdr_sources(self):
+        base = {
+            "codec_name": "h264", "pix_fmt": "yuv420p", "color_range": "tv",
+            "color_space": "bt709", "color_transfer": "bt709",
+            "color_primaries": "bt709",
+        }
+        mutations = (
+            ("color_space", "unknown"),
+            ("color_range", "unknown"),
+            ("color_transfer", "smpte2084"),
+            ("color_transfer", "arib-std-b67"),
+            ("color_primaries", "bt2020"),
+            ("color_space", "bt2020nc"),
+            ("pix_fmt", "gbrp"),
+            ("pix_fmt", "yuv420p12le"),
+        )
+        for key, value in mutations:
+            facts = dict(base, **{key: value})
+            with self.subTest(key=key, value=value), self.assertRaises(
+                    ValueError):
+                pipeline.color_normalization_filter(facts)
+
+    def test_color_normalization_has_one_explicit_legacy_sdr_fallback(self):
+        untagged = {
+            "codec_name": "h264", "pix_fmt": "yuv420p",
+            "color_range": "unknown",
+            "color_space": "unknown", "color_transfer": "unknown",
+            "color_primaries": "unknown",
+        }
+        self.assertEqual(
+            pipeline.color_normalization_mode(untagged),
+            "inferred_legacy_untagged_sdr_bt709_tv",
+        )
+        self.assertEqual(
+            pipeline.color_normalization_filter(untagged),
+            "colorspace=ispace=bt709:itrc=bt709:iprimaries=bt709:"
+            "irange=tv:all=bt709:range=tv:format=yuv420p:"
+            "fast=0:dither=fsb",
+        )
+
+        rejected = (
+            dict(untagged, color_space="bt709"),
+            dict(untagged, color_range="pc"),
+            dict(untagged, pix_fmt="yuv420p10le"),
+            dict(untagged, pix_fmt="gbrp"),
+        )
+        for facts in rejected:
+            with self.subTest(facts=facts), self.assertRaises(ValueError):
+                pipeline.color_normalization_filter(facts)
+
+    def test_color_normalization_supports_only_identified_legacy_mjpeg(self):
+        camera_mjpeg = {
+            "codec_name": "mjpeg", "pix_fmt": "yuvj420p",
+            "color_range": "pc", "color_space": "bt470bg",
+            "color_transfer": "unknown", "color_primaries": "unknown",
+        }
+        self.assertEqual(
+            pipeline.color_normalization_mode(camera_mjpeg),
+            "inferred_legacy_mjpeg_bt601_full_range",
+        )
+        self.assertEqual(
+            pipeline.color_normalization_filter(camera_mjpeg),
+            "colorspace=ispace=bt470bg:itrc=bt470bg:"
+            "iprimaries=bt470bg:irange=pc:all=bt709:range=tv:"
+            "format=yuv420p:fast=0:dither=fsb",
+        )
+        rejected = (
+            dict(camera_mjpeg, codec_name="h264"),
+            dict(camera_mjpeg, color_space="unknown"),
+            dict(camera_mjpeg, color_range="tv"),
+            dict(camera_mjpeg, pix_fmt="yuv420p"),
+            dict(camera_mjpeg, color_transfer="smpte2084"),
+        )
+        for facts in rejected:
+            with self.subTest(facts=facts), self.assertRaises(ValueError):
+                pipeline.color_normalization_filter(facts)
 
     def test_incomplete_semantic_judgment_blocks_cut_implicated_sentence(self):
         with tempfile.TemporaryDirectory() as td:

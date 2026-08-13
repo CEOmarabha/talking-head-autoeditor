@@ -51,6 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          lfs: true
           persist-credentials: false
 
       - name: Set native temporary artifact directory
@@ -300,6 +301,25 @@ jobs:
           [[ "${{ matrix.target_os }}" == "windows" ]] && ENGINE="${ENGINE}.exe"
           "$ENGINE" --audio-decoder-self-test
           python -m unittest tests.test_safety tests.test_asr
+          python -m unittest -q \
+            tests.test_sequence_plan tests.test_sequence_render \
+            tests.test_story_pipeline_contract tests.test_edit_policy \
+            tests.test_project_intent_policy_bridge tests.test_project_intent_authority \
+            tests.test_project_intent_pipeline_authority \
+            tests.test_runtime_capabilities \
+            tests.test_transition_plan tests.test_transition_render \
+            tests.test_render_capability_runtime_probe \
+            tests.test_render_capability_engine_entry \
+            tests.test_sfx_plan tests.test_sfx_render tests.test_sfx_production \
+            tests.test_sfx_engine_entry tests.test_asr_runtime_probe \
+            tests.test_asr_engine_entry \
+            tests.test_cached_vision_model \
+            tests.test_dialogue_cleanup_runtime_probe \
+            tests.test_dialogue_cleanup_engine_entry \
+            tests.test_music_plan tests.test_music_render \
+            tests.test_music_production tests.test_music_engine_entry \
+            tests.test_visual_quality_deterministic \
+            tests.test_visual_quality_production
 
       - name: Fetch digest-pinned open-license font
         shell: bash

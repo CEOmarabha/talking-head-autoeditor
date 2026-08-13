@@ -1,8 +1,19 @@
 {
   "model": {
+    "dtype": "q4",
     "id": "HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
     "license": "Apache-2.0",
     "revision": "067788b187b95ebe7b2e040b3e4299e342e5b8fd"
+  },
+  "model_pack": {
+    "directory": "smolvlm2-067788b187b95ebe",
+    "file_count": 9,
+    "lock_sha256": "adc37855602e89d80260fbb8768aa2b87fb4b928f34d9765a4e6c267f554a1fa",
+    "model_total_bytes": 267802713,
+    "model_tree_sha256": "5ab9f376a07e111ed08957c6db3847e4531b55589f6dbfe3fdb35619171bbc21",
+    "runtime_total_bytes": 267806161,
+    "runtime_tree_sha256": "caad861f0486e619a6fe0ee4c96e57c39be2c7e1a9fdfe0a9dd9d25fcda56ad3",
+    "schema_version": "autoeditor-local-vision-model-pack/v1"
   },
   "onnxruntime_web": {
     "commit": "b7804b056c30aa35c1748f8e4e239d0e2ff25d6d",
@@ -15,7 +26,7 @@
     "license": "MIT",
     "version": "1.26.0-dev.20260416-b7804b056c"
   },
-  "schema": "autoeditor-local-vision-runtime/v1",
+  "schema": "autoeditor-local-vision-runtime/v2",
   "transformers_js": {
     "file": "transformers.web.min.js",
     "license": "Apache-2.0",
@@ -24,9 +35,9 @@
   },
   "vision_worker": {
     "bundle": "vision-worker.bundle.js",
-    "bundle_sha256": "b8c5785088b3b3f69add8b7e41657e0f4eb4eb5d53e6564d14c9a184eaf68edb",
+    "bundle_sha256": "51d7fadf9a52182a322f233ec80579daaa4dcb7053dea4a56d4a6c11c0a3398d",
     "builder": "esbuild 0.28.1",
     "entry": "vision-worker.js",
-    "entry_sha256": "e19c59bdce4611243a73053ffa78df527f9c890a489195ff689e2fa6cb5cd3df"
+    "entry_sha256": "31f5f37158ada58aa9a59849b1c94e318bdec81c7f7b0081a5a2e9b16a64e4c2"
   }
 }

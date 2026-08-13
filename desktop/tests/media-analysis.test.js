@@ -7,22 +7,69 @@ const os = require('os');
 const path = require('path');
 const vm = require('vm');
 const {
+  CACHE_SCHEMA,
   MODEL_ID,
   MODEL_REVISION,
   artifactCaptionRenderEvents,
+  artifactFrameCaptureCoverage,
   artifactVisionCoverage,
   artifactVisionPlan,
   assistantText,
   fileFingerprint,
+  normalizeTranscriptEvidence,
   parseArtifactCaptions,
   parseSignalReport,
   sampleTimes,
+  shiftTimedWordsToContainerTimeline,
   summarizeProbe,
   visionFrameBatches,
 } = require('../helper/lib/media-analysis');
 
 assert.strictEqual(MODEL_ID, 'HuggingFaceTB/SmolVLM2-256M-Video-Instruct');
 assert.strictEqual(MODEL_REVISION, '067788b187b95ebe7b2e040b3e4299e342e5b8fd');
+assert.strictEqual(CACHE_SCHEMA, 'autoeditor-local-media-analysis/v4');
+
+const localWords = [
+  { w: 'delayed', s: 0, e: 0.2 },
+  { w: 'audio', s: 0.21, e: 0.4 },
+];
+const shiftedBy500Ms = shiftTimedWordsToContainerTimeline(localWords, 500);
+assert.deepStrictEqual(shiftedBy500Ms, [
+  { w: 'delayed', s: 0.5, e: 0.7 },
+  { w: 'audio', s: 0.71, e: 0.9 },
+]);
+assert.deepStrictEqual(localWords, [
+  { w: 'delayed', s: 0, e: 0.2 },
+  { w: 'audio', s: 0.21, e: 0.4 },
+], 'timeline shifting must be pure and must not mutate Whisper evidence');
+assert.throws(() => shiftTimedWordsToContainerTimeline(localWords, '500'),
+  /integer milliseconds/);
+assert.throws(() => shiftTimedWordsToContainerTimeline([
+  { w: 'before-origin', s: 0, e: 0.2 },
+], -500), /outside the container timeline/);
+
+const completeTranscriptEvidence = normalizeTranscriptEvidence('one two', [
+  { w: 'one', s: 0, e: 0.2 }, { w: 'two', s: 0.21, e: 0.4 },
+]);
+assert.strictEqual(completeTranscriptEvidence.transcriptComplete, true);
+assert.strictEqual(completeTranscriptEvidence.timedWordsComplete, true);
+assert.strictEqual(completeTranscriptEvidence.timedWordCount, 2);
+assert.strictEqual(completeTranscriptEvidence.words.length, 2);
+const truncatedTranscriptEvidence = normalizeTranscriptEvidence('word',
+  Array.from({ length: 50001 }, (_, index) => ({
+    w: `w${index}`, s: index / 10, e: index / 10 + 0.05,
+  })));
+assert.strictEqual(truncatedTranscriptEvidence.timedWordCount, 50001);
+assert.strictEqual(truncatedTranscriptEvidence.words.length, 50000);
+assert.strictEqual(truncatedTranscriptEvidence.timedWordsComplete, false,
+  'long transcripts must advertise truncation instead of masquerading as complete');
+assert.strictEqual(normalizeTranscriptEvidence(
+  'prefix only', [{ w: 'prefix', s: 0, e: 0.2 }], true).transcriptComplete,
+false, 'a byte-bounded transcript prefix must be advertised as incomplete');
+assert.strictEqual(normalizeTranscriptEvidence('invalid timing', [
+  { w: 'invalid', s: '0', e: 0.2 },
+]).timedWordsComplete, false,
+'coerced legacy word timing must not satisfy the v4 evidence contract');
 
 assert.deepStrictEqual(sampleTimes(10, 4), [0.1, 1, 2.5, 9.95]);
 
@@ -289,6 +336,24 @@ assert.strictEqual(allReviewed.complete, true);
 assert.strictEqual(allReviewed.categories.graphics.status, 'reviewed');
 assert.strictEqual(allReviewed.categories.broll.status, 'not-planned');
 
+const allCaptured = artifactFrameCaptureCoverage(
+  artifactPlan, capturedArtifactFrames);
+assert.strictEqual(allCaptured.complete, true);
+assert.strictEqual(allCaptured.semanticReviewPerformed, false);
+assert.strictEqual(allCaptured.capturedFrameCount, artifactPlan.frames.length);
+assert.strictEqual(allCaptured.categories.graphics.status, 'captured');
+assert.strictEqual(allCaptured.frames.every((frame) =>
+  frame.captured && frame.semanticallyReviewed === false), true);
+const withoutGraphicCapture = artifactFrameCaptureCoverage(
+  artifactPlan, capturedArtifactFrames.filter((frame) =>
+    frame.id !== graphicFrame.id));
+assert.strictEqual(withoutGraphicCapture.complete, false);
+assert.ok(withoutGraphicCapture.missingFrameIds.includes(graphicFrame.id));
+assert.ok(withoutGraphicCapture.uncapturedCategories.includes('graphics'));
+assert.throws(() => artifactFrameCaptureCoverage(artifactPlan, [
+  ...capturedArtifactFrames, capturedArtifactFrames[0],
+]), /capture IDs/);
+
 const withoutGraphicReview = artifactVisionCoverage(
   artifactPlan, capturedArtifactFrames,
   capturedArtifactFrames.filter((frame) => frame.id !== graphicFrame.id)
@@ -313,6 +378,55 @@ assert.strictEqual(probe.durationSeconds, 12.346);
 assert.strictEqual(probe.video.fps, 29.97);
 assert.strictEqual(probe.video.width, 1080);
 assert.strictEqual(probe.audio.sampleRate, 48000);
+assert.strictEqual(probe.video.startOffsetMs, null,
+  'missing stream timing must not silently fall back to a v3-style zero');
+assert.strictEqual(probe.audio.startOffsetMs, null,
+  'missing audio timing must remain explicitly incomplete');
+
+const offsetProbe = summarizeProbe({
+  format: { duration: '12', start_time: '-0.250' },
+  streams: [
+    { codec_type: 'video', start_time: '-0.250', avg_frame_rate: '30/1' },
+    { codec_type: 'audio', start_time: '0.250', sample_rate: '48000', channels: 2 },
+  ],
+});
+assert.strictEqual(offsetProbe.video.startOffsetMs, 0);
+assert.strictEqual(offsetProbe.audio.startOffsetMs, 500,
+  'audio stream timing must stay relative to the shared container origin');
+const derivedOriginProbe = summarizeProbe({
+  format: { duration: '12' },
+  streams: [
+    { codec_type: 'video', start_time: '1.000', avg_frame_rate: '30/1' },
+    { codec_type: 'audio', start_time: '1.500', sample_rate: '48000', channels: 2 },
+  ],
+});
+assert.strictEqual(derivedOriginProbe.video.startOffsetMs, 0);
+assert.strictEqual(derivedOriginProbe.audio.startOffsetMs, 500,
+  'when format start is absent the earliest measured stream defines origin');
+const derivedDurationProbe = summarizeProbe({
+  format: { start_time: '1.000' },
+  streams: [
+    { codec_type: 'video', start_time: '1.000', duration: '2.000',
+      avg_frame_rate: '30/1' },
+    { codec_type: 'audio', start_time: '1.500', duration_ts: '168000',
+      time_base: '1/48000', sample_rate: '48000', channels: 2 },
+  ],
+});
+assert.strictEqual(derivedDurationProbe.durationSeconds, 4,
+  'missing format duration must use the latest stream end on the shared clock');
+const tagDurationProbe = summarizeProbe({
+  format: {},
+  streams: [
+    { codec_type: 'video', start_time: '1.000', avg_frame_rate: '30/1',
+      tags: { DURATION: '00:00:02.000000000' } },
+    { codec_type: 'audio', start_time: '1.500', sample_rate: '48000', channels: 2,
+      tags: { DURATION: '00:00:03.500000000' } },
+  ],
+});
+assert.strictEqual(tagDurationProbe.video.startOffsetMs, 0);
+assert.strictEqual(tagDurationProbe.audio.startOffsetMs, 500);
+assert.strictEqual(tagDurationProbe.durationSeconds, 4,
+  'Matroska/WebM stream tags must use the same duration rule as the daemon');
 
 const signals = parseSignalReport([
   'silence_start: 1.0', 'silence_end: 2.5 | silence_duration: 1.5',
@@ -407,10 +521,16 @@ assert.deepStrictEqual(results.map((value) => value.result), ['fresh']);
 const visionRoot = path.join(__dirname, '..', 'helper', 'vision');
 const lock = JSON.parse(fs.readFileSync(path.join(
   visionRoot, 'vision-runtime.lock.json'), 'utf8'));
-assert.strictEqual(lock.schema, 'autoeditor-local-vision-runtime/v1');
+assert.strictEqual(lock.schema, 'autoeditor-local-vision-runtime/v2');
 assert.strictEqual(lock.model.id, MODEL_ID);
 assert.strictEqual(lock.model.revision, MODEL_REVISION);
 assert.strictEqual(lock.model.license, 'Apache-2.0');
+assert.strictEqual(lock.model.dtype, 'q4');
+assert.strictEqual(lock.model_pack.schema_version,
+  'autoeditor-local-vision-model-pack/v1');
+assert.match(lock.model_pack.lock_sha256, /^[0-9a-f]{64}$/);
+assert.match(lock.model_pack.model_tree_sha256, /^[0-9a-f]{64}$/);
+assert.match(lock.model_pack.runtime_tree_sha256, /^[0-9a-f]{64}$/);
 assert.strictEqual(lock.transformers_js.version, '4.2.0');
 
 function sha256(file) {
@@ -427,6 +547,12 @@ const worker = fs.readFileSync(path.join(visionRoot, 'vision-worker.js'), 'utf8'
 assert.ok(worker.includes(MODEL_ID));
 assert.ok(worker.includes(MODEL_REVISION));
 assert.ok(worker.includes("from './transformers.web.min.js'"));
+assert.ok(worker.includes('env.allowRemoteModels = false'));
+assert.ok(worker.includes('env.allowLocalModels = true'));
+assert.ok(worker.includes("env.localModelPath = 'autoeditor-vision://model/'"));
+assert.ok(worker.includes('env.useBrowserCache = false'));
+assert.ok(worker.includes('local_files_only: true'));
+assert.ok(!worker.includes('first use downloads'));
 assert.ok(worker.includes("device: 'webgpu'"));
 assert.ok(worker.includes("device: 'wasm'"));
 assert.strictEqual(sha256(path.join(visionRoot, lock.vision_worker.entry)),

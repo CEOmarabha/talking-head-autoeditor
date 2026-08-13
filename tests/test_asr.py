@@ -201,6 +201,8 @@ class AsrContracts(unittest.TestCase):
             root / "packaging" / "helper_daemon_entry.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn('"onnxruntime", "av"', spec)
+        self.assertIn('"onnxruntime", "tqdm"', spec)
+        self.assertIn('"tokenizers", "tqdm"', entry)
         self.assertIn('"auto_editor", "av"', spec)
         self.assertIn('"pytest", "av"', helper_spec)
         self.assertIn("asr.pyav_payload_absent()", helper_entry)

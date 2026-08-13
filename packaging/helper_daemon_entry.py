@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import concurrent.futures
 import datetime as dt
 import html
@@ -23,10 +24,48 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from decimal import (
+    Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP,
+)
 from pathlib import Path
 
 from autoeditor.creative_constraints import (
     CreativeConstraintsError, validate_creative_constraints,
+)
+from autoeditor.color_contract import (
+    DETERMINISTIC_COLOR_COMPLEX_FILTER_ARGS,
+    source_color_conversion_filter,
+)
+from autoeditor.sequence_plan import (
+    MAX_SAFE_INTEGER, SequencePlanError, compile_sequence_plan,
+    sequence_plan_sha256, source_manifest_sha256, validate_sequence_plan,
+)
+from autoeditor.sequence_render import (
+    SOURCE_RENDER_MANIFEST_SCHEMA_VERSION, build_sequence_render,
+)
+from autoeditor.transition_plan import (
+    TRANSITION_SEQUENCE_MANIFEST_SCHEMA_VERSION,
+    TransitionPlanError,
+    compile_transition_plan,
+    transition_plan_sha256, transition_sequence_manifest_sha256,
+    validate_transition_plan,
+    validate_transition_sequence_manifest,
+)
+from autoeditor.transition_render import (
+    TransitionRenderError,
+    build_transition_render,
+    validate_transition_render_receipt,
+)
+from autoeditor.edit_policy import edit_policy_sha256, validate_edit_policy
+from autoeditor.project_intent_policy_bridge import (
+    resolve_project_intent_policy,
+    validate_capability_manifest,
+    validate_project_intent,
+)
+from autoeditor.project_intent_authority import (
+    build_project_intent_engine_envelope,
+    canonical_project_intent_engine_envelope_bytes,
+    project_intent_engine_envelope_sha256,
 )
 
 
@@ -38,6 +77,37 @@ LOCAL_PROJECT_TYPES = frozenset({
 })
 STORY_PLAN_SCHEMA = "autoeditor-story-edit/v1"
 STORY_PLAN_TIMELINE = "source_seconds"
+PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION = (
+    "autoeditor-project-intent-authority/v2"
+)
+TRANSITION_RENDER_PUBLIC_RECEIPT_SCHEMA = (
+    "autoeditor-transition-render-public-receipt/v1"
+)
+_TRANSITION_RENDER_PUBLIC_RECEIPT_KEYS = frozenset({
+    "schema_version", "output_file",
+    "sequence_plan_sha256", "sequence_compile_receipt_sha256",
+    "source_manifest_sha256", "compiled_segments_sha256",
+    "ordered_segment_ids", "segment_count", "source_duration_ms",
+    "transition_plan_sha256", "transition_sequence_manifest_sha256",
+    "transition_compile_receipt_sha256", "compiled_boundaries_sha256",
+    "ordered_boundary_ids", "boundary_count",
+    "non_hard_transition_count", "expected_output_duration_ms",
+    "frame_rate", "topology_sha256", "filter_complex_sha256",
+    "timing_receipt_sha256", "argv_sha256",
+})
+_PROJECT_INTENT_AUTHORITY_KEYS = frozenset({
+    "approved_proposal_sha256",
+    "authorization_hmac_sha256",
+    "authorization_id",
+    "capability_manifest",
+    "capability_manifest_sha256",
+    "edit_policy",
+    "edit_policy_sha256",
+    "project_intent",
+    "project_intent_sha256",
+    "schema_version",
+})
+_CONSUMED_PROJECT_INTENT_AUTHORIZATIONS: set[str] = set()
 
 
 EDITOR_CAPABILITY_CONTEXT = """AutoEditor editing knowledge pack v1 (bundled
@@ -91,8 +161,11 @@ ACTUAL EDITING PIPELINE
   small pop per revealed step. Stat graphics get a restrained riser followed
   by impact at the landing. Cards, ordinary B-roll, and minor punch-ins stay
   silent. ElevenLabs may generate and cache boom, whoosh, pop, riser, and
-  impact cues; deterministic local cues remain the fallback. Music is never
-  invented and is used only when a real music input exists.
+  impact cues; deterministic local cues remain the fallback. This legacy chat
+  path never invents music and uses it only when a real music input exists. The
+  separate explicitly approved ProjectIntent path may authorize only a trusted
+  deterministic project-owned supporting bed, after its capability, rights,
+  placement, policy, render, and artifact receipts independently validate.
 - Optional background replacement samples a real green wall, uses zoned keying,
   hole sealing, despill, face/lens-region protection, and keeps the source if
   the key cannot be proven.
@@ -237,11 +310,408 @@ def _creative_constraints_from_proposal(
     return json.loads(encoded)
 
 
+def _sequence_from_proposal(proposal: dict | None) -> tuple[dict | None,
+                                                             dict | None]:
+    if proposal is None:
+        return None, None
+    has_plan = "sequencePlan" in proposal
+    has_manifest = "sequenceSourceManifest" in proposal
+    if has_plan != has_manifest:
+        raise ValueError(
+            "the approved sequence plan requires its exact source manifest"
+        )
+    if not has_plan:
+        return None, None
+    if "storyPlan" in proposal or "creativeConstraints" in proposal:
+        raise ValueError(
+            "a sequence plan cannot be combined with the single-source story plan"
+        )
+    try:
+        plan = validate_sequence_plan(
+            proposal.get("sequencePlan"),
+            proposal.get("sequenceSourceManifest"),
+        )
+    except SequencePlanError as exc:
+        raise ValueError(f"the approved sequence plan is malformed: {exc}") from exc
+    # Bound the normalized plan by its actual UTF-8 payload. Canonical
+    # ensure-ASCII serialization remains inside sequence_plan.py solely for
+    # cross-runtime hashing; using that escaped representation here would
+    # reject schema-valid Unicode even when the real IPC payload is bounded.
+    encoded = json.dumps(
+        plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    )
+    if len(encoded.encode("utf-8")) > MAX_LOCAL_REQUEST_BYTES:
+        raise ValueError("the approved sequence plan is too large")
+    manifest = proposal["sequenceSourceManifest"]
+    return json.loads(encoded), json.loads(json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ))
+
+
+def _transition_from_proposal(
+        proposal: dict | None, sequence_plan: dict | None,
+        sequence_manifest: dict | None,
+        project_intent_authority: dict | None) -> tuple[dict | None, dict | None]:
+    """Detach an opt-in transition plan bound to exact sequence authority."""
+    if proposal is None:
+        return None, None
+    has_plan = "transitionPlan" in proposal
+    has_manifest = "transitionSequenceManifest" in proposal
+    if has_plan != has_manifest:
+        raise ValueError(
+            "the approved transition plan requires its exact sequence manifest"
+        )
+    if not has_plan:
+        return None, None
+    if sequence_plan is None or sequence_manifest is None:
+        raise ValueError(
+            "an approved transition plan requires an approved source sequence"
+        )
+    if project_intent_authority is None:
+        raise ValueError(
+            "an approved transition plan requires trusted project intent authority"
+        )
+    try:
+        compiled_sequence = compile_sequence_plan(
+            sequence_plan, sequence_manifest
+        )
+        transition_manifest = validate_transition_sequence_manifest(
+            proposal.get("transitionSequenceManifest")
+        )
+        transition_plan = validate_transition_plan(
+            proposal.get("transitionPlan"), transition_manifest,
+            project_intent_authority["edit_policy"],
+        )
+        compiled_transition = compile_transition_plan(
+            transition_plan, transition_manifest,
+            project_intent_authority["edit_policy"],
+        )
+    except (SequencePlanError, TransitionPlanError) as exc:
+        raise ValueError(
+            f"the approved transition plan is malformed: {exc}"
+        ) from exc
+    sequence_receipt = compiled_sequence["receipt"]
+    if (transition_manifest["sequence_plan_sha256"]
+            != sequence_receipt["sequence_plan_sha256"]
+            or transition_manifest["sequence_compile_receipt_sha256"]
+            != compiled_sequence["receipt_sha256"]):
+        raise ValueError(
+            "the approved transition plan does not bind the approved sequence"
+        )
+    expected_segments = [(
+        item["segment_id"], item["source_sha256"], item["duration_ms"]
+    ) for item in compiled_sequence["ffmpeg_segments"]]
+    supplied_segments = [(
+        item["segment_id"], item["source_sha256"], item["duration_ms"]
+    ) for item in transition_manifest["segments"]]
+    if supplied_segments != expected_segments:
+        raise ValueError(
+            "the approved transition manifest does not match exact sequence boundaries"
+        )
+    if transition_manifest["frame_rate"] != {
+            "numerator": 30, "denominator": 1}:
+        raise ValueError(
+            "the approved transition manifest must use the 30 fps delivery clock"
+        )
+    # Rechecking this closed result here prevents a permissive future validator
+    # from accidentally letting partial boundary decisions through this seam.
+    if (compiled_transition["receipt"]["boundary_count"]
+            != len(expected_segments) - 1):
+        raise ValueError(
+            "the approved transition plan must decide every exact boundary"
+        )
+    encoded = _canonical_authority_json({
+        "plan": transition_plan,
+        "sequence_manifest": transition_manifest,
+    })
+    if len(encoded.encode("utf-8")) > MAX_LOCAL_REQUEST_BYTES:
+        raise ValueError("the approved transition plan is too large")
+    return transition_plan, transition_manifest
+
+
+def _approved_transition_carrier(
+        sequence_plan: dict | None, sequence_manifest: dict | None,
+        transition_plan: dict | None,
+        transition_sequence_manifest: dict | None) -> dict | None:
+    """Derive the exact public hashes for an authenticated transition carrier."""
+    values = (
+        sequence_plan, sequence_manifest, transition_plan,
+        transition_sequence_manifest,
+    )
+    if all(item is None for item in values):
+        return None
+    if any(item is None for item in values):
+        if transition_plan is None and transition_sequence_manifest is None:
+            return None
+        raise ValueError(
+            "the approved transition carrier is missing exact sequence evidence"
+        )
+    return {
+        "sequence_plan_sha256": sequence_plan_sha256(sequence_plan),
+        "source_manifest_sha256": source_manifest_sha256(sequence_manifest),
+        "transition_plan_sha256": transition_plan_sha256(transition_plan),
+        "transition_sequence_manifest_sha256": (
+            transition_sequence_manifest_sha256(
+                transition_sequence_manifest
+            )
+        ),
+    }
+
+
+def _canonical_authority_json(value: object) -> str:
+    try:
+        return json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "project intent authority must be canonical JSON"
+        ) from exc
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        _canonical_authority_json(value).encode("utf-8")
+    ).hexdigest()
+
+
+def _project_intent_authority_unsigned(value: dict) -> dict:
+    return {
+        "schema_version": value["schema_version"],
+        "authorization_id": value["authorization_id"],
+        "approved_proposal_sha256": value["approved_proposal_sha256"],
+        "project_intent": value["project_intent"],
+        "project_intent_sha256": value["project_intent_sha256"],
+        "edit_policy": value["edit_policy"],
+        "edit_policy_sha256": value["edit_policy_sha256"],
+        "capability_manifest": value["capability_manifest"],
+        "capability_manifest_sha256": value["capability_manifest_sha256"],
+    }
+
+
+def _validate_project_intent_authority(
+        proposal: dict | None, authority: object) -> dict | None:
+    has_intent = (
+        isinstance(proposal, dict) and "projectIntent" in proposal
+    )
+    has_authority = authority is not None
+    if not has_intent and not has_authority:
+        return None
+    if has_intent and not has_authority:
+        raise ValueError(
+            "the approved projectIntent is missing its trusted authority envelope"
+        )
+    if has_authority and not has_intent:
+        raise ValueError(
+            "project intent authority was supplied without an approved projectIntent"
+        )
+    if (not isinstance(authority, dict)
+            or set(authority) != _PROJECT_INTENT_AUTHORITY_KEYS):
+        raise ValueError("project intent authority has invalid keys")
+    if authority.get("schema_version") != \
+            PROJECT_INTENT_AUTHORITY_SCHEMA_VERSION:
+        raise ValueError("project intent authority schema is unsupported")
+    authorization_id = authority.get("authorization_id")
+    if (not isinstance(authorization_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", authorization_id) is None):
+        raise ValueError("project intent authority authorization_id is invalid")
+    digest_names = (
+        "approved_proposal_sha256", "authorization_hmac_sha256",
+        "capability_manifest_sha256",
+        "edit_policy_sha256", "project_intent_sha256",
+    )
+    if any(not isinstance(authority.get(name), str)
+           or re.fullmatch(r"[0-9a-f]{64}", authority[name]) is None
+           for name in digest_names):
+        raise ValueError("project intent authority digest is invalid")
+
+    try:
+        project_intent = validate_project_intent(authority["project_intent"])
+        approved_intent = validate_project_intent(proposal["projectIntent"])
+        capability_manifest = validate_capability_manifest(
+            authority["capability_manifest"]
+        )
+        edit_policy = validate_edit_policy(authority["edit_policy"])
+        resolved_policy = resolve_project_intent_policy(
+            project_intent, capability_manifest
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"project intent authority contract is invalid: {exc}"
+        ) from exc
+    if _canonical_authority_json(project_intent) != \
+            _canonical_authority_json(approved_intent):
+        raise ValueError(
+            "project intent authority does not match the approved proposal"
+        )
+    if authority["approved_proposal_sha256"] != _canonical_sha256(proposal):
+        raise ValueError(
+            "project intent authority does not bind the exact approved proposal"
+        )
+    if authority["project_intent_sha256"] != _canonical_sha256(project_intent):
+        raise ValueError("project intent authority project digest does not match")
+    if authority["capability_manifest_sha256"] != \
+            _canonical_sha256(capability_manifest):
+        raise ValueError(
+            "project intent authority capability digest does not match"
+        )
+    if authority["edit_policy_sha256"] != edit_policy_sha256(edit_policy):
+        raise ValueError("project intent authority policy digest does not match")
+    if _canonical_authority_json(edit_policy) != \
+            _canonical_authority_json(resolved_policy):
+        raise ValueError(
+            "project intent authority policy was not resolved from its manifest"
+        )
+
+    signing_key = os.environ.get(
+        "AUTOEDITOR_PROJECT_INTENT_AUTHORITY_KEY", ""
+    )
+    if re.fullmatch(r"[0-9a-f]{64}", signing_key) is None:
+        raise ValueError("trusted project intent authority key is unavailable")
+    expected_hmac = hmac.new(
+        bytes.fromhex(signing_key),
+        _canonical_authority_json(
+            _project_intent_authority_unsigned({
+                **authority,
+                "project_intent": project_intent,
+                "edit_policy": edit_policy,
+                "capability_manifest": capability_manifest,
+            })
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(
+            authority["authorization_hmac_sha256"], expected_hmac):
+        raise ValueError("project intent authority signature does not match")
+    if authorization_id in _CONSUMED_PROJECT_INTENT_AUTHORIZATIONS:
+        raise ValueError("project intent authority was already consumed")
+    _CONSUMED_PROJECT_INTENT_AUTHORIZATIONS.add(authorization_id)
+    return json.loads(_canonical_authority_json({
+        **authority,
+        "project_intent": project_intent,
+        "edit_policy": edit_policy,
+        "capability_manifest": capability_manifest,
+    }))
+
+
+def _open_project_intent_engine_envelope(
+        work: Path, authority: dict | None,
+        approved_transition_carrier: dict | None = None) -> dict | None:
+    if authority is None:
+        return None
+    envelope = build_project_intent_engine_envelope(
+        authority, approved_transition_carrier
+    )
+    payload = canonical_project_intent_engine_envelope_bytes(envelope)
+    digest = project_intent_engine_envelope_sha256(envelope)
+    if not hmac.compare_digest(
+            hashlib.sha256(payload).hexdigest(), digest):
+        raise RuntimeError("project intent engine envelope digest drifted")
+    path = (work / "project-intent-engine-envelope.json").resolve()
+    if path.parent != work.resolve():
+        raise RuntimeError("project intent engine envelope escaped private work")
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = None
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        written = 0
+        while written < len(payload):
+            count = os.write(descriptor, payload[written:])
+            if count < 1:
+                raise OSError("short project intent envelope write")
+            written += count
+        os.fsync(descriptor)
+        os.chmod(path, 0o600)
+        facts = os.fstat(descriptor)
+        if facts.st_size != len(payload):
+            raise RuntimeError("project intent engine envelope write was incomplete")
+        return {
+            "path": path,
+            "descriptor": descriptor,
+            "payload": payload,
+            "sha256": digest,
+            "device": facts.st_dev,
+            "inode": facts.st_ino,
+        }
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _verify_project_intent_engine_envelope(binding: dict | None) -> None:
+    if binding is None:
+        return
+    descriptor = binding["descriptor"]
+    path = binding["path"]
+    try:
+        path_facts = path.stat(follow_symlinks=False)
+        descriptor_facts = os.fstat(descriptor)
+        if (path.is_symlink()
+                or path_facts.st_dev != binding["device"]
+                or path_facts.st_ino != binding["inode"]
+                or descriptor_facts.st_dev != binding["device"]
+                or descriptor_facts.st_ino != binding["inode"]
+                or descriptor_facts.st_size != len(binding["payload"])):
+            raise RuntimeError("project intent engine envelope changed during rendering")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks = []
+        remaining = len(binding["payload"])
+        while remaining:
+            block = os.read(descriptor, min(64 * 1024, remaining))
+            if not block:
+                break
+            chunks.append(block)
+            remaining -= len(block)
+        measured = b"".join(chunks)
+        if (measured != binding["payload"]
+                or not hmac.compare_digest(
+                    hashlib.sha256(measured).hexdigest(), binding["sha256"]
+                )):
+            raise RuntimeError("project intent engine envelope changed during rendering")
+    except OSError as exc:
+        raise RuntimeError(
+            "project intent engine envelope changed during rendering"
+        ) from exc
+
+
+def _clear_project_intent_engine_envelope(binding: dict | None) -> None:
+    if binding is None:
+        return
+    descriptor = binding.get("descriptor")
+    path = binding.get("path")
+    try:
+        if descriptor is not None:
+            try:
+                size = os.fstat(descriptor).st_size
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                zeroes = b"\0" * min(64 * 1024, max(1, size))
+                remaining = size
+                while remaining:
+                    count = os.write(descriptor, zeroes[:min(len(zeroes), remaining)])
+                    if count < 1:
+                        break
+                    remaining -= count
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+                binding["descriptor"] = None
+    finally:
+        if isinstance(path, Path):
+            path.unlink(missing_ok=True)
+
+
 def _local_render_request(value: dict) -> dict:
     allowed = {
         "inputs", "outputDir", "projectType", "script", "proposal",
         "cachedTranscript", "creativeBrief", "creativeBriefSha256",
-        "visionAttempt",
+        "visionAttempt", "projectIntentAuthority",
     }
     extra = sorted(set(value) - allowed)
     if extra:
@@ -271,6 +741,9 @@ def _local_render_request(value: dict) -> dict:
     proposal = value.get("proposal")
     if proposal is not None and not isinstance(proposal, dict):
         raise ValueError("the DeepSeek change proposal is invalid")
+    project_intent_authority = _validate_project_intent_authority(
+        proposal, value.get("projectIntentAuthority")
+    )
     vision_attempt = value.get("visionAttempt", 0)
     if (not isinstance(vision_attempt, int) or isinstance(vision_attempt, bool)
             or vision_attempt not in {0, 1}):
@@ -290,6 +763,14 @@ def _local_render_request(value: dict) -> dict:
         raise ValueError("creative brief digest does not match")
     story_plan = _story_plan_from_proposal(proposal)
     creative_constraints = _creative_constraints_from_proposal(proposal)
+    sequence_plan, sequence_manifest = _sequence_from_proposal(proposal)
+    transition_plan, transition_sequence_manifest = _transition_from_proposal(
+        proposal, sequence_plan, sequence_manifest, project_intent_authority,
+    )
+    approved_transition_carrier = _approved_transition_carrier(
+        sequence_plan, sequence_manifest, transition_plan,
+        transition_sequence_manifest,
+    )
     if proposal is not None and story_plan is not None \
             and creative_constraints is None:
         raise ValueError(
@@ -299,7 +780,8 @@ def _local_render_request(value: dict) -> dict:
         creative_brief,
         str(proposal.get("summary") or "") if proposal else "",
     ))
-    if _duration_requested(approved_plan_text) and story_plan is None:
+    if (_duration_requested(approved_plan_text) and story_plan is None
+            and sequence_plan is None):
         raise ValueError(
             "an approved target duration requires a transcript-grounded story plan"
         )
@@ -317,6 +799,12 @@ def _local_render_request(value: dict) -> dict:
         "proposal": proposal,
         "story_plan": story_plan,
         "creative_constraints": creative_constraints,
+        "sequence_plan": sequence_plan,
+        "sequence_manifest": sequence_manifest,
+        "transition_plan": transition_plan,
+        "transition_sequence_manifest": transition_sequence_manifest,
+        "approved_transition_carrier": approved_transition_carrier,
+        "project_intent_authority": project_intent_authority,
     }
 
 
@@ -380,6 +868,10 @@ def _run_local_engine(args: list[str]) -> tuple[int, dict | None]:
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
     }
+    # The one-use HMAC key authenticates desktop -> daemon only.  The engine
+    # receives the daemon-validated, secret-free envelope sidecar and must
+    # never inherit authority capable of signing a different request.
+    env.pop("AUTOEDITOR_PROJECT_INTENT_AUTHORITY_KEY", None)
     proc = subprocess.Popen(
         _local_engine_command(args), cwd=cwd, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -416,6 +908,559 @@ def _run_local_engine(args: list[str]) -> tuple[int, dict | None]:
     return proc.wait(), result
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _probe_sequence_source(path: Path) -> dict:
+    ffprobe = os.environ.get("AUTOEDITOR_FFPROBE", "").strip()
+    if not ffprobe or not Path(ffprobe).is_file():
+        raise RuntimeError("the built-in FFprobe is missing")
+    completed = subprocess.run([
+        ffprobe, "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams", str(path),
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+       encoding="utf-8", errors="strict", shell=False)
+    if completed.returncode != 0:
+        raise RuntimeError("a selected source could not be probed")
+
+    def decimal_value(raw: object, label: str) -> Decimal:
+        if raw is None or str(raw).strip().upper() in {"", "N/A"}:
+            raise ValueError(f"missing {label}")
+        try:
+            value = Decimal(str(raw))
+        except InvalidOperation as exc:
+            raise ValueError(f"invalid {label}") from exc
+        if not value.is_finite():
+            raise ValueError(f"invalid {label}")
+        return value
+
+    def missing_numeric(raw: object) -> bool:
+        return raw is None or str(raw).strip().upper() in {"", "N/A"}
+
+    def finite_optional_decimal(raw: object) -> Decimal | None:
+        if missing_numeric(raw):
+            return None
+        try:
+            value = Decimal(str(raw))
+        except InvalidOperation:
+            return None
+        return value if value.is_finite() else None
+
+    def tagged_duration(stream: dict, label: str) -> Decimal:
+        tags = stream.get("tags")
+        if not isinstance(tags, dict):
+            raise ValueError(f"missing {label} duration")
+        candidates = [
+            value for key, value in tags.items()
+            if isinstance(key, str) and key.upper() == "DURATION"
+        ]
+        if len(candidates) != 1 or not isinstance(candidates[0], str):
+            raise ValueError(f"missing or ambiguous {label} DURATION tag")
+        match = re.fullmatch(
+            r"(?P<hours>[0-9]{2,9}):(?P<minutes>[0-5][0-9]):"
+            r"(?P<seconds>[0-5][0-9])(?:\.(?P<fraction>[0-9]{1,9}))?",
+            candidates[0],
+            flags=re.ASCII,
+        )
+        if match is None:
+            raise ValueError(f"invalid {label} DURATION tag")
+        fraction = match.group("fraction") or ""
+        duration = (
+            Decimal(match.group("hours")) * 3600
+            + Decimal(match.group("minutes")) * 60
+            + Decimal(match.group("seconds"))
+            + (Decimal(f"0.{fraction}") if fraction else Decimal(0))
+        )
+        maximum_seconds = Decimal(MAX_SAFE_INTEGER) / 1000
+        if duration <= 0 or duration > maximum_seconds:
+            raise ValueError(f"{label} DURATION tag is outside the timeline range")
+        return duration
+
+    def stream_duration(stream: dict, label: str) -> Decimal:
+        raw_duration = stream.get("duration")
+        raw_duration_ts = stream.get("duration_ts")
+        if not missing_numeric(raw_duration):
+            duration = decimal_value(raw_duration, f"{label} duration")
+        elif not missing_numeric(raw_duration_ts):
+            duration_ts = decimal_value(
+                raw_duration_ts, f"{label} duration_ts"
+            )
+            time_base = str(stream.get("time_base") or "")
+            parts = time_base.split("/", 1)
+            if len(parts) != 2:
+                raise ValueError(f"invalid {label} time_base")
+            numerator = decimal_value(parts[0], f"{label} time_base numerator")
+            denominator = decimal_value(parts[1], f"{label} time_base denominator")
+            if duration_ts <= 0 or numerator <= 0 or denominator <= 0:
+                raise ValueError(f"invalid {label} time_base")
+            duration = duration_ts * numerator / denominator
+        else:
+            # Matroska/WebM commonly omits stream.duration and duration_ts but
+            # exposes the per-stream extent as a nanosecond-style DURATION
+            # tag. Accept only its canonical bounded clock representation.
+            duration = tagged_duration(stream, label)
+        if duration <= 0:
+            raise ValueError(f"empty {label} duration")
+        return duration
+
+    def frame_rate(stream: dict) -> tuple[int, int]:
+        for raw_rate in (stream.get("avg_frame_rate"),
+                         stream.get("r_frame_rate")):
+            rate_parts = str(raw_rate or "").split("/", 1)
+            try:
+                numerator = int(rate_parts[0])
+                denominator = int(rate_parts[1]) if len(rate_parts) == 2 else 1
+            except ValueError:
+                continue
+            if numerator > 0 and denominator > 0:
+                return numerator, denominator
+        raise ValueError("invalid video frame rate")
+
+    def color_token(stream: dict, key: str) -> str:
+        raw = stream.get(key)
+        if raw is None:
+            return "unknown"
+        if not isinstance(raw, str):
+            raise ValueError(f"invalid video {key}")
+        normalized = raw.strip().lower()
+        if normalized in {"", "n/a"}:
+            return "unknown"
+        return normalized
+
+    def stream_extent(stream: dict, label: str,
+                      format_start: Decimal) -> tuple[int, int, int]:
+        start = decimal_value(stream.get("start_time"), f"{label} start_time")
+        offset = start - format_start
+        duration = stream_duration(stream, label)
+        start_exact_ms = offset * 1000
+        end_exact_ms = (offset + duration) * 1000
+        maximum = Decimal(MAX_SAFE_INTEGER)
+        if (start_exact_ms < -maximum or start_exact_ms > maximum
+                or end_exact_ms < -maximum or end_exact_ms > maximum):
+            raise ValueError(f"{label} extent exceeds the exact timeline range")
+        # A closed integer-millisecond interval must be wholly contained in
+        # the probed stream. Ceil the first usable millisecond and floor the
+        # last, rather than rounding outward and permitting fabricated media.
+        start_ms = int(start_exact_ms.to_integral_value(rounding=ROUND_CEILING))
+        end_ms = int(
+            end_exact_ms.to_integral_value(rounding=ROUND_FLOOR)
+        )
+        duration_ms = end_ms - start_ms
+        if duration_ms < 1:
+            raise ValueError(f"empty {label} millisecond extent")
+        return start_ms, duration_ms, end_ms
+
+    try:
+        value = json.loads(completed.stdout)
+        streams = value["streams"]
+        video = next(item for item in streams if item.get("codec_type") == "video")
+        audio = next((item for item in streams
+                      if item.get("codec_type") == "audio"), None)
+        numerator, denominator = frame_rate(video)
+        format_start = finite_optional_decimal(
+            value["format"].get("start_time")
+        )
+        if format_start is None:
+            measured_stream_starts = [
+                start for item in streams
+                if (start := finite_optional_decimal(item.get("start_time")))
+                is not None
+            ]
+            if not measured_stream_starts:
+                raise ValueError(
+                    "format and streams lack a finite timeline origin"
+                )
+            format_start = min(measured_stream_starts)
+        video_start_ms, video_duration_ms, video_end_ms = stream_extent(
+            video, "video stream", format_start
+        )
+        if audio:
+            audio_start_ms, audio_duration_ms, audio_end_ms = stream_extent(
+                audio, "audio stream", format_start
+            )
+        else:
+            audio_start_ms = audio_duration_ms = audio_end_ms = None
+        raw_format_duration = value["format"].get("duration")
+        format_duration = finite_optional_decimal(raw_format_duration)
+        if format_duration is not None and format_duration <= 0:
+            format_duration = None
+        if format_duration is None:
+            measured_stream_ends: list[Decimal] = []
+            for index, item in enumerate(streams):
+                start = finite_optional_decimal(item.get("start_time"))
+                if start is None:
+                    continue
+                try:
+                    item_duration = stream_duration(
+                        item, f"stream {index}"
+                    )
+                except ValueError:
+                    continue
+                end = start - format_start + item_duration
+                if end.is_finite() and end > 0:
+                    measured_stream_ends.append(end)
+            if not measured_stream_ends:
+                raise ValueError(
+                    "format and streams lack a finite source duration"
+                )
+            format_duration = max(measured_stream_ends)
+        if (format_duration <= 0
+                or format_duration * 1000 > Decimal(MAX_SAFE_INTEGER)):
+            raise ValueError("format duration exceeds the exact timeline range")
+        duration_ms = int(
+            (format_duration * 1000).to_integral_value(rounding=ROUND_HALF_UP)
+        )
+        if duration_ms < 1:
+            raise ValueError("empty duration")
+        video_facts = {
+            "width": int(video["width"]), "height": int(video["height"]),
+            "fps_numerator": numerator, "fps_denominator": denominator,
+            "start_offset_ms": video_start_ms,
+            "duration_ms": video_duration_ms,
+            "end_offset_ms": video_end_ms,
+            "codec_name": color_token(video, "codec_name"),
+            "pix_fmt": color_token(video, "pix_fmt"),
+            "color_range": color_token(video, "color_range"),
+            "color_space": color_token(video, "color_space"),
+            "color_transfer": color_token(video, "color_transfer"),
+            "color_primaries": color_token(video, "color_primaries"),
+        }
+        # Validate at the probe boundary as well as at the sequence manifest
+        # boundary. This prevents the baseline multi-input join from erasing
+        # an HDR, partial, or ambiguous source declaration before the main
+        # pipeline can inspect it.
+        source_color_conversion_filter(video_facts)
+        return {
+            "duration_ms": duration_ms,
+            "video": video_facts,
+            "audio": {
+                "present": audio is not None,
+                "sample_rate": int(audio["sample_rate"]) if audio else None,
+                "channels": int(audio["channels"]) if audio else None,
+                "start_offset_ms": audio_start_ms,
+                "duration_ms": audio_duration_ms,
+                "end_offset_ms": audio_end_ms,
+            },
+        }
+    except (KeyError, StopIteration, TypeError, ValueError,
+            json.JSONDecodeError) as exc:
+        raise RuntimeError("a selected source has invalid technical metadata") from exc
+
+
+def _transition_manifest_for_render(
+        compiled_sequence: dict, sequence_render: dict) -> dict:
+    """Rebuild transition edge facts from trusted compiled A/V timing."""
+    receipt = compiled_sequence["receipt"]
+    compiled_segments = compiled_sequence["ffmpeg_segments"]
+    timing_segments = sequence_render["timing_receipt"]["segment_timing"]
+    if len(compiled_segments) != len(timing_segments):
+        raise RuntimeError("sequence timing is incomplete for transition approval")
+    segments = []
+    for compiled, timing in zip(compiled_segments, timing_segments):
+        if (timing["segment_id"] != compiled["segment_id"]
+                or timing["sequence_index"] != compiled["sequence_index"]):
+            raise RuntimeError("sequence timing order changed before transitions")
+        if timing["audio_local_start_ms"] is None:
+            selected_audio_ms = 0
+        else:
+            selected_audio_ms = (
+                timing["audio_local_end_ms"]
+                - timing["audio_local_start_ms"]
+            )
+        audio_leading_handle_ms = (
+            selected_audio_ms
+            if timing["audio_lead_silence_ms"] == 0 else 0
+        )
+        audio_trailing_handle_ms = (
+            selected_audio_ms
+            if timing["audio_tail_silence_ms"] == 0 else 0
+        )
+        duration_ms = compiled["duration_ms"]
+        segments.append({
+            "segment_id": compiled["segment_id"],
+            "source_sha256": compiled["source_sha256"],
+            "duration_ms": duration_ms,
+            "video_leading_handle_ms": duration_ms,
+            "video_trailing_handle_ms": duration_ms,
+            "audio_leading_handle_ms": audio_leading_handle_ms,
+            "audio_trailing_handle_ms": audio_trailing_handle_ms,
+            # The probe cannot prove speech absence from a decoded audio edge.
+            # Classifying any real edge audio as dialogue is conservative and
+            # prevents a proposal from understating preservation risk.
+            "dialogue_at_start": audio_leading_handle_ms > 0,
+            "dialogue_at_end": audio_trailing_handle_ms > 0,
+        })
+    return validate_transition_sequence_manifest({
+        "schema_version": TRANSITION_SEQUENCE_MANIFEST_SCHEMA_VERSION,
+        "sequence_plan_sha256": receipt["sequence_plan_sha256"],
+        "sequence_compile_receipt_sha256": compiled_sequence["receipt_sha256"],
+        "frame_rate": {"numerator": 30, "denominator": 1},
+        "segments": segments,
+    })
+
+
+def _transition_output_boundaries(topology: list[dict]) -> list[dict]:
+    boundaries = []
+    for index, item in enumerate(topology):
+        if item.get("boundary_index") != index:
+            raise RuntimeError("transition topology boundary order is invalid")
+        overlap_ms = item["duration_ms"]
+        output_end_ms = item["output_boundary_ms"]
+        boundaries.append({
+            "boundary_index": index,
+            "kind": item["kind"],
+            "output_start_ms": output_end_ms - overlap_ms,
+            "output_end_ms": output_end_ms,
+            "overlap_ms": overlap_ms,
+        })
+    return boundaries
+
+
+def _public_transition_executor_receipt(
+        private_receipt: dict, output: Path) -> tuple[dict, str]:
+    """Project a validated private executor receipt onto a path-free wire."""
+    validated = validate_transition_render_receipt(private_receipt)
+    if os.path.normcase(os.path.normpath(validated["artifact_target"])) != \
+            os.path.normcase(os.path.normpath(str(output.resolve()))):
+        raise RuntimeError(
+            "the transition executor receipt does not bind its output artifact"
+        )
+    output_file = output.name
+    if (not output_file or output_file in {".", ".."}
+            or "/" in output_file or "\\" in output_file
+            or "\0" in output_file):
+        raise RuntimeError("the transition output basename is unsafe")
+    public = {
+        "schema_version": TRANSITION_RENDER_PUBLIC_RECEIPT_SCHEMA,
+        "output_file": output_file,
+        **{
+            key: value for key, value in validated.items()
+            if key not in {"schema_version", "artifact_target"}
+        },
+    }
+    if set(public) != _TRANSITION_RENDER_PUBLIC_RECEIPT_KEYS:
+        raise RuntimeError("the transition public executor receipt drifted")
+    return public, _canonical_sha256(public)
+
+
+def _build_approved_sequence(
+        inputs: list[Path], project_type: str, work: Path,
+        plan: dict, source_manifest: dict,
+        transition_plan: dict | None = None,
+        transition_sequence_manifest: dict | None = None,
+        edit_policy: dict | None = None) -> tuple[Path, dict]:
+    if len(inputs) < 2:
+        raise RuntimeError("an approved multi-source sequence requires at least two inputs")
+    if len(inputs) != len(source_manifest.get("sources", [])):
+        raise RuntimeError("the selected inputs do not match the approved source inventory")
+    manifest_sources = {item["sha256"]: item for item in source_manifest["sources"]}
+    source_paths: dict[str, str] = {}
+    render_sources: list[dict] = []
+    for path in inputs:
+        digest = _sha256_file(path)
+        item = manifest_sources.get(digest)
+        if item is None or item["source_id"] in source_paths:
+            raise RuntimeError("a selected source is absent or duplicated in the approved plan")
+        snapshot = work / (
+            f"sequence-source-{len(source_paths) + 1:02d}{path.suffix.lower()}"
+        )
+        with path.open("rb") as source_stream, snapshot.open("xb") as target_stream:
+            shutil.copyfileobj(source_stream, target_stream, 1024 * 1024)
+        if _sha256_file(snapshot) != digest:
+            snapshot.unlink(missing_ok=True)
+            raise RuntimeError("a selected source changed while it was snapshotted")
+        probe = _probe_sequence_source(snapshot)
+        if abs(probe["duration_ms"] - item["duration_ms"]) > 50:
+            raise RuntimeError("a selected source duration changed after approval")
+        source_paths[item["source_id"]] = str(snapshot)
+        render_sources.append({
+            "source_id": item["source_id"], "path": str(snapshot),
+            "sha256": digest, "duration_ms": item["duration_ms"],
+            "video": probe["video"], "audio": probe["audio"],
+        })
+    if len(source_paths) != len(manifest_sources):
+        raise RuntimeError("not every approved source was selected")
+    compiled = compile_sequence_plan(plan, source_manifest)
+    portrait = project_type in {"short", "commercial"}
+    width, height = (1080, 1920) if portrait else (1920, 1080)
+    render_manifest = {
+        "schema_version": SOURCE_RENDER_MANIFEST_SCHEMA_VERSION,
+        "output": {
+            "width": width, "height": height,
+            "fps_numerator": 30, "fps_denominator": 1,
+        },
+        "sources": render_sources,
+    }
+    output = work / "approved-sequence.mp4"
+    ffmpeg = os.environ.get("AUTOEDITOR_FFMPEG", "").strip()
+    used_source_ids = {
+        item["source_id"] for item in compiled["ffmpeg_segments"]
+    }
+    physically_missing_audio = [
+        item["source_id"] for item in render_sources
+        if item["source_id"] in used_source_ids
+        and not item["audio"]["present"]
+    ]
+    base_render = build_sequence_render(
+        compiled, source_paths, render_manifest, output,
+        ffmpeg_path=ffmpeg, synthesize_silence_for=physically_missing_audio,
+    )
+    transition_requested = transition_plan is not None \
+        or transition_sequence_manifest is not None or edit_policy is not None
+    if transition_requested and (
+            transition_plan is None or transition_sequence_manifest is None
+            or edit_policy is None):
+        raise RuntimeError(
+            "transition execution requires its exact plan, manifest, and policy"
+        )
+    compiled_transition = None
+    if transition_requested:
+        measured_transition_manifest = _transition_manifest_for_render(
+            compiled, base_render
+        )
+        if transition_sequence_manifest != measured_transition_manifest:
+            raise RuntimeError(
+                "the approved transition edge evidence does not match probed media"
+            )
+        try:
+            compiled_transition = compile_transition_plan(
+                transition_plan, measured_transition_manifest, edit_policy
+            )
+            render = build_transition_render(
+                compiled, source_paths, render_manifest, compiled_transition,
+                output, ffmpeg_path=ffmpeg,
+                synthesize_silence_for=physically_missing_audio,
+            )
+        except (TransitionPlanError, TransitionRenderError) as exc:
+            raise RuntimeError(
+                f"the approved transition program is invalid: {exc}"
+            ) from exc
+    else:
+        render = base_render
+    audible_segment_modes = {"source", "delayed_source"}
+    used_audio_source_ids = sorted({
+        item["source_id"]
+        for item in render["timing_receipt"]["segment_timing"]
+        if item["audio_mode"] in audible_segment_modes
+    })
+    synthesized_silence_source_ids = sorted(
+        used_source_ids - set(used_audio_source_ids)
+    )
+    if (set(used_audio_source_ids).intersection(
+            synthesized_silence_source_ids)
+            or set(used_audio_source_ids).union(
+                synthesized_silence_source_ids) != used_source_ids):
+        raise RuntimeError(
+            "the approved sequence audio classification is incomplete"
+        )
+    filter_script = Path(render["filter_script_path"])
+    filter_script.write_text(render["filter_complex"], encoding="utf-8")
+    argv = list(render["argv"])
+    completed = subprocess.run(
+        argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", shell=False,
+        cwd=render["working_directory"],
+    )
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size < 1:
+        raise RuntimeError("the approved source sequence could not be rendered")
+    for item in render_sources:
+        if _sha256_file(Path(item["path"])) != item["sha256"]:
+            output.unlink(missing_ok=True)
+            raise RuntimeError("an approved source snapshot changed during rendering")
+    actual_probe = _probe_sequence_source(output)
+    expected_output_duration_ms = (
+        render["expected_output_duration_ms"]
+        if transition_requested else render["total_duration_ms"]
+    )
+    if abs(actual_probe["duration_ms"] - expected_output_duration_ms) > 100:
+        output.unlink(missing_ok=True)
+        raise RuntimeError("the rendered source sequence duration drifted from approval")
+    segment_durations_ms = [
+        item["duration_ms"] for item in compiled["ffmpeg_segments"]
+    ]
+    cumulative = 0
+    hard_cut_boundaries_ms = []
+    for duration in segment_durations_ms[:-1]:
+        cumulative += duration
+        hard_cut_boundaries_ms.append(cumulative)
+    receipt = {
+        "schema_version": "autoeditor-sequence-handoff-receipt/v1",
+        "sequence_compile_receipt": compiled["receipt"],
+        "sequence_compile_receipt_sha256": compiled["receipt_sha256"],
+        "sequence_compile": compiled,
+        "sequence_timing_receipt": render["timing_receipt"],
+        "sequence_timing_receipt_sha256": render["timing_receipt_sha256"],
+        "ordered_segment_ids": render["ordered_segment_ids"],
+        "segment_durations_ms": segment_durations_ms,
+        "hard_cut_boundaries_ms": hard_cut_boundaries_ms,
+        "total_duration_ms": expected_output_duration_ms,
+        "synthesized_silence_source_ids": synthesized_silence_source_ids,
+        "used_audio_source_ids": used_audio_source_ids,
+        "output_sha256": _sha256_file(output),
+        "output_bytes": output.stat().st_size,
+        "output_file": output.name,
+    }
+    if transition_requested:
+        topology = render["topology"]
+        boundaries = _transition_output_boundaries(topology)
+        public_executor_receipt, public_executor_receipt_sha256 = (
+            _public_transition_executor_receipt(
+                render["executor_receipt"], output
+            )
+        )
+        artifact_receipt = {
+            "schema_version": "autoeditor-transition-artifact-receipt/v1",
+            "output_file": output.name,
+            "output_sha256": receipt["output_sha256"],
+            "output_bytes": receipt["output_bytes"],
+            "source_total_duration_ms": compiled["receipt"]["total_duration_ms"],
+            "expected_output_duration_ms": expected_output_duration_ms,
+            "measured_output_duration_ms": actual_probe["duration_ms"],
+            "sequence_compile_receipt_sha256": compiled["receipt_sha256"],
+            "transition_compile_receipt_sha256": render[
+                "transition_compile_receipt_sha256"
+            ],
+            "transition_executor_receipt_sha256": (
+                public_executor_receipt_sha256
+            ),
+            "transition_topology_sha256": render["topology_sha256"],
+            "filter_complex_sha256": render["executor_receipt"][
+                "filter_complex_sha256"
+            ],
+            "argv_sha256": render["executor_receipt"]["argv_sha256"],
+        }
+        artifact_receipt_sha256 = _canonical_sha256(artifact_receipt)
+        receipt.update({
+            "schema_version": "autoeditor-sequence-handoff-receipt/v2",
+            "source_total_duration_ms": compiled["receipt"]["total_duration_ms"],
+            "boundaries": boundaries,
+            "hard_cut_boundaries_ms": [
+                item["output_end_ms"] for item in boundaries
+                if item["kind"] == "hard_cut"
+            ],
+            "transition_compile_receipt": render[
+                "transition_compile_receipt"
+            ],
+            "transition_compile_receipt_sha256": render[
+                "transition_compile_receipt_sha256"
+            ],
+            "transition_executor_receipt": public_executor_receipt,
+            "transition_executor_receipt_sha256": (
+                public_executor_receipt_sha256
+            ),
+            "transition_topology": topology,
+            "transition_topology_sha256": render["topology_sha256"],
+            "transition_artifact_receipt": artifact_receipt,
+            "transition_artifact_receipt_sha256": artifact_receipt_sha256,
+        })
+    return output, receipt
+
+
 def _join_local_inputs(inputs: list[Path], project_type: str,
                        work: Path) -> Path:
     if len(inputs) == 1:
@@ -425,28 +1470,96 @@ def _join_local_inputs(inputs: list[Path], project_type: str,
         raise RuntimeError("the built-in FFmpeg is missing")
     portrait = project_type in {"short", "commercial"}
     width, height = (1080, 1920) if portrait else (1920, 1080)
+    source_facts = [_probe_sequence_source(path) for path in inputs]
+
+    def seconds(milliseconds: int) -> str:
+        return f"{milliseconds // 1_000}.{milliseconds % 1_000:03d}"
+
+    def exact_silence(index: int, sample_count: int) -> str:
+        return (
+            "anullsrc=channel_layout=stereo:sample_rate=48000,"
+            f"atrim=end_sample={sample_count},"
+            f"asetpts=PTS-STARTPTS[a{index}]"
+        )
+
     arguments: list[str] = []
     filters: list[str] = []
     labels: list[str] = []
-    for index, path in enumerate(inputs):
+    for index, (path, facts) in enumerate(zip(inputs, source_facts)):
         arguments.extend(["-i", str(path)])
+        video = facts["video"]
+        duration_ms = video["duration_ms"]
+        duration = seconds(duration_ms)
+        sample_count = duration_ms * 48
+        color_filter = source_color_conversion_filter(video)
         filters.append(
-            f"[{index}:v]scale={width}:{height}:"
+            f"[{index}:v:0]setpts=PTS-STARTPTS,"
+            f"trim=duration={duration},setpts=PTS-STARTPTS,"
+            f"{color_filter},"
+            f"scale={width}:{height}:"
             "force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
-            f"setsar=1,fps=30[v{index}]"
+            "fps=fps=30:round=near,setsar=1,format=yuv420p,"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:"
+            f"colorspace=bt709[v{index}]"
         )
-        filters.append(f"[{index}:a]aresample=48000[a{index}]")
+        audio = facts["audio"]
+        if not audio["present"]:
+            filters.append(exact_silence(index, sample_count))
+        else:
+            overlap_start_ms = max(
+                video["start_offset_ms"], audio["start_offset_ms"]
+            )
+            overlap_end_ms = min(
+                video["end_offset_ms"], audio["end_offset_ms"]
+            )
+            if overlap_start_ms >= overlap_end_ms:
+                filters.append(exact_silence(index, sample_count))
+            else:
+                audio_local_start_ms = (
+                    overlap_start_ms - audio["start_offset_ms"]
+                )
+                selected_audio_duration_ms = (
+                    overlap_end_ms - overlap_start_ms
+                )
+                audio_lead_silence_ms = (
+                    overlap_start_ms - video["start_offset_ms"]
+                )
+                audio_filter = (
+                    f"[{index}:a:0]asetpts=PTS-STARTPTS,"
+                    f"atrim=start={seconds(audio_local_start_ms)}:"
+                    f"duration={seconds(selected_audio_duration_ms)},"
+                    "asetpts=PTS-STARTPTS,"
+                    "aresample=48000:async=0:first_pts=0,"
+                    "aformat=sample_rates=48000:channel_layouts=stereo"
+                )
+                if audio_lead_silence_ms:
+                    audio_filter += (
+                        f",adelay={audio_lead_silence_ms}:all=1"
+                    )
+                audio_filter += (
+                    f",apad=whole_len={sample_count},"
+                    f"atrim=end_sample={sample_count},"
+                    f"asetpts=PTS-STARTPTS[a{index}]"
+                )
+                filters.append(audio_filter)
         labels.append(f"[v{index}][a{index}]")
     filters.append(
         "".join(labels) + f"concat=n={len(inputs)}:v=1:a=1[v][a]")
     output = work / "joined-input.mp4"
     completed = subprocess.run(
-        [ffmpeg, "-y", *arguments, "-filter_complex", ";".join(filters),
+        [ffmpeg, "-y", *DETERMINISTIC_COLOR_COMPLEX_FILTER_ARGS,
+         *arguments, "-filter_complex", ";".join(filters),
          "-map", "[v]", "-map", "[a]", "-c:v", "libx264",
-         "-preset", "fast", "-crf", "18", "-c:a", "aac", str(output)],
+         "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+         "-color_range", "tv", "-color_primaries", "bt709",
+         "-color_trc", "bt709", "-colorspace", "bt709",
+         "-bsf:v", "h264_metadata=colour_primaries=1:"
+         "transfer_characteristics=1:matrix_coefficients=1",
+         "-c:a", "aac", "-ar", "48000", "-ac", "2",
+         "-movflags", "+faststart", str(output)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace",
+        text=True, encoding="utf-8", errors="replace", shell=False,
     )
     if completed.returncode != 0 or not output.is_file():
         raise RuntimeError("the selected videos could not be joined")
@@ -533,10 +1646,39 @@ def local_render() -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="local-edit-", dir=work_root) as raw:
         work = Path(raw)
-        source = _join_local_inputs(
-            request["inputs"], request["project_type"], work)
-        script = request["script"] or request["cached_transcript"]
-        if not request["script"] and request["cached_transcript"]:
+        sequence_handoff_receipt = None
+        if request["sequence_plan"] is not None:
+            source, sequence_handoff_receipt = _build_approved_sequence(
+                request["inputs"], request["project_type"], work,
+                request["sequence_plan"], request["sequence_manifest"],
+                request["transition_plan"],
+                request["transition_sequence_manifest"],
+                (
+                    request["project_intent_authority"]["edit_policy"]
+                    if request["transition_plan"] is not None else None
+                ),
+            )
+            _emit_local({
+                "event": "local-progress", "stage": "sequence",
+                "line": (
+                    "Rendered the exact source-bound sequence: "
+                    f"{len(sequence_handoff_receipt['ordered_segment_ids'])} "
+                    "approved segments."
+                ),
+            })
+        else:
+            source = _join_local_inputs(
+                request["inputs"], request["project_type"], work)
+        # A cached transcript describes the selected source inventory in
+        # attachment order. It is not an authoritative script for a reordered,
+        # trimmed, or repeated sequence. Transcribe the compiled sequence unless
+        # the user supplied an explicit script for that approved output.
+        script = request["script"] or (
+            request["cached_transcript"]
+            if sequence_handoff_receipt is None else ""
+        )
+        if (sequence_handoff_receipt is None and not request["script"]
+                and request["cached_transcript"]):
             _emit_local({
                 "event": "local-progress",
                 "stage": "transcription-cache",
@@ -562,6 +1704,13 @@ def local_render() -> int:
             str(source), "--script", str(script_file),
             "--out", str(request["output"]), *mapped,
         ]
+        if sequence_handoff_receipt is not None:
+            sequence_receipt_file = work / "approved-sequence-receipt.json"
+            sequence_receipt_file.write_text(json.dumps(
+                sequence_handoff_receipt, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ), encoding="utf-8")
+            args.extend(["--sequence-receipt", str(sequence_receipt_file)])
         if request["creative_brief"]:
             brief_file = work / "approved-creative-brief.txt"
             brief_file.write_text(request["creative_brief"], encoding="utf-8")
@@ -588,7 +1737,22 @@ def local_render() -> int:
                 "premium rendering requires the saved DeepSeek key; "
                 "no heuristic draft was substituted"
             )
-        code, result = _run_local_engine(args)
+        authority_binding = _open_project_intent_engine_envelope(
+            work, request["project_intent_authority"],
+            request["approved_transition_carrier"],
+        )
+        if authority_binding is not None:
+            args.extend([
+                "--project-intent-authority",
+                str(authority_binding["path"]),
+                "--project-intent-authority-sha256",
+                authority_binding["sha256"],
+            ])
+        try:
+            code, result = _run_local_engine(args)
+            _verify_project_intent_engine_envelope(authority_binding)
+        finally:
+            _clear_project_intent_engine_envelope(authority_binding)
         if code != 0 or result is None:
             raise RuntimeError(
                 "the premium editing plan or rendering engine did not pass; "

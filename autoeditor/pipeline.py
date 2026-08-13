@@ -16,6 +16,38 @@ from .creative_constraints import (
     constraints_sha256,
     validate_creative_constraints, word_tokens as constraint_word_tokens,
 )
+from .color_contract import (
+    DETERMINISTIC_COLOR_FILTER_ARGS,
+    source_color_conversion_filter,
+    source_color_normalization_mode,
+)
+from .music_production import (
+    canonical_music_production_receipt_json,
+    execute_project_intent_music,
+    music_production_receipt_sha256,
+    verify_music_production_evidence,
+)
+from .project_intent_authority import (
+    ProjectIntentAuthorityError,
+    build_project_intent_render_receipt,
+    canonical_project_intent_engine_envelope_bytes,
+    project_intent_engine_envelope_sha256,
+    project_intent_render_receipt_sha256,
+    validate_project_intent_engine_envelope,
+)
+from .sfx_production import (
+    canonical_sfx_production_receipt_json,
+    execute_project_intent_sfx,
+    sfx_production_receipt_sha256,
+    verify_sfx_production_evidence,
+)
+from .visual_quality_production import (
+    PRODUCTION_VISUAL_QA_FILE,
+    ProductionVisualQualityError,
+    build_production_visual_intent,
+    run_production_deterministic_visual_qa,
+    verify_production_visual_qa_file,
+)
 from .story_edit import (
     StoryEditContractError, derive_complementary_cuts, kept_duration,
     story_plan_sha256, validate_story_plan,
@@ -94,7 +126,13 @@ def preflight(src: Path) -> dict:
     if dur < 3:
         sys.exit(f"FATAL preflight: clip too short ({dur:.1f}s)")
     return {"duration": dur, "width": int(vs["width"]), "height": int(vs["height"]),
-            "fps": vs.get("r_frame_rate", "30/1")}
+            "fps": vs.get("r_frame_rate", "30/1"),
+            "codec_name": str(vs.get("codec_name") or "unknown"),
+            "pix_fmt": str(vs.get("pix_fmt") or "unknown"),
+            "color_range": str(vs.get("color_range") or "unknown"),
+            "color_space": str(vs.get("color_space") or "unknown"),
+            "color_transfer": str(vs.get("color_transfer") or "unknown"),
+            "color_primaries": str(vs.get("color_primaries") or "unknown")}
 
 def _deletterbox_spec(src: Path) -> tuple[str, tuple[int, int, int, int] | None]:
     """Derive the raw-to-content spatial transform without changing the file."""
@@ -170,13 +208,52 @@ DELIVERY_VIDEO_ARGS = (
     "matrix_coefficients=1",
     "-movflags", "+faststart",
 )
+def color_normalization_filter(info: dict) -> str:
+    """Return an explicit SDR-to-BT.709 pixel conversion, or fail closed.
+
+    Delivery metadata flags alone do not transform pixel values. The colorspace
+    filter performs matrix, transfer, primary, range, and pixel-format
+    conversion. Unknown and HDR source declarations are rejected because
+    guessing them can materially change skin tones, graphics, and exposure.
+    """
+    return source_color_conversion_filter(info)
+
+
+def color_normalization_mode(info: dict) -> str:
+    """Expose whether source color was declared or legacy-SDR inferred."""
+    return source_color_normalization_mode(info)
 AUDIO_MIX_RECEIPT_SCHEMA = "autoeditor-audio-mix-receipt/v1"
 CAPTION_RENDER_RECEIPT_SCHEMA = "autoeditor-caption-render-receipt/v1"
 EDIT_BOUNDARIES_SCHEMA = "autoeditor-edit-boundaries/v1"
+SEQUENCE_HANDOFF_RECEIPT_SCHEMA = "autoeditor-sequence-handoff-receipt/v1"
+SEQUENCE_HANDOFF_RECEIPT_TRANSITION_SCHEMA = (
+    "autoeditor-sequence-handoff-receipt/v2"
+)
 ENGINE_QA_SCHEMA = "autoeditor-engine-qa/v2"
 ENGINE_ARTIFACT_CONTRACT_SCHEMA = (
-    "autoeditor-engine-artifact-contract/v1"
+    "autoeditor-engine-artifact-contract/v2"
 )
+ENGINE_ARTIFACT_CONTRACT_DETERMINISTIC_SCHEMA = (
+    "autoeditor-engine-artifact-contract/v3"
+)
+ENGINE_ARTIFACT_CONTRACT_INTENT_SCHEMA = (
+    "autoeditor-engine-artifact-contract/v4"
+)
+ENGINE_ARTIFACT_CONTRACT_INTENT_DETERMINISTIC_SCHEMA = (
+    "autoeditor-engine-artifact-contract/v5"
+)
+PROJECT_INTENT_RENDER_RECEIPT_FILE = "PROJECT_INTENT_RENDER_RECEIPT.json"
+MUSIC_PRODUCTION_RECEIPT_FILE = "MUSIC_PRODUCTION_RECEIPT.json"
+SFX_PRODUCTION_RECEIPT_FILE = "SFX_PRODUCTION_RECEIPT.json"
+CAPTION_RENDER_PROBE_WORDS = (
+    {"w": "CUT", "s": 0.350, "e": 0.650},
+    {"w": "IT", "s": 0.650, "e": 0.950},
+    {"w": "NOW", "s": 0.950, "e": 1.250},
+)
+CAPTION_RENDER_PROBE_DURATION_SECONDS = 2.0
+CAPTION_RENDER_PROBE_WIDTH = 180
+CAPTION_RENDER_PROBE_HEIGHT = 320
+CAPTION_RENDER_PROBE_FPS = "30"
 # Automatic measurement is retired from decisions. A nonzero value may only
 # come from a human ladder sidecar bound to the exact RAW file.
 
@@ -266,7 +343,9 @@ def measure_av_offset(src: Path, start: float = 15.0,
             "reliable": reliable}
 
 
-def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int = AV_OFFSET_MS) -> Path:
+def cfr_normalize(src: Path, workdir: Path, fps: str = "30",
+                  av_offset_ms: int = AV_OFFSET_MS,
+                  source_info: dict | None = None) -> Path:
     """Phase 1.6 -- a root cause of lip-sync drift: phone recordings
     drop frames (VFR jitter), and every frame-grid tool downstream
     (auto-editor especially) assumes constant fps, cuts land offset from
@@ -285,7 +364,22 @@ def cfr_normalize(src: Path, workdir: Path, fps: str = "30", av_offset_ms: int =
         af = ["-af", f"atrim=start={s},asetpts=PTS-STARTPTS", "-ar", "48000"]
     else:
         log(f"phase 1.6: CFR normalize -> {fps}fps strict grid (VFR-drop repair)")
-    run([FFMPEG, "-y", "-i", src, "-vf", f"fps={fps}",
+    measured = source_info if source_info is not None else preflight(src)
+    color_filter = color_normalization_filter(measured)
+    color_mode = color_normalization_mode(measured)
+    if color_mode == "inferred_legacy_untagged_sdr_bt709_tv":
+        log(
+            "color normalization: untagged legacy 8-bit SDR; applying the "
+            "documented BT.709 limited-range input policy"
+        )
+    elif color_mode.startswith("inferred_legacy_mjpeg_"):
+        log(
+            "color normalization: full-range legacy MJPEG with an explicit "
+            "BT.601-family matrix; applying the matching documented input "
+            "transfer and primaries policy"
+        )
+    run([FFMPEG, "-y", *DETERMINISTIC_COLOR_FILTER_ARGS,
+         "-i", src, "-vf", f"{color_filter},fps={fps}",
          "-c:v", "libx264", "-preset", "fast", "-crf", "18",
          "-c:a", "aac", "-b:a", "192k", *af, out], timeout=3600)
     return out
@@ -695,6 +789,85 @@ def verify_no_retakes(final_words: list, script_path: Path | None = None,
             log(f"  x [{x['s']:.1f}-{x['e']:.1f}] {x['text'][:80]!r}")
     if workdir:
         (workdir / "retake_residue.json").write_text(json.dumps(out, indent=2))
+    return out
+
+
+def verify_silent_video_timeline(master: Path, ref_cut: Path,
+                                 duration: float) -> dict:
+    """Verify a receipt-proven silent edit on video evidence only.
+
+    Digital silence has no correlation peak and no mouth-to-phoneme evidence,
+    so the speech sync gates are mathematically inapplicable.  This verifier
+    still fails closed: it compares decoded frames at spread timestamps and
+    proves that the composited master kept the approved post-normalization
+    video timeline and duration.
+    """
+    out = {
+        "ok": False,
+        "mode": "intentional_silent_video_timeline",
+        "probes": [],
+        "duration_delta_ms": None,
+        "note": "",
+    }
+    try:
+        master_duration = _dur(master)
+        reference_duration = _dur(ref_cut)
+        out["duration_delta_ms"] = round(
+            (master_duration - reference_duration) * 1000
+        )
+        duration_ok = (
+            duration >= 5.0
+            and abs(master_duration - reference_duration) <= 0.10
+            and abs(master_duration - duration) <= 0.10
+        )
+        points = []
+        for fraction in (0.08, 0.28, 0.50, 0.72, 0.92):
+            timestamp = min(
+                max(0.05, duration * fraction),
+                max(0.05, duration - 0.05),
+            )
+            if all(abs(timestamp - prior) >= 0.20 for prior in points):
+                points.append(timestamp)
+        for timestamp in points:
+            frames = {}
+            for label, media in (("master", master), ("reference", ref_cut)):
+                process = run([
+                    FFMPEG, "-v", "quiet", "-ss", f"{timestamp:.4f}",
+                    "-i", media, "-frames:v", "1", "-vf",
+                    "crop=iw:ih*0.5:0:ih*0.25,scale=160:45,format=gray",
+                    "-f", "rawvideo", "-",
+                ], check=False)
+                frames[label] = bytes(process.stdout[:160 * 45])
+            if not all(len(frame) == 160 * 45 for frame in frames.values()):
+                out["probes"].append({
+                    "t": round(timestamp, 3), "ok": False,
+                    "error": "decoded_frame_missing",
+                })
+                continue
+            mae = sum(
+                abs(master_value - reference_value)
+                for master_value, reference_value
+                in zip(frames["master"], frames["reference"])
+            ) / float(160 * 45)
+            out["probes"].append({
+                "t": round(timestamp, 3),
+                "mae": round(mae, 2),
+                "ok": mae <= SYNC_VISUAL_MAE_MAX,
+            })
+        required = 3 if duration >= 25 else 2
+        passed = sum(probe.get("ok") is True for probe in out["probes"])
+        out["probes_required"] = required
+        out["probes_used"] = passed
+        out["ok"] = duration_ok and passed >= required and all(
+            probe.get("ok") is True for probe in out["probes"]
+        )
+        if not out["ok"]:
+            out["note"] = (
+                "the silent master does not preserve the approved video "
+                "timeline at enough spread frame probes"
+            )
+    except Exception as error:
+        out["note"] = f"silent video verification failed: {type(error).__name__}"
     return out
 
 
@@ -2975,9 +3148,24 @@ def render_master(cut: Path, cards: list[dict], music: Path | None,
     if m:
         stats = json.loads(m.group(0))
     master = workdir / "MASTER_16x9.mp4"
-    ln = ("loudnorm=I=-14:TP=-1:LRA=11:linear=true:"
-          f"measured_I={stats.get('input_i','-24')}:measured_TP={stats.get('input_tp','-2')}:"
-          f"measured_LRA={stats.get('input_lra','7')}:measured_thresh={stats.get('input_thresh','-34')}")
+    measured_values = {
+        key: _finite_loudness_value(stats.get(key))
+        for key in ("input_i", "input_tp", "input_lra", "input_thresh")
+    }
+    if all(value is not None for value in measured_values.values()):
+        ln = (
+            "loudnorm=I=-14:TP=-1:LRA=11:linear=true:"
+            f"measured_I={measured_values['input_i']}:"
+            f"measured_TP={measured_values['input_tp']}:"
+            f"measured_LRA={measured_values['input_lra']}:"
+            f"measured_thresh={measured_values['input_thresh']}"
+        )
+    else:
+        # Digital silence has -inf loudness/peak and cannot be supplied as a
+        # measured two-pass loudnorm value. Preserve it as exact 48 kHz audio;
+        # the receipt-proven intentional-silence QA mode decides whether that
+        # is valid for the approved project.
+        ln = "aresample=48000"
     # loudnorm performs true-peak measurement/limiting.  Pin its oversampled
     # output back to the delivery contract's 48 kHz before derivatives copy it.
     run([FFMPEG, "-y", "-i", graded, "-af", ln, "-c:v", "copy",
@@ -3125,8 +3313,17 @@ def verify_visual_events(master: Path, reference: Path, edl: dict) -> dict:
 
 def _caption_delivery_check(words: list[dict], burn_requested: bool,
                             renderer_inputs: bool,
-                            sidecar: Path | None) -> dict:
+                            sidecar: Path | None,
+                            *, no_speech: bool = False) -> dict:
     """Prove the selected caption delivery path was built."""
+    if no_speech:
+        return {
+            "ok": not words and not renderer_inputs,
+            "mode": "not_applicable_no_speech",
+            "renderer_inputs": renderer_inputs,
+            "sidecar_ok": False,
+            "note": "no captions are expected for a receipt-proven silent edit",
+        }
     sidecar_ok = bool(
         sidecar and sidecar.is_file() and sidecar.stat().st_size > 0
     )
@@ -3160,6 +3357,604 @@ def _file_binding(path: Path) -> dict:
         "bytes": path.stat().st_size,
         "sha256": _sha256_file(path),
     }
+
+
+_TRANSITION_HANDOFF_V2_KEYS = frozenset({
+    "source_total_duration_ms", "boundaries",
+    "transition_compile_receipt", "transition_compile_receipt_sha256",
+    "transition_executor_receipt", "transition_executor_receipt_sha256",
+    "transition_topology", "transition_topology_sha256",
+    "transition_artifact_receipt", "transition_artifact_receipt_sha256",
+})
+_TRANSITION_BOUNDARY_KEYS = frozenset({
+    "boundary_index", "kind", "output_start_ms", "output_end_ms",
+    "overlap_ms",
+})
+_TRANSITION_TOPOLOGY_KEYS = frozenset({
+    "boundary_index", "boundary_id", "left_node", "right_segment_id",
+    "kind", "duration_ms", "output_boundary_ms", "video_primitive",
+    "audio_primitive", "output_duration_ms",
+})
+_TRANSITION_PUBLIC_EXECUTOR_KEYS = frozenset({
+    "schema_version", "output_file", "sequence_plan_sha256",
+    "sequence_compile_receipt_sha256", "source_manifest_sha256",
+    "compiled_segments_sha256", "ordered_segment_ids", "segment_count",
+    "source_duration_ms", "transition_plan_sha256",
+    "transition_sequence_manifest_sha256",
+    "transition_compile_receipt_sha256", "compiled_boundaries_sha256",
+    "ordered_boundary_ids", "boundary_count",
+    "non_hard_transition_count", "expected_output_duration_ms",
+    "frame_rate", "topology_sha256", "filter_complex_sha256",
+    "timing_receipt_sha256", "argv_sha256",
+})
+_TRANSITION_ARTIFACT_KEYS = frozenset({
+    "schema_version", "output_file", "output_sha256", "output_bytes",
+    "source_total_duration_ms", "expected_output_duration_ms",
+    "measured_output_duration_ms", "sequence_compile_receipt_sha256",
+    "transition_compile_receipt_sha256",
+    "transition_executor_receipt_sha256", "transition_topology_sha256",
+    "filter_complex_sha256", "argv_sha256",
+})
+_TRANSITION_KINDS = frozenset({
+    "hard_cut", "cross_dissolve", "dip_to_black",
+})
+
+
+def _closed_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{label} is not lowercase SHA-256")
+    return value
+
+
+def _validate_transition_handoff_v2(
+        raw: dict, source: Path, compile_receipt: dict,
+        expected_edit_policy: dict | None,
+        expected_transition_carrier: dict | None) -> None:
+    """Validate every public transition preimage in a v2 sequence handoff."""
+    if expected_edit_policy is None:
+        raise ValueError(
+            "transition handoff requires its exact ProjectIntent edit policy"
+        )
+    carrier_keys = {
+        "sequence_plan_sha256", "source_manifest_sha256",
+        "transition_plan_sha256",
+        "transition_sequence_manifest_sha256",
+    }
+    if (not isinstance(expected_transition_carrier, dict)
+            or set(expected_transition_carrier) != carrier_keys):
+        raise ValueError(
+            "transition handoff lacks its authenticated proposal carrier"
+        )
+    for name in carrier_keys:
+        _closed_sha256(
+            expected_transition_carrier.get(name),
+            f"approved transition carrier {name}",
+        )
+    from .edit_policy import edit_policy_sha256, validate_edit_policy
+    from .transition_plan import transition_compile_receipt_sha256
+
+    edit_policy = validate_edit_policy(expected_edit_policy)
+    expected_policy_hash = edit_policy_sha256(edit_policy)
+    source_total = raw.get("source_total_duration_ms")
+    total = raw.get("total_duration_ms")
+    if (type(source_total) is not int or source_total < 1
+            or type(total) is not int or total < 1 or total > source_total
+            or source_total != compile_receipt.get("total_duration_ms")):
+        raise ValueError("transition handoff durations are invalid")
+
+    transition_compile = raw.get("transition_compile_receipt")
+    compile_hash = transition_compile_receipt_sha256(transition_compile)
+    if raw.get("transition_compile_receipt_sha256") != compile_hash:
+        raise ValueError("transition compile receipt hash mismatch")
+    if (transition_compile.get("sequence_plan_sha256")
+            != compile_receipt.get("sequence_plan_sha256")
+            or transition_compile.get("sequence_compile_receipt_sha256")
+            != raw.get("sequence_compile_receipt_sha256")
+            or transition_compile.get("edit_policy_sha256")
+            != expected_policy_hash
+            or transition_compile.get("policy")
+            != edit_policy["rules"]["transitions"]
+            or transition_compile.get("source_duration_ms") != source_total
+            or transition_compile.get("output_duration_ms") != total):
+        raise ValueError(
+            "transition compile receipt does not bind sequence, policy, or duration"
+        )
+    if (expected_transition_carrier["sequence_plan_sha256"]
+            != compile_receipt.get("sequence_plan_sha256")
+            or expected_transition_carrier["source_manifest_sha256"]
+            != compile_receipt.get("source_manifest_sha256")
+            or expected_transition_carrier["transition_plan_sha256"]
+            != transition_compile.get("transition_plan_sha256")
+            or expected_transition_carrier[
+                "transition_sequence_manifest_sha256"
+            ] != transition_compile.get("sequence_manifest_sha256")):
+        raise ValueError(
+            "transition handoff does not match the authenticated proposal carrier"
+        )
+
+    executor = raw.get("transition_executor_receipt")
+    if (not isinstance(executor, dict)
+            or set(executor) != _TRANSITION_PUBLIC_EXECUTOR_KEYS
+            or executor.get("schema_version")
+            != "autoeditor-transition-render-public-receipt/v1"):
+        raise ValueError("transition public executor receipt is invalid")
+    executor_hash = _canonical_sha256(executor)
+    if raw.get("transition_executor_receipt_sha256") != executor_hash:
+        raise ValueError("transition public executor receipt hash mismatch")
+    output_file = executor.get("output_file")
+    if (not isinstance(output_file, str) or not output_file
+            or Path(output_file).name != output_file or output_file != source.name):
+        raise ValueError("transition executor output filename is unsafe")
+    executor_digests = (
+        "sequence_plan_sha256", "sequence_compile_receipt_sha256",
+        "source_manifest_sha256", "compiled_segments_sha256",
+        "transition_plan_sha256", "transition_sequence_manifest_sha256",
+        "transition_compile_receipt_sha256", "compiled_boundaries_sha256",
+        "topology_sha256", "filter_complex_sha256", "timing_receipt_sha256",
+        "argv_sha256",
+    )
+    for name in executor_digests:
+        _closed_sha256(executor.get(name), f"transition executor {name}")
+    ordered_segments = executor.get("ordered_segment_ids")
+    ordered_boundaries = executor.get("ordered_boundary_ids")
+    if (ordered_segments != raw.get("ordered_segment_ids")
+            or executor.get("segment_count") != len(ordered_segments)
+            or ordered_boundaries
+            != transition_compile.get("ordered_boundary_ids")
+            or executor.get("boundary_count") != len(ordered_boundaries)
+            or executor.get("non_hard_transition_count")
+            != transition_compile.get("non_hard_transition_count")
+            or executor.get("source_duration_ms") != source_total
+            or executor.get("expected_output_duration_ms") != total
+            or executor.get("sequence_plan_sha256")
+            != compile_receipt.get("sequence_plan_sha256")
+            or executor.get("sequence_compile_receipt_sha256")
+            != raw.get("sequence_compile_receipt_sha256")
+            or executor.get("source_manifest_sha256")
+            != compile_receipt.get("source_manifest_sha256")
+            or executor.get("compiled_segments_sha256")
+            != compile_receipt.get("compiled_segments_sha256")
+            or executor.get("transition_plan_sha256")
+            != transition_compile.get("transition_plan_sha256")
+            or executor.get("transition_sequence_manifest_sha256")
+            != transition_compile.get("sequence_manifest_sha256")
+            or executor.get("transition_compile_receipt_sha256") != compile_hash
+            or executor.get("compiled_boundaries_sha256")
+            != transition_compile.get("compiled_boundaries_sha256")
+            or executor.get("timing_receipt_sha256")
+            != raw.get("sequence_timing_receipt_sha256")):
+        raise ValueError("transition executor receipt bindings do not match")
+    frame_rate = executor.get("frame_rate")
+    if (frame_rate != transition_compile.get("frame_rate")
+            or not isinstance(frame_rate, dict)
+            or set(frame_rate) != {"numerator", "denominator"}
+            or type(frame_rate.get("numerator")) is not int
+            or type(frame_rate.get("denominator")) is not int
+            or frame_rate["numerator"] < 1 or frame_rate["denominator"] < 1):
+        raise ValueError("transition executor frame rate does not match")
+
+    topology = raw.get("transition_topology")
+    if (not isinstance(topology, list)
+            or len(topology) != len(ordered_boundaries)
+            or raw.get("transition_topology_sha256")
+            != _canonical_sha256(topology)
+            or executor.get("topology_sha256")
+            != raw.get("transition_topology_sha256")):
+        raise ValueError("transition topology hash or cardinality is invalid")
+    projected_boundaries = []
+    prior_output_duration = 0
+    cumulative_source_duration = 0
+    cumulative_overlap = 0
+    measured_non_hard_count = 0
+    segment_durations = raw.get("segment_durations_ms")
+    for index, item in enumerate(topology):
+        if (not isinstance(item, dict)
+                or set(item) != _TRANSITION_TOPOLOGY_KEYS
+                or item.get("boundary_index") != index
+                or item.get("boundary_id") != ordered_boundaries[index]
+                or item.get("right_segment_id") != ordered_segments[index + 1]
+                or item.get("kind") not in _TRANSITION_KINDS
+                or type(item.get("duration_ms")) is not int
+                or item["duration_ms"] < 0
+                or (item["kind"] == "hard_cut") != (item["duration_ms"] == 0)
+                or type(item.get("output_boundary_ms")) is not int
+                or item["output_boundary_ms"] < 1
+                or type(item.get("output_duration_ms")) is not int
+                or item["output_duration_ms"] <= prior_output_duration
+                or not isinstance(item.get("left_node"), str)
+                or not isinstance(item.get("video_primitive"), str)
+                or not isinstance(item.get("audio_primitive"), str)
+                or any("\x00" in item[name] or len(item[name]) > 1_024
+                       for name in ("left_node", "video_primitive",
+                                    "audio_primitive"))):
+            raise ValueError("transition topology item is invalid")
+        expected_left = (
+            f"segment:{ordered_segments[0]}" if index == 0
+            else f"boundary:{ordered_boundaries[index - 1]}"
+        )
+        if item["left_node"] != expected_left:
+            raise ValueError("transition topology adjacency is invalid")
+        duration = item["duration_ms"]
+        cumulative_source_duration += segment_durations[index]
+        expected_output_boundary = (
+            cumulative_source_duration - cumulative_overlap
+        )
+        expected_output_duration = (
+            expected_output_boundary
+            + segment_durations[index + 1] - duration
+        )
+        if item["kind"] == "hard_cut":
+            expected_video_primitive = "concat=n=2:v=1:a=0"
+            expected_audio_primitive = "concat=n=2:v=0:a=1"
+        else:
+            measured_non_hard_count += 1
+            transition_name = (
+                "fade" if item["kind"] == "cross_dissolve" else "fadeblack"
+            )
+            duration_token = f"{duration // 1_000}.{duration % 1_000:03d}"
+            offset = expected_output_boundary - duration
+            offset_token = f"{offset // 1_000}.{offset % 1_000:03d}"
+            expected_video_primitive = (
+                f"xfade=transition={transition_name}:"
+                f"duration={duration_token}:offset={offset_token}"
+            )
+            expected_audio_primitive = (
+                f"acrossfade=d={duration_token}:o=1:c1=qsin:c2=qsin"
+            )
+        if (item["output_boundary_ms"] != expected_output_boundary
+                or item["output_duration_ms"] != expected_output_duration
+                or item["video_primitive"] != expected_video_primitive
+                or item["audio_primitive"] != expected_audio_primitive):
+            raise ValueError(
+                "transition topology program does not match exact sequence timing"
+            )
+        end = expected_output_boundary
+        projected_boundaries.append({
+            "boundary_index": index,
+            "kind": item["kind"],
+            "output_start_ms": end - duration,
+            "output_end_ms": end,
+            "overlap_ms": duration,
+        })
+        cumulative_overlap += duration
+        prior_output_duration = expected_output_duration
+    if measured_non_hard_count != transition_compile.get(
+            "non_hard_transition_count"):
+        raise ValueError("transition topology effect count does not match")
+    if topology and topology[-1]["output_duration_ms"] != total:
+        raise ValueError("transition topology output duration does not match")
+    boundaries = raw.get("boundaries")
+    if (boundaries != projected_boundaries
+            or any(not isinstance(item, dict)
+                   or set(item) != _TRANSITION_BOUNDARY_KEYS
+                   for item in boundaries)):
+        raise ValueError("transition boundary projection does not match topology")
+    expected_hard_cuts = [
+        item["output_end_ms"] for item in boundaries
+        if item["kind"] == "hard_cut"
+    ]
+    if raw.get("hard_cut_boundaries_ms") != expected_hard_cuts:
+        raise ValueError("transition hard-cut positions do not match topology")
+    if sum(item["overlap_ms"] for item in boundaries) != source_total - total:
+        raise ValueError("transition overlap does not explain output duration")
+
+    artifact = raw.get("transition_artifact_receipt")
+    if (not isinstance(artifact, dict)
+            or set(artifact) != _TRANSITION_ARTIFACT_KEYS
+            or artifact.get("schema_version")
+            != "autoeditor-transition-artifact-receipt/v1"
+            or raw.get("transition_artifact_receipt_sha256")
+            != _canonical_sha256(artifact)):
+        raise ValueError("transition artifact receipt is invalid")
+    for name in (
+            "output_sha256", "sequence_compile_receipt_sha256",
+            "transition_compile_receipt_sha256",
+            "transition_executor_receipt_sha256",
+            "transition_topology_sha256", "filter_complex_sha256",
+            "argv_sha256"):
+        _closed_sha256(artifact.get(name), f"transition artifact {name}")
+    if (artifact.get("output_file") != source.name
+            or artifact.get("output_sha256") != raw.get("output_sha256")
+            or artifact.get("output_bytes") != raw.get("output_bytes")
+            or artifact.get("source_total_duration_ms") != source_total
+            or artifact.get("expected_output_duration_ms") != total
+            or type(artifact.get("measured_output_duration_ms")) is not int
+            or abs(artifact["measured_output_duration_ms"] - total) > 100
+            or artifact.get("sequence_compile_receipt_sha256")
+            != raw.get("sequence_compile_receipt_sha256")
+            or artifact.get("transition_compile_receipt_sha256") != compile_hash
+            or artifact.get("transition_executor_receipt_sha256")
+            != executor_hash
+            or artifact.get("transition_topology_sha256")
+            != raw.get("transition_topology_sha256")
+            or artifact.get("filter_complex_sha256")
+            != executor.get("filter_complex_sha256")
+            or artifact.get("argv_sha256") != executor.get("argv_sha256")):
+        raise ValueError("transition artifact receipt bindings do not match")
+
+
+def validate_sequence_handoff_receipt(receipt_path: Path | None,
+                                      source: Path,
+                                      expected_edit_policy: dict | None = None,
+                                      expected_transition_carrier: dict | None = None
+                                      ) -> dict | None:
+    if receipt_path is None:
+        if expected_transition_carrier is not None:
+            raise ValueError(
+                "approved transition carrier lacks its exact handoff receipt"
+            )
+        return None
+    try:
+        if receipt_path.stat().st_size > 512 * 1024:
+            raise ValueError("sequence receipt exceeds 512 KiB")
+        raw = json.loads(receipt_path.read_text(
+            encoding="utf-8", errors="strict"))
+        legacy_keys = {
+            "schema_version", "sequence_compile_receipt",
+            "sequence_compile_receipt_sha256", "sequence_compile",
+            "sequence_timing_receipt", "sequence_timing_receipt_sha256",
+            "ordered_segment_ids",
+            "segment_durations_ms", "hard_cut_boundaries_ms",
+            "total_duration_ms", "synthesized_silence_source_ids",
+            "used_audio_source_ids",
+            "output_sha256", "output_bytes",
+            "output_file",
+        }
+        schema = raw.get("schema_version") if isinstance(raw, dict) else None
+        if schema == SEQUENCE_HANDOFF_RECEIPT_SCHEMA:
+            expected_keys = legacy_keys
+            transition_handoff = False
+        elif schema == SEQUENCE_HANDOFF_RECEIPT_TRANSITION_SCHEMA:
+            expected_keys = legacy_keys | _TRANSITION_HANDOFF_V2_KEYS
+            transition_handoff = True
+        else:
+            expected_keys = frozenset()
+            transition_handoff = False
+        if not isinstance(raw, dict) or set(raw) != expected_keys:
+            raise ValueError("sequence receipt does not match the closed contract")
+        from .sequence_plan import compile_receipt_sha256
+        measured_receipt_hash = compile_receipt_sha256(
+            raw["sequence_compile_receipt"])
+        if raw["sequence_compile_receipt_sha256"] != measured_receipt_hash:
+            raise ValueError("sequence compile receipt hash mismatch")
+        compile_receipt = raw["sequence_compile_receipt"]
+        compile_payload = raw["sequence_compile"]
+        from .sequence_render import _segment_timing, validate_compiled_sequence
+        try:
+            validated_compile_receipt, validated_segments = (
+                validate_compiled_sequence(compile_payload)
+            )
+        except ValueError as error:
+            raise ValueError(
+                "sequence compiled-segment evidence is invalid"
+            ) from error
+        if (validated_compile_receipt != compile_receipt
+                or compile_payload.get("receipt_sha256")
+                != measured_receipt_hash):
+            raise ValueError("sequence compiled-segment evidence is invalid")
+        timing_receipt = raw["sequence_timing_receipt"]
+        try:
+            timing_encoded = json.dumps(
+                timing_receipt, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ValueError("sequence timing receipt is invalid") from error
+        timing_hash = hashlib.sha256(timing_encoded).hexdigest()
+        if (raw["sequence_timing_receipt_sha256"] != timing_hash
+                or not isinstance(timing_receipt, dict)
+                or set(timing_receipt) != {
+                    "schema_version", "compiled_receipt_sha256",
+                    "source_timing", "segment_timing",
+                }
+                or timing_receipt.get("schema_version")
+                != "autoeditor-sequence-render-timing-receipt/v2"
+                or timing_receipt.get("compiled_receipt_sha256")
+                != measured_receipt_hash):
+            raise ValueError("sequence timing receipt hash mismatch")
+        source_timing = timing_receipt.get("source_timing")
+        expected_source_timing_keys = {
+            "source_id", "source_sha256", "video_start_offset_ms",
+            "video_duration_ms", "video_end_offset_ms",
+            "audio_start_offset_ms", "audio_duration_ms",
+            "audio_end_offset_ms",
+        }
+        if (not isinstance(source_timing, list)
+                or not source_timing
+                or any(
+                    not isinstance(item, dict)
+                    or set(item) != expected_source_timing_keys
+                    or not isinstance(item.get("source_id"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(
+                        item.get("source_sha256", "")))
+                    or not isinstance(item.get("video_start_offset_ms"), int)
+                    or isinstance(item.get("video_start_offset_ms"), bool)
+                    or not isinstance(item.get("video_duration_ms"), int)
+                    or isinstance(item.get("video_duration_ms"), bool)
+                    or item["video_duration_ms"] < 1
+                    or item.get("video_end_offset_ms")
+                    != item["video_start_offset_ms"] + item["video_duration_ms"]
+                    or (
+                        item.get("audio_start_offset_ms") is None
+                        and not (
+                            item.get("audio_duration_ms") is None
+                            and item.get("audio_end_offset_ms") is None
+                        )
+                    )
+                    or (
+                        item.get("audio_start_offset_ms") is not None
+                        and (
+                            not isinstance(item.get("audio_start_offset_ms"), int)
+                            or isinstance(item.get("audio_start_offset_ms"), bool)
+                            or not isinstance(item.get("audio_duration_ms"), int)
+                            or isinstance(item.get("audio_duration_ms"), bool)
+                            or item["audio_duration_ms"] < 1
+                            or item.get("audio_end_offset_ms")
+                            != item["audio_start_offset_ms"]
+                            + item["audio_duration_ms"]
+                        )
+                    )
+                    for item in source_timing
+                )):
+            raise ValueError("sequence source timing evidence is invalid")
+        timing_by_source = {
+            item["source_id"]: item for item in source_timing
+        }
+        if len(timing_by_source) != len(source_timing):
+            raise ValueError("sequence source timing IDs are not unique")
+        compile_total_duration = compile_receipt["total_duration_ms"]
+        if (raw["ordered_segment_ids"]
+                != compile_receipt["ordered_segment_ids"]
+                or (
+                    not transition_handoff
+                    and raw["total_duration_ms"] != compile_total_duration
+                )
+                or (
+                    transition_handoff
+                    and raw["source_total_duration_ms"]
+                    != compile_total_duration
+                )):
+            raise ValueError("sequence order or duration does not match compilation")
+        durations = raw["segment_durations_ms"]
+        boundaries = raw["hard_cut_boundaries_ms"]
+        if (not isinstance(durations, list)
+                or len(durations) != len(raw["ordered_segment_ids"])
+                or any(not isinstance(item, int) or isinstance(item, bool)
+                       or item < 1 for item in durations)
+                or sum(durations) != compile_total_duration):
+            raise ValueError("sequence segment duration receipt is invalid")
+        if durations != [
+                item.get("duration_ms")
+                for item in validated_segments]:
+            raise ValueError("sequence segment durations do not bind compilation")
+        timing_segments = timing_receipt.get("segment_timing")
+        expected_segment_timing_keys = {
+            "sequence_index", "segment_id", "source_id",
+            "common_start_ms", "common_end_ms",
+            "video_local_start_ms", "video_local_end_ms",
+            "audio_local_start_ms", "audio_local_end_ms",
+            "audio_lead_silence_ms", "audio_tail_silence_ms", "audio_mode",
+        }
+        if (not isinstance(timing_segments, list)
+                or len(timing_segments) != len(validated_segments)):
+            raise ValueError("sequence timing segments are incomplete")
+        for compiled_segment, timing_segment in zip(
+                validated_segments, timing_segments):
+            if (not isinstance(timing_segment, dict)
+                    or set(timing_segment) != expected_segment_timing_keys
+                    or timing_segment.get("sequence_index")
+                    != compiled_segment["sequence_index"]
+                    or timing_segment.get("segment_id")
+                    != compiled_segment["segment_id"]
+                    or timing_segment.get("source_id")
+                    != compiled_segment["source_id"]
+                    or timing_segment.get("common_start_ms")
+                    != compiled_segment["source_start_ms"]
+                    or timing_segment.get("common_end_ms")
+                    != compiled_segment["source_end_ms"]
+                    or not isinstance(
+                        timing_segment.get("audio_lead_silence_ms"), int)
+                    or isinstance(
+                        timing_segment.get("audio_lead_silence_ms"), bool)
+                    or timing_segment["audio_lead_silence_ms"] < 0
+                    or not isinstance(
+                        timing_segment.get("audio_tail_silence_ms"), int)
+                    or isinstance(
+                        timing_segment.get("audio_tail_silence_ms"), bool)
+                    or timing_segment["audio_tail_silence_ms"] < 0
+                    or timing_segment.get("audio_mode") not in {
+                        "source", "delayed_source", "timeline_silence",
+                        "declared_silence",
+                    }):
+                raise ValueError("sequence timing does not bind compiled segments")
+            source_fact = timing_by_source.get(compiled_segment["source_id"])
+            if (source_fact is None
+                    or source_fact["source_sha256"]
+                    != compiled_segment["source_sha256"]):
+                raise ValueError(
+                    "sequence source timing does not bind compiled sources"
+                )
+            reconstructed_source = {
+                "video": {
+                    "start_offset_ms": source_fact["video_start_offset_ms"],
+                    "duration_ms": source_fact["video_duration_ms"],
+                    "end_offset_ms": source_fact["video_end_offset_ms"],
+                },
+                "audio": {
+                    "present": source_fact["audio_start_offset_ms"] is not None,
+                    "start_offset_ms": source_fact["audio_start_offset_ms"],
+                    "duration_ms": source_fact["audio_duration_ms"],
+                    "end_offset_ms": source_fact["audio_end_offset_ms"],
+                },
+            }
+            try:
+                expected_timing = _segment_timing(
+                    compiled_segment, reconstructed_source
+                )
+            except ValueError as error:
+                raise ValueError(
+                    "sequence timing cannot be reproduced from source facts"
+                ) from error
+            if timing_segment != expected_timing:
+                raise ValueError(
+                    "sequence timing does not match the selected source extent"
+                )
+        if transition_handoff:
+            _validate_transition_handoff_v2(
+                raw, source, compile_receipt, expected_edit_policy,
+                expected_transition_carrier,
+            )
+        else:
+            if expected_transition_carrier is not None:
+                raise ValueError(
+                    "approved transition carrier was downgraded to legacy handoff"
+                )
+            measured_boundaries = []
+            cumulative = 0
+            for duration in durations[:-1]:
+                cumulative += duration
+                measured_boundaries.append(cumulative)
+            if boundaries != measured_boundaries:
+                raise ValueError(
+                    "sequence hard-cut boundaries do not match segments"
+                )
+        silence_ids = raw["synthesized_silence_source_ids"]
+        if (not isinstance(silence_ids, list)
+                or any(not isinstance(item, str) or not item
+                       for item in silence_ids)
+                or silence_ids != sorted(set(silence_ids))):
+            raise ValueError("sequence silence synthesis receipt is invalid")
+        audio_ids = raw["used_audio_source_ids"]
+        compiled_ids = {item["source_id"] for item in validated_segments}
+        if (not isinstance(audio_ids, list)
+                or any(not isinstance(item, str) or not item
+                       for item in audio_ids)
+                or audio_ids != sorted(set(audio_ids))
+                or not set(audio_ids).issubset(compiled_ids)
+                or set(audio_ids).intersection(silence_ids)
+                or set(audio_ids).union(silence_ids) != compiled_ids):
+            raise ValueError("sequence audio-source receipt is invalid")
+        derived_audio_ids = sorted({
+            item["source_id"] for item in timing_segments
+            if item["audio_mode"] in {"source", "delayed_source"}
+        })
+        derived_silence_ids = sorted(compiled_ids - set(derived_audio_ids))
+        if (audio_ids != derived_audio_ids
+                or silence_ids != derived_silence_ids):
+            raise ValueError(
+                "sequence audio-source receipt does not bind selected timing"
+            )
+        if (raw["output_file"] != source.name or
+                raw["output_sha256"] != _sha256_file(source) or
+                raw["output_bytes"] != source.stat().st_size):
+            raise ValueError("sequence receipt does not bind the input artifact")
+        actual_duration_ms = round(_dur(source) * 1000)
+        if abs(actual_duration_ms - raw["total_duration_ms"]) > 100:
+            raise ValueError("sequence input duration drifted from approval")
+        return raw
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError,
+            ValueError, KeyError) as error:
+        raise ValueError(f"approved sequence receipt is invalid: {error}") from error
 
 
 def write_caption_render_receipt(caption_band: dict | None,
@@ -3218,11 +4013,905 @@ def write_caption_render_receipt(caption_band: dict | None,
     return receipt
 
 
+def _caption_render_probe_media_info(media: Path) -> dict:
+    """Read the exact video facts used by the fixed caption render probe."""
+    result = run([
+        FFPROBE, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+        "-of", "json", media,
+    ], check=False)
+    if result.returncode:
+        raise RuntimeError("caption render probe media could not be inspected")
+    try:
+        report = json.loads(result.stdout)
+        stream = report["streams"][0]
+        duration = float(report["format"]["duration"])
+        numerator, denominator = str(stream["r_frame_rate"]).split("/", 1)
+        fps = float(numerator) / float(denominator)
+        width = int(stream["width"])
+        height = int(stream["height"])
+    except (IndexError, KeyError, TypeError, ValueError,
+            json.JSONDecodeError, ZeroDivisionError) as error:
+        raise RuntimeError(
+            "caption render probe media facts were invalid"
+        ) from error
+    if not all(math.isfinite(value) for value in (duration, fps)):
+        raise RuntimeError("caption render probe media facts were invalid")
+    return {
+        "duration_ms": round(duration * 1000),
+        "fps_milli": round(fps * 1000),
+        "width": width,
+        "height": height,
+    }
+
+
+def _caption_render_probe_frame(media: Path, timestamp: float,
+                                caption_y: int, band_height: int) -> bytes:
+    result = run([
+        FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{timestamp:.3f}", "-i", media, "-frames:v", "1",
+        "-vf", (
+            f"crop={CAPTION_RENDER_PROBE_WIDTH}:{band_height}:0:{caption_y},"
+            "format=rgb24"
+        ),
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ], check=False)
+    expected = CAPTION_RENDER_PROBE_WIDTH * band_height * 3
+    if result.returncode or len(result.stdout) != expected:
+        raise RuntimeError("caption render probe returned no complete frame")
+    return bytes(result.stdout)
+
+
+def _caption_render_probe_delta(left: bytes, right: bytes) -> dict:
+    if len(left) != len(right) or not left or len(left) % 3:
+        raise RuntimeError("caption render probe frame pair was invalid")
+    changed_pixels = 0
+    absolute_error = 0
+    for offset in range(0, len(left), 3):
+        channel_deltas = [
+            abs(left[offset + channel] - right[offset + channel])
+            for channel in range(3)
+        ]
+        if max(channel_deltas) > 12:
+            changed_pixels += 1
+        absolute_error += sum(channel_deltas)
+    pixels = len(left) // 3
+    return {
+        "changed_pixel_ratio": round(changed_pixels / pixels, 6),
+        "mean_absolute_error": round(absolute_error / len(left), 3),
+    }
+
+
+def verify_caption_render_probe_pixels(media: Path, *, caption_y: int,
+                                       band_height: int) -> dict:
+    """Prove fixed burned-caption pixels without OCR, ASR, or vision models.
+
+    The two blank controls must agree, every timed word state must differ from
+    that control, and adjacent states must differ from one another. This
+    catches an omitted overlay, an all-transparent band, and a frozen karaoke
+    state while making no claim about arbitrary caption text recognition.
+    """
+    timestamps = {
+        "blank_before": 0.100,
+        "word_cut": 0.450,
+        "word_it": 0.750,
+        "word_now": 1.050,
+        "blank_after": 1.600,
+    }
+    frames = {
+        name: _caption_render_probe_frame(
+            media, timestamp, caption_y, band_height
+        )
+        for name, timestamp in timestamps.items()
+    }
+    blank_control = _caption_render_probe_delta(
+        frames["blank_before"], frames["blank_after"]
+    )
+    active_vs_blank = {
+        name: _caption_render_probe_delta(frames["blank_before"], frames[name])
+        for name in ("word_cut", "word_it", "word_now")
+    }
+    word_state_changes = {
+        "cut_to_it": _caption_render_probe_delta(
+            frames["word_cut"], frames["word_it"]
+        ),
+        "it_to_now": _caption_render_probe_delta(
+            frames["word_it"], frames["word_now"]
+        ),
+    }
+    blank_ok = (
+        blank_control["changed_pixel_ratio"] <= 0.003
+        and blank_control["mean_absolute_error"] <= 1.5
+    )
+    active_ok = all(
+        item["changed_pixel_ratio"] >= 0.01
+        and item["mean_absolute_error"] >= 1.0
+        for item in active_vs_blank.values()
+    )
+    state_ok = all(
+        item["changed_pixel_ratio"] >= 0.002
+        and item["mean_absolute_error"] >= 0.15
+        for item in word_state_changes.values()
+    )
+    if not (blank_ok and active_ok and state_ok):
+        raise RuntimeError(
+            "caption render probe did not prove the burned timed overlay"
+        )
+    return {
+        "timestamps_ms": {
+            name: round(timestamp * 1000)
+            for name, timestamp in timestamps.items()
+        },
+        "frame_sha256": {
+            name: hashlib.sha256(frame).hexdigest()
+            for name, frame in frames.items()
+        },
+        "blank_control": blank_control,
+        "active_vs_blank": active_vs_blank,
+        "word_state_changes": word_state_changes,
+    }
+
+
+def write_caption_render_probe(source: Path, output: Path,
+                               output_dir: Path, font_file: Path) -> dict:
+    """Exercise the production caption band and receipt on real FFmpeg bytes.
+
+    This is deliberately a fixed-word renderer probe. It proves the bundled
+    font, timed PNG-band compositor, output duration, output identity, and
+    exact caption-render receipt. It does not claim transcription, OCR,
+    semantic visual understanding, or arbitrary-video caption correctness.
+    """
+    root = Path(output_dir).resolve()
+    source = Path(source).resolve()
+    output = Path(output).resolve()
+    font_file = Path(font_file).resolve()
+    if (not root.is_dir() or source.parent != root or output.parent != root
+            or not source.is_file() or source.stat().st_size < 1
+            or output.exists() or output.suffix.lower() != ".mp4"
+            or source == output):
+        raise RuntimeError("caption render probe paths are invalid")
+    if (font_file.name != "WorkSans-Variable.ttf"
+            or not font_file.is_file() or font_file.stat().st_size < 100_000):
+        raise RuntimeError("bundled WorkSans caption font is unavailable")
+    font_before = {
+        "bytes": font_file.stat().st_size,
+        "sha256": _sha256_file(font_file),
+    }
+    source_info = _caption_render_probe_media_info(source)
+    if source_info != {
+            "duration_ms": 2000, "fps_milli": 30000,
+            "width": CAPTION_RENDER_PROBE_WIDTH,
+            "height": CAPTION_RENDER_PROBE_HEIGHT}:
+        raise RuntimeError("caption render probe source contract is invalid")
+    work = root / "caption-render-probe-work"
+    work.mkdir(mode=0o700)
+    words = [dict(word) for word in CAPTION_RENDER_PROBE_WORDS]
+    caption_band = build_caption_band(
+        words, work, str(font_file),
+        CAPTION_RENDER_PROBE_WIDTH, CAPTION_RENDER_PROBE_HEIGHT,
+        CAPTION_RENDER_PROBE_FPS, CAPTION_RENDER_PROBE_DURATION_SECONDS,
+        scale=0.0875, max_words=3,
+        safe_width=CAPTION_RENDER_PROBE_WIDTH,
+        reference_height=CAPTION_RENDER_PROBE_HEIGHT,
+    )
+    expected_events = [{
+        "index": 0, "s": 0.35, "e": 1.25,
+        "text": "CUT IT NOW", "states": 3,
+    }]
+    if (not caption_band or caption_band.get("events") != expected_events
+            or caption_band.get("layout_safe") is not True
+            or (caption_band.get("pixel_quality") or {}).get("ok") is not True
+            or int(caption_band.get("band_h", 0)) < 1):
+        raise RuntimeError("production caption band failed its fixed program")
+    caption_y = _caption_lane_y(
+        0.0, float(CAPTION_RENDER_PROBE_HEIGHT), caption_band["band_h"], "upper"
+    )
+    filter_graph = (
+        "[1:v]format=rgba,setpts=PTS-STARTPTS[capband];"
+        f"[0:v][capband]overlay=x=0:y={caption_y}:shortest=1[v]"
+    )
+    rendered = run([
+        FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", source,
+        "-framerate", caption_band["fps"], "-i",
+        f"{caption_band['seq']}/f_%05d.png",
+        "-filter_complex", filter_graph,
+        "-map", "[v]", "-an", "-t",
+        f"{CAPTION_RENDER_PROBE_DURATION_SECONDS:.3f}",
+        "-r", CAPTION_RENDER_PROBE_FPS,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p", output,
+    ], check=False)
+    if (rendered.returncode or not output.is_file() or output.stat().st_size < 1):
+        raise RuntimeError("caption render probe compositor failed")
+    output_info = _caption_render_probe_media_info(output)
+    if output_info != source_info:
+        raise RuntimeError("caption render probe output timeline drifted")
+    pixel_evidence = verify_caption_render_probe_pixels(
+        output, caption_y=caption_y, band_height=caption_band["band_h"]
+    )
+    subject_clear = (
+        caption_y + caption_band["band_h"]
+        <= round(CAPTION_RENDER_PROBE_HEIGHT * 0.42)
+    )
+    receipt_path = root / "CAPTION_RENDER_RECEIPT.json"
+    receipt = write_caption_render_receipt(
+        caption_band, [], receipt_path, delivery_mode="burned",
+        layout_safe=caption_band["layout_safe"],
+        subject_clear=subject_clear,
+        pixel_quality=caption_band["pixel_quality"],
+    )
+    expected_receipt_event = {
+        "index": 1, "start_seconds": 0.35, "end_seconds": 1.25,
+        "text": "CUT IT NOW", "state_count": 3,
+    }
+    if (not receipt or receipt.get("events") != [expected_receipt_event]
+            or receipt.get("renderer") != "karaoke-band"
+            or receipt.get("delivery_mode") != "burned"
+            or receipt.get("mechanical_qa", {}).get("layout_safe") is not True
+            or receipt.get("mechanical_qa", {}).get("subject_clear") is not True
+            or receipt.get("mechanical_qa", {}).get(
+                "pixel_quality", {}).get("ok") is not True):
+        raise RuntimeError("caption render probe receipt was invalid")
+    font_after = {
+        "bytes": font_file.stat().st_size,
+        "sha256": _sha256_file(font_file),
+    }
+    if font_after != font_before:
+        raise RuntimeError("bundled WorkSans changed during caption rendering")
+    return {
+        "output": output,
+        "output_sha256": _sha256_file(output),
+        "output_bytes": output.stat().st_size,
+        "duration_ms": output_info["duration_ms"],
+        "width": output_info["width"],
+        "height": output_info["height"],
+        "fps_milli": output_info["fps_milli"],
+        "caption_receipt": receipt_path,
+        "caption_receipt_sha256": _sha256_file(receipt_path),
+        "caption_receipt_bytes": receipt_path.stat().st_size,
+        "font_sha256": font_before["sha256"],
+        "font_bytes": font_before["bytes"],
+        "caption_y": caption_y,
+        "band_height": caption_band["band_h"],
+        "pixel_evidence": pixel_evidence,
+    }
+
+
+def write_edit_boundaries_receipt(
+        output: Path, cuts: list[tuple[float, float]],
+        *, sequence_handoff_receipt: dict | None = None,
+        transitions: list[dict] | None = None,
+        transition_support: str = "not_implemented") -> dict:
+    """Persist the exact post-cut boundary program consumed by final QA."""
+    if transition_support not in {"not_implemented", "implemented"}:
+        raise RuntimeError("edit-boundary transition support is invalid")
+    transition_items = list(transitions or [])
+    transition_handoff = (
+        isinstance(sequence_handoff_receipt, dict)
+        and sequence_handoff_receipt.get("schema_version")
+        == SEQUENCE_HANDOFF_RECEIPT_TRANSITION_SCHEMA
+    )
+    if transition_handoff:
+        if transition_items or transition_support != "not_implemented":
+            raise RuntimeError(
+                "transition-aware sequence boundaries must come only from "
+                "their validated handoff receipt"
+            )
+        raw_boundaries = sequence_handoff_receipt.get("boundaries")
+        if not isinstance(raw_boundaries, list):
+            raise RuntimeError("transition handoff boundaries are invalid")
+        transition_items = [
+            {
+                "index": item["boundary_index"],
+                "s": round(item["output_start_ms"] / 1000.0, 3),
+                "e": round(item["output_end_ms"] / 1000.0, 3),
+                "kind": item["kind"],
+                "duration_ms": item["overlap_ms"],
+            }
+            for item in raw_boundaries
+            if item["kind"] != "hard_cut"
+        ]
+        transition_support = "implemented"
+    if transition_support == "not_implemented" and transition_items:
+        raise RuntimeError("unimplemented transitions cannot carry events")
+    cut_items = [
+        {
+            "index": index,
+            "time_seconds": round(float(boundary), 3),
+            "removed_seconds": round(float(removed), 3),
+        }
+        for index, (boundary, removed) in enumerate(cuts)
+    ]
+    if sequence_handoff_receipt is not None:
+        boundaries = sequence_handoff_receipt.get("hard_cut_boundaries_ms")
+        if (not isinstance(boundaries, list)
+                or any(type(item) is not int or item <= 0
+                       for item in boundaries)):
+            raise RuntimeError("sequence boundary receipt is invalid")
+        cut_items.extend({
+            "index": index + len(cut_items),
+            "time_seconds": round(boundary / 1000.0, 3),
+            "removed_seconds": 0.001,
+        } for index, boundary in enumerate(boundaries))
+    receipt = {
+        "schema": EDIT_BOUNDARIES_SCHEMA,
+        "timeline": "post_cut_seconds",
+        "cuts": cut_items,
+        "transitions": transition_items,
+        "transition_support": transition_support,
+    }
+    Path(output).write_text(
+        json.dumps(receipt, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def load_project_intent_engine_envelope(
+        envelope_path: Path | None, expected_sha256: str | None
+        ) -> tuple[dict, str] | tuple[None, None]:
+    """Read the daemon-authenticated engine envelope once and fail closed.
+
+    The path and digest are a paired CLI contract.  Canonical bytes are
+    required so the digest identifies exactly one normalized authority object,
+    not merely a JSON parse result with alternate whitespace or duplicate keys.
+    """
+    if envelope_path is None and expected_sha256 is None:
+        return None, None
+    if envelope_path is None or expected_sha256 is None:
+        raise ProjectIntentAuthorityError(
+            "project intent envelope path and SHA-256 must be supplied together"
+        )
+    path = Path(envelope_path)
+    if not path.is_absolute():
+        raise ProjectIntentAuthorityError(
+            "project intent engine envelope path must be absolute"
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise ProjectIntentAuthorityError(
+            "project intent engine envelope SHA-256 is invalid"
+        )
+    try:
+        with path.open("rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (not os.path.isfile(path) or before.st_size < 2
+                    or before.st_size > 512 * 1024):
+                raise ProjectIntentAuthorityError(
+                    "project intent engine envelope has an invalid size"
+                )
+            payload = handle.read(before.st_size + 1)
+            after = os.fstat(handle.fileno())
+        if (len(payload) != before.st_size
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or (hasattr(before, "st_ino") and before.st_ino != after.st_ino)
+                or (hasattr(before, "st_dev") and before.st_dev != after.st_dev)):
+            raise ProjectIntentAuthorityError(
+                "project intent engine envelope changed while it was read"
+            )
+        measured_sha256 = hashlib.sha256(payload).hexdigest()
+        if measured_sha256 != expected_sha256:
+            raise ProjectIntentAuthorityError(
+                "project intent engine envelope SHA-256 does not match"
+            )
+        value = json.loads(payload.decode("utf-8", errors="strict"))
+        normalized = validate_project_intent_engine_envelope(value)
+        canonical = canonical_project_intent_engine_envelope_bytes(normalized)
+        if payload != canonical:
+            raise ProjectIntentAuthorityError(
+                "project intent engine envelope bytes are not canonical"
+            )
+        if project_intent_engine_envelope_sha256(normalized) != measured_sha256:
+            raise ProjectIntentAuthorityError(
+                "project intent engine envelope canonical digest does not match"
+            )
+        return normalized, measured_sha256
+    except ProjectIntentAuthorityError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise ProjectIntentAuthorityError(
+            f"project intent engine envelope is invalid: {error}"
+        ) from error
+
+
+def _project_intent_cli_aspect(aspect: str) -> str:
+    mapped = {"16:9": "16x9", "9:16": "9x16"}.get(aspect)
+    if mapped is None:
+        raise ProjectIntentAuthorityError(
+            f"the current engine cannot render approved aspect {aspect}"
+        )
+    return mapped
+
+
+def validate_project_intent_render_settings(
+        envelope: dict | None, *, configured_aspects: str,
+        music_present: bool) -> None:
+    """Reject known CLI conflicts before the expensive render starts."""
+    if envelope is None:
+        return
+    project = envelope["project_intent"]
+    expected_aspect = _project_intent_cli_aspect(
+        project["delivery"]["aspect"]
+    )
+    if configured_aspects not in {"auto", expected_aspect}:
+        raise ProjectIntentAuthorityError(
+            "engine aspect setting conflicts with the approved ProjectIntent"
+        )
+    if music_present:
+        raise ProjectIntentAuthorityError(
+            "raw --music is forbidden for every governed ProjectIntent; "
+            "only the policy-bound project-generated producer may add music"
+        )
+
+
+def _reopen_canonical_production_receipt(
+        path: Path, result: dict, *, canonicalizer, digest_function,
+        label: str) -> dict:
+    """Reopen one producer receipt and require its one canonical byte form."""
+    path = Path(path).resolve()
+    returned = result.get("receipt") if isinstance(result, dict) else None
+    if not path.is_file() or not isinstance(returned, dict):
+        raise RuntimeError(f"{label} production receipt is missing")
+    payload = path.read_bytes()
+    try:
+        expected = (canonicalizer(returned) + "\n").encode("ascii")
+        persisted = json.loads(payload.decode("ascii", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise RuntimeError(
+            f"{label} production receipt is not canonical"
+        ) from error
+    if (payload != expected or persisted != returned
+            or (canonicalizer(persisted) + "\n").encode("ascii") != payload
+            or result.get("receipt_sha256") != digest_function(persisted)):
+        raise RuntimeError(f"{label} production receipt changed after persistence")
+    return persisted
+
+
+def _require_production_output(
+        path: Path, binding: dict, *, label: str) -> Path:
+    path = Path(path).resolve()
+    if (not path.is_file() or not isinstance(binding, dict)
+            or type(binding.get("bytes")) is not int
+            or not isinstance(binding.get("sha256"), str)
+            or path.stat().st_size != binding["bytes"]
+            or _sha256_file(path) != binding["sha256"]):
+        raise RuntimeError(f"{label} output does not match its receipt")
+    return path
+
+
+def execute_project_intent_audio_production_chain(
+        *, base_master: Path, project_intent_envelope: dict,
+        project_intent_envelope_sha256: str, edl: dict,
+        rendered_graphics: list, rendered_broll: list,
+        edit_boundaries_receipt: dict, speech_words: list,
+        work: Path, outdir: Path) -> dict:
+    """Run governed project music, then SFX, without overwriting either input.
+
+    Each output remains at its private producer path.  The next stage is
+    selected only after the corresponding persisted receipt has been reopened
+    byte-for-byte and its independent verifier has passed.
+    """
+    base_master = Path(base_master).resolve()
+    work = Path(work).resolve()
+    outdir = Path(outdir).resolve()
+    if not base_master.is_file() or not work.is_dir() or not outdir.is_dir():
+        raise RuntimeError("governed audio production paths are unavailable")
+    base_input_binding = {
+        "sha256": _sha256_file(base_master),
+        "bytes": base_master.stat().st_size,
+    }
+    ffmpeg = str(Path(FFMPEG).resolve())
+    ffprobe = str(Path(FFPROBE).resolve())
+
+    music_result = execute_project_intent_music(
+        program_path=str(base_master),
+        project_intent_envelope=project_intent_envelope,
+        project_intent_envelope_sha256=project_intent_envelope_sha256,
+        speech_words=speech_words,
+        work_dir=str(work), evidence_dir=str(outdir),
+        ffmpeg_path=ffmpeg, ffprobe_path=ffprobe,
+    )
+    music_receipt_path = (outdir / MUSIC_PRODUCTION_RECEIPT_FILE).resolve()
+    if Path(music_result.get("receipt_path", "")).resolve() != music_receipt_path:
+        raise RuntimeError("typed music producer returned an unexpected receipt path")
+    music_receipt = _reopen_canonical_production_receipt(
+        music_receipt_path, music_result,
+        canonicalizer=canonical_music_production_receipt_json,
+        digest_function=music_production_receipt_sha256,
+        label="typed music",
+    )
+    _require_production_output(
+        base_master, base_input_binding, label="typed music immutable input"
+    )
+    if any(
+            music_receipt["program_input"].get(key) != value
+            for key, value in base_input_binding.items()):
+        raise RuntimeError(
+            "typed music receipt does not bind the immutable base master"
+        )
+    music_output = _require_production_output(
+        Path(music_result.get("output_path", "")), music_receipt["output"],
+        label="typed music",
+    )
+    executed_music = music_result.get("executed")
+    if type(executed_music) is not bool:
+        raise RuntimeError("typed music execution state is invalid")
+    if executed_music:
+        private_music_root = (work / "typed-music-production").resolve()
+        try:
+            music_output.relative_to(private_music_root)
+        except ValueError as error:
+            raise RuntimeError(
+                "typed music output escaped its private work directory"
+            ) from error
+        if (music_output == base_master
+                or os.path.samefile(music_output, base_master)):
+            raise RuntimeError("typed music renderer attempted to overwrite its input")
+    elif music_output != base_master:
+        raise RuntimeError("typed music no-op changed the program path")
+    music_evidence = verify_music_production_evidence(
+        music_receipt,
+        program_input_path=str(base_master), output_path=str(music_output),
+        evidence_dir=str(outdir),
+        expected_engine_envelope_sha256=project_intent_envelope_sha256,
+        expected_project_intent_sha256=project_intent_envelope[
+            "project_intent_sha256"
+        ],
+        expected_parent_edit_policy_sha256=project_intent_envelope[
+            "edit_policy_sha256"
+        ],
+        ffmpeg_path=ffmpeg, ffprobe_path=ffprobe,
+    )
+    if (music_evidence.get("ok") is not True
+            or music_evidence.get("policy_bound") is not True
+            or music_evidence.get("rights_verified") is not True
+            or music_evidence.get("dialogue_masking_verified") is not True
+            or music_evidence.get("loudness_verified") is not True
+            or music_evidence.get("receipt_sha256")
+            != music_result["receipt_sha256"]
+            or music_evidence.get("output_sha256")
+            != music_receipt["output"]["sha256"]):
+        raise RuntimeError(music_evidence.get(
+            "note", "typed music evidence did not pass"
+        ))
+
+    # Music is now the exact authenticated SFX program input.  Do not move or
+    # replace it: retaining both paths makes the chain independently auditable.
+    sfx_result = execute_project_intent_sfx(
+        program_path=str(music_output),
+        project_intent_envelope=project_intent_envelope,
+        project_intent_envelope_sha256=project_intent_envelope_sha256,
+        edl=edl, rendered_graphics=rendered_graphics,
+        rendered_broll=rendered_broll,
+        edit_boundaries_receipt=edit_boundaries_receipt,
+        speech_words=speech_words,
+        work_dir=str(work), evidence_dir=str(outdir),
+        ffmpeg_path=ffmpeg, ffprobe_path=ffprobe,
+    )
+    # The SFX producer is not allowed to mutate its authenticated music input.
+    _require_production_output(
+        music_output, music_receipt["output"], label="typed music chain input"
+    )
+    sfx_receipt_path = (outdir / SFX_PRODUCTION_RECEIPT_FILE).resolve()
+    if Path(sfx_result.get("receipt_path", "")).resolve() != sfx_receipt_path:
+        raise RuntimeError("typed SFX producer returned an unexpected receipt path")
+    sfx_receipt = _reopen_canonical_production_receipt(
+        sfx_receipt_path, sfx_result,
+        canonicalizer=canonical_sfx_production_receipt_json,
+        digest_function=sfx_production_receipt_sha256,
+        label="typed SFX",
+    )
+    music_program_binding = {
+        key: music_receipt["output"][key]
+        for key in ("sha256", "bytes", "duration_ms")
+    }
+    if sfx_receipt.get("program_input") != music_program_binding:
+        raise RuntimeError("typed SFX program input is not the verified music output")
+    sfx_output = _require_production_output(
+        Path(sfx_result.get("output_path", "")), sfx_receipt["output"],
+        label="typed SFX",
+    )
+    executed_sfx = sfx_result.get("executed")
+    if type(executed_sfx) is not bool:
+        raise RuntimeError("typed SFX execution state is invalid")
+    if executed_sfx:
+        private_sfx_root = (work / "typed-sfx-production").resolve()
+        try:
+            sfx_output.relative_to(private_sfx_root)
+        except ValueError as error:
+            raise RuntimeError(
+                "typed SFX output escaped its private work directory"
+            ) from error
+        if (sfx_output == music_output
+                or os.path.samefile(sfx_output, music_output)):
+            raise RuntimeError("typed SFX renderer attempted to overwrite its input")
+    elif sfx_output != music_output:
+        raise RuntimeError("typed SFX no-op changed the program path")
+    sfx_evidence = verify_sfx_production_evidence(
+        sfx_receipt, output_path=str(sfx_output),
+        evidence_dir=str(outdir),
+        expected_engine_envelope_sha256=project_intent_envelope_sha256,
+        expected_project_intent_sha256=project_intent_envelope[
+            "project_intent_sha256"
+        ],
+        expected_parent_edit_policy_sha256=project_intent_envelope[
+            "edit_policy_sha256"
+        ],
+    )
+    if (sfx_evidence.get("ok") is not True
+            or sfx_evidence.get("policy_bound") is not True
+            or sfx_evidence.get("receipt_sha256")
+            != sfx_result["receipt_sha256"]
+            or sfx_evidence.get("output_sha256")
+            != sfx_receipt["output"]["sha256"]):
+        raise RuntimeError(sfx_evidence.get(
+            "note", "typed SFX evidence did not pass"
+        ))
+    return {
+        "master": sfx_output,
+        "music_output": music_output,
+        "music_result": music_result,
+        "music_receipt": music_receipt,
+        "music_receipt_path": music_receipt_path,
+        "music_evidence": music_evidence,
+        "sfx_result": sfx_result,
+        "sfx_receipt": sfx_receipt,
+        "sfx_receipt_path": sfx_receipt_path,
+        "sfx_evidence": sfx_evidence,
+    }
+
+
+def _measured_delivery_aspect(width: int, height: int) -> str:
+    if width < 1 or height < 1:
+        return "unmeasured"
+    ratio = width / height
+    for aspect, wanted in (
+            ("16:9", 16 / 9), ("9:16", 9 / 16), ("1:1", 1.0),
+            ("4:5", 4 / 5), ("21:9", 21 / 9)):
+        if abs(ratio - wanted) <= 0.01:
+            return aspect
+    return "source"
+
+
+def _srt_event_count(path: Path | None) -> int:
+    if path is None or not Path(path).is_file():
+        return 0
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeError):
+        return 0
+    return sum(1 for line in text.splitlines() if " --> " in line)
+
+
+def build_project_intent_actual_render_facts(
+        envelope: dict, artifact: Path, *, resolved_aspects: str,
+        caption_render_receipt: dict | None, caption_sidecar: Path | None,
+        graphic_event_count: int, sfx_cue_count: int,
+        transition_handoff_receipt: dict | None,
+        music_production_evidence: dict | None = None,
+        sfx_production_evidence: dict | None = None) -> dict:
+    """Measure the actual render facts consumed by the authority receipt."""
+    project = envelope["project_intent"]
+    expected_cli_aspect = _project_intent_cli_aspect(
+        project["delivery"]["aspect"]
+    )
+    if resolved_aspects != expected_cli_aspect:
+        # Keep building a closed failed receipt rather than silently relabeling
+        # an automatic engine decision as the approved delivery.
+        configured_aspect = {
+            "16x9": "16:9", "9x16": "9:16",
+        }.get(resolved_aspects, "unsupported")
+    else:
+        configured_aspect = project["delivery"]["aspect"]
+    artifact_info = preflight(Path(artifact))
+    caption_events = (
+        list(caption_render_receipt.get("events") or [])
+        if isinstance(caption_render_receipt, dict) else []
+    )
+    if caption_events:
+        caption_delivery = "burned"
+        caption_event_count = len(caption_events)
+    else:
+        caption_event_count = _srt_event_count(caption_sidecar)
+        caption_delivery = "sidecar" if caption_event_count else "none"
+
+    transition_count = 0
+    non_hard_count = 0
+    transition_usage = "unverified"
+    transition_bound = False
+    if isinstance(transition_handoff_receipt, dict):
+        boundaries = transition_handoff_receipt.get("boundaries")
+        transition_compile = transition_handoff_receipt.get(
+            "transition_compile_receipt"
+        )
+        if isinstance(boundaries, list):
+            transition_count = len(boundaries)
+            non_hard_count = sum(
+                1 for item in boundaries
+                if isinstance(item, dict) and item.get("kind") != "hard_cut"
+            )
+        if isinstance(transition_compile, dict):
+            policy = transition_compile.get("policy")
+            transition_usage = (
+                policy.get("usage") if isinstance(policy, dict) else "unverified"
+            )
+            transition_bound = (
+                transition_compile.get("edit_policy_sha256")
+                == envelope["edit_policy_sha256"]
+                and isinstance(policy, dict)
+            )
+    if isinstance(music_production_evidence, dict):
+        typed_music_count = music_production_evidence.get("region_count")
+        typed_music_usage = music_production_evidence.get("policy_usage")
+        typed_music_bound = music_production_evidence.get("policy_bound")
+        if (music_production_evidence.get("ok") is not True
+                or type(typed_music_count) is not int
+                or typed_music_count < 0
+                or not isinstance(typed_music_usage, str)
+                or typed_music_bound is not True
+                or music_production_evidence.get("rights_verified") is not True
+                or music_production_evidence.get(
+                    "dialogue_masking_verified") is not True
+                or music_production_evidence.get("loudness_verified") is not True):
+            raise ProjectIntentAuthorityError(
+                "typed music production evidence is invalid"
+            )
+    else:
+        raise ProjectIntentAuthorityError(
+            "typed music production evidence is required"
+        )
+    music_present = typed_music_count > 0
+    if isinstance(sfx_production_evidence, dict):
+        typed_sfx_count = sfx_production_evidence.get("cue_count")
+        typed_sfx_usage = sfx_production_evidence.get("policy_usage")
+        typed_sfx_bound = sfx_production_evidence.get("policy_bound")
+        if (sfx_production_evidence.get("ok") is not True
+                or type(typed_sfx_count) is not int or typed_sfx_count < 0
+                or not isinstance(typed_sfx_usage, str)
+                or type(typed_sfx_bound) is not bool):
+            raise ProjectIntentAuthorityError(
+                "typed SFX production evidence is invalid"
+            )
+    else:
+        typed_sfx_count = int(sfx_cue_count)
+        typed_sfx_usage = "unverified"
+        typed_sfx_bound = False
+    return {
+        "duration_ms": round(_dur(Path(artifact)) * 1000),
+        "delivery": {
+            "platform": project["delivery"]["platform"],
+            "configured_aspect": configured_aspect,
+            "artifact_aspect": _measured_delivery_aspect(
+                artifact_info["width"], artifact_info["height"]
+            ),
+            "width": artifact_info["width"],
+            "height": artifact_info["height"],
+        },
+        "preferences": {
+            "captions": {
+                "delivery": caption_delivery,
+                "event_count": caption_event_count,
+            },
+            "graphics": {"event_count": int(graphic_event_count)},
+            "music": {
+                "added_music_present": bool(music_present),
+                # The current render does not carry an authenticated music
+                # classifier/preservation receipt.  Never infer this from the
+                # mere presence of source audio.
+                "source_music_preserved": False,
+            },
+            "sfx": {
+                "cue_count": typed_sfx_count,
+                # The legacy EDL sound list has no edit-policy digest.  A typed
+                # SFX preference must wait for the production SFX executor
+                # receipt instead of treating cue count as motivation proof.
+                "policy_usage": typed_sfx_usage,
+                "policy_bound": typed_sfx_bound,
+            },
+            "transitions": {
+                "event_count": transition_count,
+                "non_hard_event_count": non_hard_count,
+                "policy_usage": str(transition_usage),
+                "policy_bound": transition_bound,
+            },
+        },
+    }
+
+
+def write_project_intent_render_receipt(
+        output: Path, envelope: dict, envelope_sha256: str,
+        actual_render: dict) -> dict:
+    receipt = build_project_intent_render_receipt(
+        envelope, envelope_sha256, actual_render
+    )
+    Path(output).write_text(
+        json.dumps(receipt, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return receipt
+
+
+def build_production_visual_timeline_intent(
+        edl: dict | None, sequence_handoff_receipt: dict | None) -> dict:
+    """Project only trusted renderer/timeline facts into the closed QA plan.
+
+    Dark graphic/visualization ranges are excluded from generic non-blank
+    samples.  Every supported non-hard transition from the already-validated
+    sequence handoff is checked exhaustively by the RGB24 analyzer.
+    """
+    dark_intervals = []
+    for category in ("graphics", "broll"):
+        events = (edl or {}).get(category, [])
+        if not isinstance(events, list):
+            raise RuntimeError("visual QA EDL events are invalid")
+        for event in events:
+            if not isinstance(event, dict):
+                raise RuntimeError("visual QA EDL event is invalid")
+            if category != "graphics" and not event.get("viz"):
+                continue
+            try:
+                raw_start = event["s"]
+                raw_end = event["e"]
+                if (type(raw_start) not in {int, float}
+                        or type(raw_end) not in {int, float}):
+                    raise TypeError("visual interval must use numeric seconds")
+                start_seconds = float(raw_start)
+                end_seconds = float(raw_end)
+                start = round(start_seconds * 1000)
+                end = round(end_seconds * 1000)
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
+                raise RuntimeError("visual QA EDL interval is invalid") from error
+            if (not math.isfinite(start_seconds)
+                    or not math.isfinite(end_seconds)
+                    or start < 0 or end <= start):
+                raise RuntimeError("visual QA EDL interval is invalid")
+            dark_intervals.append({"start_ms": start, "end_ms": end})
+    dark_intervals.sort(key=lambda item: (item["start_ms"], item["end_ms"]))
+
+    boundaries = []
+    if sequence_handoff_receipt is not None:
+        raw_boundaries = sequence_handoff_receipt.get("boundaries", [])
+        if not isinstance(raw_boundaries, list):
+            raise RuntimeError("visual QA transition boundaries are invalid")
+        for item in raw_boundaries:
+            if not isinstance(item, dict) or set(item) != {
+                    "boundary_index", "kind", "output_start_ms",
+                    "output_end_ms", "overlap_ms"}:
+                raise RuntimeError("visual QA transition boundary is invalid")
+            boundaries.append(dict(item))
+    has_supported_transition = any(
+        item.get("kind") in {"cross_dissolve", "dip_to_black"}
+        for item in boundaries
+    )
+    transition_receipt_sha256 = None
+    if has_supported_transition:
+        transition_receipt_sha256 = sequence_handoff_receipt.get(
+            "transition_artifact_receipt_sha256"
+        )
+        if (not isinstance(transition_receipt_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", transition_receipt_sha256)
+                is None):
+            raise RuntimeError(
+                "visual QA transition evidence lacks its artifact receipt"
+            )
+    return build_production_visual_intent(
+        intentional_dark_intervals_ms=dark_intervals,
+        transitions=boundaries,
+        transition_receipt_sha256=transition_receipt_sha256,
+    )
+
+
 def build_engine_artifact_contract(
         *, mode: str, delivery: Path, final_file: Path | None = None,
         edl: Path | None,
         captions: Path | None, caption_render: Path | None,
-        edit_boundaries: Path, audio_mix: Path) -> dict:
+        edit_boundaries: Path, audio_mix: Path,
+        sequence: Path | None = None,
+        project_intent: Path | None = None,
+        music_production: Path | None = None,
+        sfx_production: Path | None = None,
+        deterministic_visual_qa: Path | None = None) -> dict:
     """Create the single source of truth consumed by desktop final QA."""
     if mode not in {"generic-baseline", "premium-edl"}:
         raise RuntimeError("invalid engine artifact mode")
@@ -3230,14 +4919,31 @@ def build_engine_artifact_contract(
         raise RuntimeError("premium release lacks its final EDL")
     if mode == "generic-baseline" and edl is not None:
         raise RuntimeError("baseline release cannot bind a premium EDL")
+    governed_paths = (
+        project_intent, music_production, sfx_production,
+    )
+    if any(path is not None for path in governed_paths) and not all(
+            path is not None for path in governed_paths):
+        raise RuntimeError(
+            "ProjectIntent artifact contract requires typed music and SFX receipts"
+        )
     delivery_binding = _file_binding(delivery)
     if final_file is not None:
         final_file = Path(final_file)
         if final_file.suffix.lower() != ".mp4":
             raise RuntimeError("invalid final delivery filename")
         delivery_binding["file"] = final_file.name
-    return {
-        "schema": ENGINE_ARTIFACT_CONTRACT_SCHEMA,
+    contract = {
+        "schema": (
+            ENGINE_ARTIFACT_CONTRACT_INTENT_DETERMINISTIC_SCHEMA
+            if (project_intent is not None
+                and deterministic_visual_qa is not None) else
+            ENGINE_ARTIFACT_CONTRACT_INTENT_SCHEMA
+            if project_intent is not None else
+            ENGINE_ARTIFACT_CONTRACT_DETERMINISTIC_SCHEMA
+            if deterministic_visual_qa is not None else
+            ENGINE_ARTIFACT_CONTRACT_SCHEMA
+        ),
         "mode": mode,
         "delivery": delivery_binding,
         "edl": _file_binding(edl) if edl is not None else None,
@@ -3248,6 +4954,87 @@ def build_engine_artifact_contract(
         ),
         "edit_boundaries": _file_binding(edit_boundaries),
         "audio_mix": _file_binding(audio_mix),
+        "sequence": _file_binding(sequence) if sequence is not None else None,
+    }
+    if deterministic_visual_qa is not None:
+        contract["deterministic_visual_qa"] = _file_binding(
+            deterministic_visual_qa
+        )
+    if project_intent is not None:
+        contract["project_intent"] = _file_binding(project_intent)
+        contract["music_production"] = _file_binding(music_production)
+        contract["sfx_production"] = _file_binding(sfx_production)
+    return contract
+
+
+def write_artifact_receipt_probe(
+        delivery: Path, final_file: Path, output_dir: Path) -> dict:
+    """Build a tiny production receipt chain for the trusted runtime probe.
+
+    The caller creates the deterministic A/V bytes. This function uses the
+    same boundary, audio-mix, artifact-contract, and QA schemas as a real
+    render while deliberately omitting ASR, captions, and visual inference.
+    It never promotes the pending artifact.
+    """
+    root = Path(output_dir).resolve()
+    delivery = Path(delivery).resolve()
+    final_file = Path(final_file).resolve()
+    if (not root.is_dir() or delivery.parent != root or final_file.parent != root
+            or not delivery.is_file() or delivery.stat().st_size < 1
+            or ".UNVERIFIED" not in delivery.name
+            or final_file.suffix.lower() != ".mp4" or final_file.exists()
+            or delivery == final_file):
+        raise RuntimeError("artifact receipt probe paths are invalid")
+    boundaries_path = root / "EDIT_BOUNDARIES.json"
+    write_edit_boundaries_receipt(boundaries_path, [])
+    mix_path = root / "AUDIO_MIX_RECEIPT.json"
+    mix = write_audio_mix_receipt(delivery, [], None, mix_path)
+    artifact_hash = _sha256_file(delivery)
+    artifact_bytes = delivery.stat().st_size
+    qa = {
+        "schema": ENGINE_QA_SCHEMA,
+        "checks": {
+            "artifact_receipt_fixture": {
+                "ok": True,
+                "mode": "fixed_synthetic_av_without_asr_or_vision",
+            },
+            "audio_mix_receipt": {
+                "ok": mix.get("schema") == AUDIO_MIX_RECEIPT_SCHEMA,
+            },
+        },
+        "pass": mix.get("schema") == AUDIO_MIX_RECEIPT_SCHEMA,
+        "product": "AutoEditor",
+        "built_by": "Omar Marabha (@CEOmarabha)",
+        "release": {
+            "fixture": {
+                "file": str(final_file),
+                "bytes": artifact_bytes,
+                "sha256": artifact_hash,
+            },
+        },
+    }
+    qa["artifact_contract"] = build_engine_artifact_contract(
+        mode="generic-baseline",
+        delivery=delivery,
+        final_file=final_file,
+        edl=None,
+        captions=None,
+        caption_render=None,
+        edit_boundaries=boundaries_path,
+        audio_mix=mix_path,
+        sequence=None,
+    )
+    qa_path = root / "QA_REPORT.json"
+    qa_path.write_text(
+        json.dumps(qa, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "qa_report": qa_path,
+        "edit_boundaries": boundaries_path,
+        "audio_mix": mix_path,
+        "artifact_sha256": artifact_hash,
+        "artifact_bytes": artifact_bytes,
     }
 
 
@@ -3381,6 +5168,70 @@ def verify_audio_mix_receipt(receipt: dict | None, master: Path,
     }
 
 
+def intentional_silent_sequence_mode(
+        sequence_receipt: dict | None, words: list[dict] | None,
+        sfx: list | None, music: Path | None,
+        *, music_present: bool = False) -> bool:
+    """Return true only for a receipt-proven, wholly visual silent sequence."""
+    if not isinstance(sequence_receipt, dict):
+        return False
+    ordered = sequence_receipt.get("ordered_segment_ids")
+    synthesized = sequence_receipt.get("synthesized_silence_source_ids")
+    used_audio = sequence_receipt.get("used_audio_source_ids")
+    return (
+        isinstance(ordered, list) and bool(ordered)
+        and isinstance(synthesized, list) and bool(synthesized)
+        and isinstance(used_audio, list) and not used_audio
+        and not (words or []) and not (sfx or [])
+        and music is None and not music_present
+    )
+
+
+def _finite_loudness_value(value: object) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _word_integrity_check(expected_words: list[dict],
+                          delivered_words: list[dict],
+                          *, intentional_silence: bool = False) -> dict:
+    """Compare measured speech, with an explicit no-speech identity case."""
+    import difflib as _dl
+
+    normalize = lambda text: re.sub(r"[^a-z0-9']", "", text.lower())
+    matcher = _dl.SequenceMatcher(
+        a=[normalize(word["w"]) for word in expected_words],
+        b=[normalize(word["w"]) for word in delivered_words],
+        autojunk=False,
+    )
+    kept = sum(
+        expected_end - expected_start
+        for operation, expected_start, expected_end, _, _
+        in matcher.get_opcodes()
+        if operation == "equal"
+    )
+    no_speech = intentional_silence and not expected_words and not delivered_words
+    ratio = 1.0 if no_speech else kept / max(1, len(expected_words))
+    missing = len(expected_words) - kept
+    ok = no_speech or (
+        ratio >= CFG.rules.word_integrity_min and missing <= 40
+    )
+    return {
+        "expected_words": len(expected_words),
+        "found_in_master": kept,
+        "ratio": round(ratio, 3),
+        "ok": ok,
+        "mode": "not_applicable_no_speech" if no_speech
+                else "speech_transcript_integrity",
+        "note": "" if ok else (
+            "words missing from final master, speech was damaged after the cut phase"
+        ),
+    }
+
+
 # ---------------------------------------------------------------- phase 7+8
 def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    outdir: Path, retention: float = 1.0,
@@ -3399,7 +5250,9 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
                    caption_sidecar: Path | None = None,
                    audio_mix_receipt: dict | None = None,
                    sfx_plan: list | None = None,
-                   music_path: Path | None = None) -> dict:
+                   typed_sfx_cue_count: int = 0,
+                   music_path: Path | None = None,
+                   sequence_handoff_receipt: dict | None = None) -> dict:
     log("phase 7: QA gate")
     qa = {
         "schema": ENGINE_QA_SCHEMA,
@@ -3437,21 +5290,69 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
         "ok": retention_ok,
         "note": retention_note,
     }
+    if sequence_handoff_receipt is not None:
+        ordered = sequence_handoff_receipt.get("ordered_segment_ids")
+        receipt_duration = sequence_handoff_receipt.get("total_duration_ms")
+        output_duration = round(_dur(visual_reference or visual_master or
+                                     next(iter(outs.values()))) * 1000)
+        sequence_ok = (
+            sequence_handoff_receipt.get("schema_version") in {
+                SEQUENCE_HANDOFF_RECEIPT_SCHEMA,
+                SEQUENCE_HANDOFF_RECEIPT_TRANSITION_SCHEMA,
+            }
+            and isinstance(ordered, list) and bool(ordered)
+            and isinstance(receipt_duration, int)
+            and abs(output_duration - receipt_duration) <= 100
+        )
+        sequence_check = {
+            "ok": sequence_ok,
+            "ordered_segment_ids": ordered,
+            "sequence_compile_receipt_sha256": sequence_handoff_receipt.get(
+                "sequence_compile_receipt_sha256"),
+            "expected_duration_ms": receipt_duration,
+            "artifact_duration_ms": output_duration,
+        }
+        if (sequence_handoff_receipt.get("schema_version")
+                == SEQUENCE_HANDOFF_RECEIPT_TRANSITION_SCHEMA):
+            sequence_check.update({
+                "transition_compile_receipt_sha256":
+                    sequence_handoff_receipt.get(
+                        "transition_compile_receipt_sha256"),
+                "transition_executor_receipt_sha256":
+                    sequence_handoff_receipt.get(
+                        "transition_executor_receipt_sha256"),
+                "transition_topology_sha256": sequence_handoff_receipt.get(
+                    "transition_topology_sha256"),
+                "transition_artifact_receipt_sha256":
+                    sequence_handoff_receipt.get(
+                        "transition_artifact_receipt_sha256"),
+            })
+        qa["checks"]["approved_source_sequence"] = sequence_check
+        qa["pass"] = qa["pass"] and sequence_ok
     primary = next(iter(outs.values()))
+    intentional_silence = intentional_silent_sequence_mode(
+        sequence_handoff_receipt, words,
+        sfx_plan or (["typed-sfx"] if typed_sfx_cue_count else []),
+        music_path, music_present=music_present,
+    )
     p = run([FFMPEG, "-i", primary, "-af",
              "loudnorm=I=-14:TP=-1:print_format=json", "-f", "null", "-"], check=False)
     m = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", p.stderr.decode(errors="replace"))
     loudness_stats = json.loads(m.group(0)) if m else {}
-    li = (float(loudness_stats["input_i"])
-          if loudness_stats.get("input_i") is not None else None)
-    tp = (float(loudness_stats["input_tp"])
-          if loudness_stats.get("input_tp") is not None else None)
-    qa["checks"]["loudness_-14LUFS"] = {"measured": li,
-                                        "ok": li is not None and -15.5 <= li <= -12.5}
+    li = _finite_loudness_value(loudness_stats.get("input_i"))
+    tp = _finite_loudness_value(loudness_stats.get("input_tp"))
+    qa["checks"]["loudness_-14LUFS"] = {
+        "measured": li,
+        "mode": "intentional_digital_silence" if intentional_silence
+                else "program_audio",
+        "ok": intentional_silence or (li is not None and -15.5 <= li <= -12.5),
+    }
     qa["checks"]["audio_true_peak"] = {
         "measured_dbtp": tp,
-        "ok": tp is not None and tp <= -0.8,
-        "note": "" if tp is not None and tp <= -0.8 else
+        "mode": "intentional_digital_silence" if intentional_silence
+                else "program_audio",
+        "ok": intentional_silence or (tp is not None and tp <= -0.8),
+        "note": "" if intentional_silence or (tp is not None and tp <= -0.8) else
                 "delivered audio exceeds the -1 dBTP limiter target",
     }
     qa["checks"]["audio_mix_receipt"] = verify_audio_mix_receipt(
@@ -3482,14 +5383,17 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     qa["checks"]["captions_present"] = _caption_delivery_check(
         words, captions_burn_requested, caption_inputs_rendered,
         caption_sidecar,
+        no_speech=intentional_silence,
     )
-    caption_safe = not captions_burn_requested or caption_layout_safe
+    caption_safe = (intentional_silence or not captions_burn_requested
+                    or caption_layout_safe)
     qa["checks"]["caption_safe_area"] = {
         "ok": caption_safe,
         "note": "" if caption_safe else
                 "one or more burned caption states exceed the final crop",
     }
-    subject_clear = not captions_burn_requested or caption_subject_clear
+    subject_clear = (intentional_silence or not captions_burn_requested
+                     or caption_subject_clear)
     qa["checks"]["caption_subject_clearance"] = {
         "ok": subject_clear,
         "note": "" if subject_clear else
@@ -3497,7 +5401,8 @@ def qa_and_release(outs: dict, ass_font_ok: bool, words: list[dict],
     }
     pixel_quality = dict(caption_pixel_quality or {})
     contrast_ok = (
-        not captions_burn_requested or pixel_quality.get("ok") is True
+        intentional_silence or not captions_burn_requested
+        or pixel_quality.get("ok") is True
     )
     qa["checks"]["caption_rendered_contrast"] = {
         **pixel_quality,
@@ -3833,6 +5738,17 @@ def main():
                     help="use the exact approved transcript-grounded source "
                          "timeline keep plan; fails closed if it cannot be "
                          "validated against untouched-source ASR")
+    ap.add_argument("--sequence-receipt", type=Path, default=None,
+                    help="hash-bound approved multi-source sequence handoff")
+    ap.add_argument(
+        "--project-intent-authority", type=Path, default=None,
+        help="private canonical ProjectIntent engine envelope produced by "
+             "the authenticated local daemon",
+    )
+    ap.add_argument(
+        "--project-intent-authority-sha256", type=str, default=None,
+        help="exact lowercase SHA-256 of --project-intent-authority",
+    )
     ap.add_argument("--background", type=Path, default=None,
                     help="backdrop image: chromakey the green screen and "
                          "composite this behind you (zone-key chain)")
@@ -3871,6 +5787,11 @@ def main():
     if not src.exists():
         sys.exit(f"no such file: {src}")
     if a.transcribe_only:
+        if (a.project_intent_authority is not None
+                or a.project_intent_authority_sha256 is not None):
+            sys.exit(
+                "FATAL: ProjectIntent authority is only valid for a render"
+            )
         outdir = (a.out or src.parent / f"{src.stem}_TRANSCRIPT").resolve()
         outdir.mkdir(parents=True, exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="pse-transcribe-"))
@@ -3891,8 +5812,8 @@ def main():
     try:
         for attr in (
                 "script", "creative_brief", "creative_constraints", "edl",
-                "story_plan", "music",
-                "background"):
+                "story_plan", "sequence_receipt", "music",
+                "background", "project_intent_authority"):
             setattr(
                 a, attr,
                 _required_input_file(getattr(a, attr), f"--{attr}")
@@ -3902,6 +5823,20 @@ def main():
     conflicts = _option_conflicts(a)
     if conflicts:
         sys.exit("FATAL: " + "; ".join(conflicts))
+    try:
+        project_intent_envelope, project_intent_envelope_sha256 = (
+            load_project_intent_engine_envelope(
+                a.project_intent_authority,
+                a.project_intent_authority_sha256,
+            )
+        )
+        validate_project_intent_render_settings(
+            project_intent_envelope,
+            configured_aspects=a.aspects,
+            music_present=a.music is not None,
+        )
+    except ProjectIntentAuthorityError as error:
+        sys.exit(f"FATAL: ProjectIntent authority rejected: {error}")
     if CFG.rules.require_script_gate and not (
             a.script):
         sys.exit(
@@ -3915,6 +5850,26 @@ def main():
     t0 = time.time()
     info = preflight(src)
     source_duration = info["duration"]
+    try:
+        sequence_handoff_receipt = validate_sequence_handoff_receipt(
+            a.sequence_receipt, orig_src,
+            project_intent_envelope["edit_policy"]
+            if project_intent_envelope is not None else None,
+            project_intent_envelope["approved_transition_carrier"]
+            if project_intent_envelope is not None else None,
+        )
+    except ValueError as error:
+        shutil.rmtree(work, ignore_errors=True)
+        sys.exit(f"FATAL: {error}")
+    if sequence_handoff_receipt:
+        (outdir / "SEQUENCE_HANDOFF_RECEIPT.json").write_text(
+            json.dumps(sequence_handoff_receipt, indent=2), encoding="utf-8"
+        )
+        log(
+            "approved sequence: source-bound "
+            f"{sequence_handoff_receipt['sequence_compile_receipt_sha256'][:12]}, "
+            f"{len(sequence_handoff_receipt['ordered_segment_ids'])} segments"
+        )
     story_plan = None
     story_cuts = None
     story_cut_receipt = None
@@ -3985,7 +5940,11 @@ def main():
         )
     if offset:
         log(f"av-offset: applying certified {offset:+d}ms")
-    src = cfr_normalize(src, work, av_offset_ms=offset)
+    try:
+        src = cfr_normalize(src, work, av_offset_ms=offset, source_info=info)
+    except ValueError as error:
+        shutil.rmtree(work, ignore_errors=True)
+        sys.exit(f"FATAL: source color normalization is unsafe: {error}")
     info = preflight(src)   # re-probe: TRUE orientation + exact CFR fps
     if story_plan and abs(info["duration"] - source_duration) > 0.05:
         shutil.rmtree(work, ignore_errors=True)
@@ -4027,6 +5986,12 @@ def main():
         retention = actual_story_duration / source_duration
         raw_words = story_source_words
         words = transcribe(cut, work)
+    elif sequence_handoff_receipt:
+        cut = src
+        retention = 1.0
+        raw_words = transcribe(cut, work)
+        words = raw_words
+        log("phase 2: approved source sequence supplied; autonomous cuts skipped")
     elif a.edl and a.edl.exists():
         # An operator-authored EDL owns the cut. Running the autonomous
         # silence cutter first changes the director's timeline and has
@@ -4055,7 +6020,8 @@ def main():
         f"(raw had {len(raw_words)})")
     # ---- cleanup pass: flubbed retakes + dead air the raw pass missed.
     # Runs in AUTO mode only; in director mode (--edl) you owns every cut.
-    if not story_plan and not (a.edl and a.edl.exists()):
+    if not story_plan and not sequence_handoff_receipt and not (
+            a.edl and a.edl.exists()):
         converged = False
         for round_no in range(1, MAX_CLEANUP_PASSES + 1):
             cleanup = (detect_retakes(
@@ -4101,7 +6067,8 @@ def main():
     )
     # auto anomaly removal (coughs/garbled audio). AUTO MODE ONLY; in
     # director mode (--edl) the director owns every cut decision.
-    if not story_plan and not (a.edl and a.edl.exists()):
+    if not story_plan and not sequence_handoff_receipt and not (
+            a.edl and a.edl.exists()):
         anomalies = detect_anomaly_cuts(cut, words, a.script)
         if anomalies:
             cut = apply_cuts(cut, anomalies, work)
@@ -4116,11 +6083,22 @@ def main():
     if aspects == "auto":
         # Standing law 2026-07-23: long-form -> 16:9 only, shorts -> 9:16 only
         aspects = "9x16" if style == "short" else "16x9"
+    if project_intent_envelope is not None:
+        expected_intent_aspect = _project_intent_cli_aspect(
+            project_intent_envelope["project_intent"]["delivery"]["aspect"]
+        )
+        if aspects != expected_intent_aspect:
+            shutil.rmtree(work, ignore_errors=True)
+            sys.exit(
+                "FATAL: resolved engine aspect conflicts with the approved "
+                "ProjectIntent"
+            )
     delivery_viewport = _delivery_viewport(
         info["width"], info["height"], aspects
     )
     # ---- premium layer: DeepSeek EDL -> punch-ins, b-roll, graphic cards
     gfx_layers, broll_lyrs, edl_src = [], [], "off"
+    edl = {"punch_ins": [], "broll": [], "graphics": []}
     approved_creative_brief_sha256 = (
         hashlib.sha256(a.creative_brief.read_bytes()).hexdigest()
         if a.creative_brief and a.creative_brief.exists() else None
@@ -4232,37 +6210,83 @@ def main():
     if words:
         build_srt(words, srt)
     edit_boundaries_path = outdir / "EDIT_BOUNDARIES.json"
-    edit_boundaries_path.write_text(json.dumps({
-        "schema": EDIT_BOUNDARIES_SCHEMA,
-        "timeline": "post_cut_seconds",
-        "cuts": [
-            {
-                "index": index,
-                "time_seconds": round(float(boundary), 3),
-                "removed_seconds": round(float(removed), 3),
-            }
-            for index, (boundary, removed) in enumerate(CUT_BOUNDARIES)
-        ],
-        # The current renderer has no transition layer. Never manufacture a
-        # motion receipt from unrelated EDL fields or claim still-frame proof.
-        "transitions": [],
-        "transition_support": "not_implemented",
-    }, indent=2), encoding="utf-8")
+    edit_boundaries_receipt = write_edit_boundaries_receipt(
+        edit_boundaries_path, CUT_BOUNDARIES,
+        sequence_handoff_receipt=sequence_handoff_receipt,
+        # A v2 sequence handoff carries the production compositor's exact
+        # transition spans.  Legacy sequences remain explicit hard-cut-only
+        # with transition support unavailable.
+        transitions=[], transition_support="not_implemented",
+    )
     sfx_plan = []
-    if not a.no_premium and words:
+    if (project_intent_envelope is None
+            and not a.no_premium and words):
         sfx_plan = prem.build_sfx_plan(edl)
         log(f"sound design: {len(sfx_plan)} SFX cues")
     caption_lane = "upper"
-    master = render_master(cut, cards, a.music, work, info["height"],
-                           vid_w=info["width"], gfx=gfx_layers,
-                           broll=broll_lyrs,
-                           caption_margin_frac=PROFILE["cap_margin"],
-                           sfx=sfx_plan, caption_band=caption_band,
-                           caption_viewport=(view_top, view_height),
-                           caption_lane=caption_lane)
+    # Governed renders never feed raw --music or legacy tuple SFX into the
+    # compositor.  Their authenticated producers run, in order, on this exact
+    # composited base master.
+    base_master = render_master(
+        cut, cards,
+        None if project_intent_envelope is not None else a.music,
+        work, info["height"], vid_w=info["width"], gfx=gfx_layers,
+        broll=broll_lyrs, caption_margin_frac=PROFILE["cap_margin"],
+        sfx=sfx_plan, caption_band=caption_band,
+        caption_viewport=(view_top, view_height),
+        caption_lane=caption_lane,
+    )
+    master = base_master
+    music_production_receipt = None
+    music_production_evidence = None
+    music_production_receipt_path = None
+    music_production_output = None
+    sfx_production_receipt = None
+    sfx_production_evidence = None
+    sfx_production_receipt_path = None
+    if project_intent_envelope is not None:
+        production_chain = execute_project_intent_audio_production_chain(
+            base_master=base_master,
+            project_intent_envelope=project_intent_envelope,
+            project_intent_envelope_sha256=project_intent_envelope_sha256,
+            edl=edl,
+            rendered_graphics=gfx_layers,
+            rendered_broll=broll_lyrs,
+            edit_boundaries_receipt=edit_boundaries_receipt,
+            speech_words=integrity_words,
+            work=work, outdir=outdir,
+        )
+        master = production_chain["master"]
+        music_production_output = production_chain["music_output"]
+        music_production_receipt = production_chain["music_receipt"]
+        music_production_evidence = production_chain["music_evidence"]
+        music_production_receipt_path = production_chain[
+            "music_receipt_path"
+        ]
+        sfx_production_receipt = production_chain["sfx_receipt"]
+        sfx_production_evidence = production_chain["sfx_evidence"]
+        sfx_production_receipt_path = production_chain["sfx_receipt_path"]
+        log(
+            "typed music: "
+            f"{music_production_evidence['region_count']} policy-bound region(s)"
+        )
+        log(
+            "typed sound design: "
+            f"{sfx_production_evidence['cue_count']} policy-bound cue(s)"
+        )
+    verified_music_present = (
+        music_production_evidence is not None
+        and music_production_evidence["region_count"] > 0
+    )
+    actual_music_present = (
+        verified_music_present
+        if project_intent_envelope is not None else a.music is not None
+    )
+    audio_mix_sfx = [] if project_intent_envelope is not None else sfx_plan
+    audio_mix_music = None if project_intent_envelope is not None else a.music
     audio_mix_path = outdir / "AUDIO_MIX_RECEIPT.json"
     audio_mix_receipt = write_audio_mix_receipt(
-        master, sfx_plan, a.music, audio_mix_path
+        master, audio_mix_sfx, audio_mix_music, audio_mix_path
     )
     if aspects == "9x16":
         only = outdir / "PSE_SHORT_9x16.mp4"
@@ -4342,7 +6366,7 @@ def main():
                             approved_creative_brief_sha256),
                         approved_creative_constraints=(
                             approved_creative_constraints),
-                        music_present=a.music is not None,
+                        music_present=actual_music_present,
                         approved_story_retention=approved_story_retention,
                         visual_master=master,
                         visual_reference=cut,
@@ -4357,8 +6381,111 @@ def main():
                         caption_pixel_quality=caption_pixel_quality,
                         caption_sidecar=srt,
                         audio_mix_receipt=audio_mix_receipt,
-                        sfx_plan=sfx_plan,
-                        music_path=a.music)
+                        sfx_plan=audio_mix_sfx,
+                        typed_sfx_cue_count=(
+                            sfx_production_evidence["cue_count"]
+                            if sfx_production_evidence is not None else 0
+                        ),
+                        music_path=audio_mix_music,
+                        sequence_handoff_receipt=sequence_handoff_receipt)
+    if music_production_evidence is not None:
+        music_receipt = music_production_receipt
+        music_check_ok = (
+            music_production_evidence["ok"] is True
+            and music_production_evidence["policy_bound"] is True
+            and music_production_evidence["rights_verified"] is True
+            and music_production_evidence[
+                "dialogue_masking_verified"] is True
+            and music_production_evidence["loudness_verified"] is True
+            and music_production_evidence["output_sha256"]
+            == music_receipt["output"]["sha256"]
+            and _sha256_file(music_production_output)
+            == music_receipt["output"]["sha256"]
+        )
+        music_check = {
+            "ok": music_check_ok,
+            "authorization_id": music_receipt["authorization_id"],
+            "engine_envelope_sha256": music_receipt[
+                "engine_envelope_sha256"
+            ],
+            "project_intent_sha256": music_receipt[
+                "project_intent_sha256"
+            ],
+            "parent_edit_policy_sha256": music_receipt[
+                "parent_edit_policy_sha256"
+            ],
+            "execution_edit_policy_sha256": music_receipt[
+                "execution_edit_policy_sha256"
+            ],
+            "mode": music_production_evidence["mode"],
+            "region_count": music_production_evidence["region_count"],
+            "policy_usage": music_production_evidence["policy_usage"],
+            "policy_bound": music_production_evidence["policy_bound"],
+            "rights_verified": music_production_evidence["rights_verified"],
+            "dialogue_masking_verified": music_production_evidence[
+                "dialogue_masking_verified"
+            ],
+            "loudness_verified": music_production_evidence[
+                "loudness_verified"
+            ],
+            "production_receipt_sha256": music_production_evidence[
+                "receipt_sha256"
+            ],
+            "receipt_file_sha256": _sha256_file(
+                music_production_receipt_path
+            ),
+            "program_input_sha256": music_receipt["program_input"]["sha256"],
+            "music_output_sha256": music_receipt["output"]["sha256"],
+            "measured_audio": music_receipt["audio_qa"],
+            "note": music_production_evidence["note"],
+        }
+        qa["checks"]["project_intent_music_production"] = music_check
+        qa["pass"] = qa["pass"] and music_check["ok"]
+    if sfx_production_evidence is not None:
+        sfx_receipt = sfx_production_receipt
+        sfx_program_matches_music = (
+            sfx_receipt["program_input"] == {
+                key: music_production_receipt["output"][key]
+                for key in ("sha256", "bytes", "duration_ms")
+            }
+        )
+        sfx_check = {
+            "ok": (
+                sfx_production_evidence["ok"] is True
+                and sfx_program_matches_music
+            ),
+            "authorization_id": sfx_receipt["authorization_id"],
+            "engine_envelope_sha256": sfx_receipt[
+                "engine_envelope_sha256"
+            ],
+            "project_intent_sha256": sfx_receipt[
+                "project_intent_sha256"
+            ],
+            "parent_edit_policy_sha256": sfx_receipt[
+                "parent_edit_policy_sha256"
+            ],
+            "mode": sfx_production_evidence["mode"],
+            "cue_count": sfx_production_evidence["cue_count"],
+            "policy_usage": sfx_production_evidence["policy_usage"],
+            "policy_bound": sfx_production_evidence["policy_bound"],
+            "production_receipt_sha256": sfx_production_evidence[
+                "receipt_sha256"
+            ],
+            "receipt_file_sha256": _sha256_file(
+                sfx_production_receipt_path
+            ),
+            "master_output_sha256": sfx_production_evidence[
+                "output_sha256"
+            ],
+            "program_input_sha256": sfx_receipt["program_input"]["sha256"],
+            "music_output_sha256": music_production_receipt[
+                "output"
+            ]["sha256"],
+            "program_input_matches_music_output": sfx_program_matches_music,
+            "note": sfx_production_evidence["note"],
+        }
+        qa["checks"]["project_intent_sfx_production"] = sfx_check
+        qa["pass"] = qa["pass"] and sfx_check["ok"]
     # HARD GATE : mechanical lip-sync verification. The
     # video is never delivered unless every probe passes.
     main_out_v = next(iter(outs.values()))
@@ -4372,11 +6499,25 @@ def main():
     delivery_color = verify_delivery_color_metadata(main_out_v)
     qa["checks"]["delivery_color_metadata"] = delivery_color
     qa["pass"] = qa["pass"] and delivery_color["ok"]
-    sync = verify_sync(master, cut,
-                       edl if (not a.no_premium and words) else {},
-                       _dur(master))
-    qa["checks"]["lip_sync_verified"] = {"ok": sync["ok"],
-                                         "probes": sync["probes"]}
+    intentional_silence = intentional_silent_sequence_mode(
+        sequence_handoff_receipt, integrity_words,
+        sfx_plan or (["typed-sfx"] if (
+            sfx_production_evidence or {}).get("cue_count") else []),
+        audio_mix_music, music_present=actual_music_present,
+    )
+    sync = (
+        verify_silent_video_timeline(master, cut, _dur(master))
+        if intentional_silence else
+        verify_sync(master, cut,
+                    edl if (not a.no_premium and words) else {},
+                    _dur(master))
+    )
+    qa["checks"]["lip_sync_verified"] = {
+        "ok": sync["ok"],
+        "mode": sync.get("mode", "speech_audio_video_sync"),
+        "probes": sync["probes"],
+        "note": sync.get("note", ""),
+    }
     qa["pass"] = qa["pass"] and sync["ok"]
     # Every remaining delivery gate consumes the delivered artifact's own
     # transcript, never an intermediate transcript.
@@ -4413,31 +6554,27 @@ def main():
     # master must still CONTAIN the speech. Transcribe the final master and
     # sequence-align against the post-cut transcript; if >3% of words went
     # missing anywhere in the chain, delivery is blocked.
-    import difflib as _dl
-    _n = lambda t: re.sub(r"[^a-z0-9']", "", t.lower())
-    _sm = _dl.SequenceMatcher(a=[_n(w["w"]) for w in integrity_words],
-                              b=[_n(w["w"]) for w in final_words],
-                              autojunk=False)
-    _kept = sum(i2 - i1 for op, i1, i2, _, _ in _sm.get_opcodes()
-                if op == "equal")
-    word_ratio = _kept / max(1, len(integrity_words))
-    # The ratio allows measured Whisper run-to-run variance, while the
-    # absolute cap prevents long videos from losing many words behind a high
-    # percentage.
-    missing = len(integrity_words) - _kept
-    wi_ok = word_ratio >= CFG.rules.word_integrity_min and missing <= 40
-    qa["checks"]["word_integrity"] = {
-        "expected_words": len(integrity_words), "found_in_master": _kept,
-        "ratio": round(word_ratio, 3), "ok": wi_ok,
-        "note": "" if wi_ok else "words missing from final master, "
-                "speech was damaged after the cut phase"}
+    word_check = _word_integrity_check(
+        integrity_words, final_words,
+        intentional_silence=intentional_silence,
+    )
+    qa["checks"]["word_integrity"] = word_check
+    wi_ok = word_check["ok"]
     qa["pass"] = qa["pass"] and wi_ok
-    log(f"word integrity: {_kept}/{len(integrity_words)} words in master "
-        f"({word_ratio:.1%}), {'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}")
+    log(
+        "word integrity: "
+        f"{word_check['found_in_master']}/{word_check['expected_words']} "
+        f"words in master ({word_check['ratio']:.1%}), "
+        f"{'PASS' if wi_ok else 'FAIL - DELIVERY BLOCKED'}"
+    )
     # GATE 5: true end-to-end sync, master vs the raw recording.
-    ssync = verify_sync_source(master, orig_src,
-                               edl if (not a.no_premium and words) else {},
-                               offset, certified, final_words, work)
+    ssync = (
+        verify_silent_video_timeline(master, orig_src, _dur(master))
+        if intentional_silence else
+        verify_sync_source(master, orig_src,
+                           edl if (not a.no_premium and words) else {},
+                           offset, certified, final_words, work)
+    )
     qa["checks"]["sync_to_source"] = ssync
     qa["pass"] = qa["pass"] and ssync["ok"]
     # HARD GATE 3: semantic comparison to the teleprompter script. Paraphrase,
@@ -4450,10 +6587,170 @@ def main():
         shutil.copy(work / "script_integrity.json",
                     outdir / "SCRIPT_INTEGRITY.json") if (
                         work / "script_integrity.json").exists() else None
+    project_intent_receipt_path = None
+    if project_intent_envelope is not None:
+        project_intent_receipt_path = (
+            outdir / PROJECT_INTENT_RENDER_RECEIPT_FILE
+        )
+        authority_check = {
+            "ok": False,
+            "authorization_id": project_intent_envelope["authorization_id"],
+            "approved_proposal_sha256": project_intent_envelope[
+                "approved_proposal_sha256"
+            ],
+            "approved_transition_carrier": project_intent_envelope[
+                "approved_transition_carrier"
+            ],
+            "engine_envelope_sha256": project_intent_envelope_sha256,
+            "project_intent_sha256": project_intent_envelope[
+                "project_intent_sha256"
+            ],
+            "edit_policy_sha256": project_intent_envelope[
+                "edit_policy_sha256"
+            ],
+            "capability_manifest_sha256": project_intent_envelope[
+                "capability_manifest_sha256"
+            ],
+            "capability_probe_receipt_sha256": project_intent_envelope[
+                "capability_probe_receipt_sha256"
+            ],
+            "render_receipt_sha256": "",
+            "receipt_file_sha256": "",
+            "note": "",
+        }
+        try:
+            actual_render = build_project_intent_actual_render_facts(
+                project_intent_envelope, main_out_v,
+                resolved_aspects=aspects,
+                caption_render_receipt=caption_render_receipt,
+                caption_sidecar=srt if srt.is_file() else None,
+                graphic_event_count=len(gfx_layers),
+                sfx_cue_count=len(sfx_plan),
+                transition_handoff_receipt=sequence_handoff_receipt,
+                music_production_evidence=music_production_evidence,
+                sfx_production_evidence=sfx_production_evidence,
+            )
+            project_intent_receipt = write_project_intent_render_receipt(
+                project_intent_receipt_path,
+                project_intent_envelope,
+                project_intent_envelope_sha256,
+                actual_render,
+            )
+            authority_check["render_receipt_sha256"] = (
+                project_intent_render_receipt_sha256(
+                    project_intent_receipt
+                )
+            )
+            authority_check["receipt_file_sha256"] = _sha256_file(
+                project_intent_receipt_path
+            )
+            authority_check["ok"] = project_intent_receipt["pass"] is True
+        except Exception as error:
+            authority_check["note"] = (
+                "ProjectIntent actual-render binding failed: "
+                f"{type(error).__name__}"
+            )
+            project_intent_receipt_path = None
+        qa["checks"]["project_intent_authority"] = authority_check
+        qa["pass"] = qa["pass"] and authority_check["ok"]
+    deterministic_visual_path = outdir / PRODUCTION_VISUAL_QA_FILE
+    deterministic_visual_check = {
+        "ok": False,
+        "artifact_sha256": "",
+        "receipt_file_sha256": "",
+        "analyzer_receipt_sha256": "",
+        "check_count": 0,
+        "failed_check_ids": [],
+        "declared_transition_count": 0,
+        "analyzed_transition_count": 0,
+        "semantic_evaluation": False,
+        "note": "",
+    }
+    try:
+        visual_intent = build_production_visual_timeline_intent(
+            edl if (not a.no_premium and words) else None,
+            sequence_handoff_receipt,
+        )
+        deterministic_visual_record = (
+            run_production_deterministic_visual_qa(
+                artifact_path=main_out_v,
+                output_path=deterministic_visual_path,
+                ffmpeg_path=FFMPEG,
+                ffprobe_path=FFPROBE,
+                intent=visual_intent,
+            )
+        )
+        verified_visual_record = verify_production_visual_qa_file(
+            deterministic_visual_path, main_out_v, require_pass=False,
+        )
+        if verified_visual_record != deterministic_visual_record:
+            raise ProductionVisualQualityError(
+                "persisted visual QA record changed after creation"
+            )
+        visual_summary = deterministic_visual_record["analysis"]["receipt"][
+            "summary"
+        ]
+        visual_coverage = deterministic_visual_record["coverage"]
+        deterministic_visual_check.update({
+            "ok": deterministic_visual_record["pass"] is True,
+            "artifact_sha256": deterministic_visual_record["artifact"][
+                "sha256"
+            ],
+            "receipt_file_sha256": _sha256_file(
+                deterministic_visual_path
+            ),
+            "analyzer_receipt_sha256": deterministic_visual_record[
+                "analysis"
+            ]["receipt_sha256"],
+            "check_count": visual_summary["check_count"],
+            "failed_check_ids": list(visual_summary["failed_check_ids"]),
+            "declared_transition_count": visual_coverage[
+                "declared_transition_count"
+            ],
+            "analyzed_transition_count": visual_coverage[
+                "analyzed_transition_count"
+            ],
+            "note": (
+                "deterministic RGB24 technical visual checks failed"
+                if not deterministic_visual_record["pass"] else
+                "moving-source transition pixels require component-frame "
+                "receipts and remain governed by the transition execution "
+                "receipt"
+                if visual_coverage["declared_transition_count"] else ""
+            ),
+        })
+    except (OSError, ProductionVisualQualityError, RuntimeError) as error:
+        deterministic_visual_check["note"] = (
+            "deterministic RGB24 visual QA could not be verified: "
+            f"{type(error).__name__}"
+        )
+        if not deterministic_visual_path.is_file():
+            deterministic_visual_path = None
+    qa["checks"]["deterministic_visual_quality"] = deterministic_visual_check
+    qa["pass"] = qa["pass"] and deterministic_visual_check["ok"]
     qa["schema"] = ENGINE_QA_SCHEMA
     (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
     log(f"lip-sync verification: {'PASS' if sync['ok'] else 'FAIL - DELIVERY BLOCKED'}")
     final_outputs = {key: str(path) for key, path in final_paths.items()}
+    if qa["pass"]:
+        try:
+            if deterministic_visual_path is None:
+                raise ProductionVisualQualityError(
+                    "deterministic visual QA sidecar is unavailable"
+                )
+            verify_production_visual_qa_file(
+                deterministic_visual_path, main_out_v, require_pass=True,
+            )
+        except (OSError, ProductionVisualQualityError) as error:
+            qa["checks"]["deterministic_visual_quality"].update({
+                "ok": False,
+                "note": (
+                    "deterministic visual QA changed before promotion: "
+                    f"{type(error).__name__}"
+                ),
+            })
+            qa["pass"] = False
+            (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
     if qa["pass"]:
         packaged_pending = os.environ.get("AUTOEDITOR_PACKAGED") == "1"
         if packaged_pending:
@@ -4487,6 +6784,12 @@ def main():
             caption_render=caption_render_path,
             edit_boundaries=edit_boundaries_path,
             audio_mix=audio_mix_path,
+            sequence=(outdir / "SEQUENCE_HANDOFF_RECEIPT.json")
+            if sequence_handoff_receipt is not None else None,
+            project_intent=project_intent_receipt_path,
+            music_production=music_production_receipt_path,
+            sfx_production=sfx_production_receipt_path,
+            deterministic_visual_qa=deterministic_visual_path,
         )
         (outdir / "QA_REPORT.json").write_text(json.dumps(qa, indent=2))
         if not packaged_pending:

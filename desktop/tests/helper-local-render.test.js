@@ -18,6 +18,10 @@ const {
   parseEngineEvent,
   engineProgress,
 } = require('../helper/lib/local-render');
+const {
+  TRANSITION_DECISION_SCHEMA_VERSION,
+  buildTransitionCarrier,
+} = require('../helper/lib/transition-proposal');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'autoeditor-local-render-'));
 try {
@@ -328,8 +332,8 @@ try {
   }), /proposal must be an object/);
   assert.throws(() => normalizeApplyRequest({
     videos: [first], outputDir, projectType: 'long', script: '',
-    proposal: { payload: 'x'.repeat(100001) },
-  }), /100000/);
+    proposal: { payload: 'x'.repeat(512001) },
+  }), /512000/);
   assert.throws(() => normalizeApplyRequest({
     videos: [first], outputDir, projectType: 'long', script: '', proposal,
   }, () => false), /proposal was rejected/);
@@ -343,6 +347,148 @@ try {
     videos: [first], outputDir, projectType: 'long', script: '',
     proposal: cyclic,
   }), /plain JSON/);
+
+  const sequenceSource = {
+    source_id: 'source-a', sha256: 'a'.repeat(64), duration_ms: 20000,
+  };
+  const maximumSequenceProposal = {
+    operations: [{ op: 'set_edit_style', style: 'long' }],
+    sequenceSourceManifest: {
+      schema_version: 'autoeditor-source-manifest/v1',
+      sources: [sequenceSource],
+    },
+    sequencePlan: {
+      schema_version: 'autoeditor-sequence-plan/v1',
+      sources: [sequenceSource],
+      target_duration: { min_ms: 8704, max_ms: 8704 },
+      segments: Array.from({ length: 256 }, (_, index) => ({
+        segment_id: `segment-${String(index).padStart(3, '0')}`,
+        source_id: sequenceSource.source_id,
+        source_sha256: sequenceSource.sha256,
+        source_start_ms: (index % 200) * 34,
+        source_end_ms: (index % 200) * 34 + 34,
+        role: index === 0 ? 'hook' : index === 255 ? 'closer' : 'development',
+        reason: `Grounded editorial segment ${index}.`,
+        speech_anchor: null,
+        transition: { kind: 'hard_cut' },
+      })),
+    },
+  };
+  const maximumSequenceApply = normalizeApplyRequest({
+    videos: [first], outputDir, projectType: 'long', script: '',
+    proposal: maximumSequenceProposal,
+  });
+  assert.equal(maximumSequenceApply.proposal.sequencePlan.segments.length, 256);
+
+  const transitionSources = [{
+    source_id: 'transition-a', sha256: 'c'.repeat(64), duration_ms: 3000,
+  }, {
+    source_id: 'transition-b', sha256: 'd'.repeat(64), duration_ms: 3000,
+  }];
+  const transitionSourceManifest = {
+    schema_version: 'autoeditor-source-manifest/v1',
+    sources: transitionSources,
+  };
+  const transitionSequencePlan = {
+    schema_version: 'autoeditor-sequence-plan/v1',
+    sources: transitionSources,
+    target_duration: { min_ms: 5000, max_ms: 5000 },
+    segments: transitionSources.map((source, index) => ({
+      segment_id: `transition-segment-${index}`,
+      source_id: source.source_id,
+      source_sha256: source.sha256,
+      source_start_ms: 0,
+      source_end_ms: 2500,
+      role: index === 0 ? 'hook' : 'closer',
+      reason: 'Exact motivated desktop transition fixture.',
+      speech_anchor: null,
+      transition: { kind: 'hard_cut' },
+    })),
+  };
+  const transitionIntent = {
+    schema_version: 'autoeditor-project-intent/v1',
+    profile: 'commercial_product',
+    delivery: { platform: 'youtube', aspect: '16:9' },
+    target_duration: { min_ms: 5000, max_ms: 5000 },
+    preferences: {
+      captions: { enabled: true, preference: 'auto' },
+      graphics: { enabled: true, preference: 'auto' },
+      music: { enabled: true, preference: 'auto' },
+      sfx: { enabled: true, preference: 'auto' },
+      transitions: { enabled: true, preference: 'motivated_only' },
+    },
+  };
+  const transitionCarrier = buildTransitionCarrier({
+    sequencePlan: transitionSequencePlan,
+    sourceManifest: transitionSourceManifest,
+    privateCatalog: {
+      schema_version: 'autoeditor-source-catalog/v1',
+      sources: transitionSources.map((source) => ({
+        ...source,
+        timeline: { video_start_offset_ms: 0, audio_start_offset_ms: 0 },
+      })),
+    },
+    projectIntent: transitionIntent,
+    decisions: {
+      schema_version: TRANSITION_DECISION_SCHEMA_VERSION,
+      boundaries: [{
+        boundary_index: 0,
+        kind: 'cross_dissolve',
+        duration_ms: 200,
+        motivation_verified: true,
+        semantic_safety_verified: true,
+        dialogue_preservation_verified: true,
+      }],
+    },
+  });
+  const transitionProposal = {
+    operations: [{ op: 'set_edit_style', style: 'short' }],
+    sequencePlan: transitionSequencePlan,
+    sequenceSourceManifest: transitionSourceManifest,
+    projectIntent: transitionIntent,
+    ...transitionCarrier,
+  };
+  const transitionApply = normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: transitionProposal,
+  });
+  assert.strictEqual(
+    transitionApply.proposal.transitionPlan.boundaries[0].kind,
+    'cross_dissolve',
+  );
+  assert.deepStrictEqual(
+    transitionApply.proposal.transitionSequenceManifest,
+    transitionCarrier.transitionSequenceManifest,
+  );
+  assert.throws(() => normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: { ...transitionProposal, transitionDecisions: {} },
+  }), /unsupported fields/,
+  'raw model decisions must never cross the daemon request allowlist');
+  const missingTransitionManifest = { ...transitionProposal };
+  delete missingTransitionManifest.transitionSequenceManifest;
+  assert.throws(() => normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: missingTransitionManifest,
+  }), /supplied together/);
+  const replayedTransition = JSON.parse(JSON.stringify(transitionProposal));
+  replayedTransition.sequencePlan.segments.reverse();
+  assert.throws(() => normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: replayedTransition,
+  }), /does not bind the exact sequence/);
+  const tokenInjection = JSON.parse(JSON.stringify(transitionProposal));
+  tokenInjection.transitionPlan.boundaries[0].filter_complex = 'xfade=evil';
+  assert.throws(() => normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: tokenInjection,
+  }), /transition plan\.boundaries\[0\].*invalid keys/);
+  const authorityOmission = { ...transitionProposal };
+  delete authorityOmission.projectIntent;
+  assert.throws(() => normalizeApplyRequest({
+    videos: [first, second], outputDir, projectType: 'commercial', script: '',
+    proposal: authorityOmission,
+  }), /projectIntent authority/);
 
   assert.strictEqual(joinPlan([first], 'short', '/safe/bin/ffmpeg', result),
     null);

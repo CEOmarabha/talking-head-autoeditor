@@ -131,7 +131,7 @@ class AudioMixReceiptTests(unittest.TestCase):
             names = [
                 "PSE_SHORT_9x16.mp4", "EDL.json", "PSE_CAPTIONS.srt",
                 "CAPTION_RENDER_RECEIPT.json", "EDIT_BOUNDARIES.json",
-                "AUDIO_MIX_RECEIPT.json",
+                "AUDIO_MIX_RECEIPT.json", "SEQUENCE_HANDOFF_RECEIPT.json",
             ]
             for index, name in enumerate(names):
                 (root / name).write_bytes(f"artifact-{index}".encode())
@@ -141,11 +141,12 @@ class AudioMixReceiptTests(unittest.TestCase):
                 edl=root / names[1], captions=root / names[2],
                 caption_render=root / names[3],
                 edit_boundaries=root / names[4], audio_mix=root / names[5],
+                sequence=root / names[6],
             )
 
         self.assertEqual(
             contract["schema"],
-            "autoeditor-engine-artifact-contract/v1",
+            "autoeditor-engine-artifact-contract/v2",
         )
         self.assertEqual(contract["mode"], "premium-edl")
         self.assertEqual(contract["delivery"]["file"], names[0])
@@ -157,6 +158,7 @@ class AudioMixReceiptTests(unittest.TestCase):
             set(contract), {
                 "schema", "mode", "delivery", "edl", "captions",
                 "caption_render", "edit_boundaries", "audio_mix",
+                "sequence",
             },
         )
 
@@ -173,6 +175,7 @@ class AudioMixReceiptTests(unittest.TestCase):
                 mode="generic-baseline", delivery=pending,
                 final_file=final, edl=None, captions=None,
                 caption_render=None, edit_boundaries=cuts, audio_mix=mix,
+                sequence=None,
             )
 
         self.assertEqual(contract["delivery"]["file"], final.name)
@@ -191,6 +194,7 @@ class AudioMixReceiptTests(unittest.TestCase):
                     edl=root / "EDL.json", captions=None,
                     caption_render=None, edit_boundaries=root / "cuts.json",
                     audio_mix=root / "mix.json",
+                    sequence=None,
                 )
 
     def test_baseline_contract_explicitly_binds_no_edl(self):
@@ -203,12 +207,14 @@ class AudioMixReceiptTests(unittest.TestCase):
                 edl=None, captions=None, caption_render=None,
                 edit_boundaries=root / "cuts.json",
                 audio_mix=root / "mix.json",
+                sequence=None,
             )
 
         self.assertEqual(contract["mode"], "generic-baseline")
         self.assertIsNone(contract["edl"])
         self.assertIsNone(contract["captions"])
         self.assertIsNone(contract["caption_render"])
+        self.assertIsNone(contract["sequence"])
 
     def test_packaged_engine_leaves_final_naming_to_desktop_vision(self):
         with tempfile.TemporaryDirectory() as td:

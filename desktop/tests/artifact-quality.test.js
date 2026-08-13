@@ -1,9 +1,13 @@
 const assert = require('assert');
 
 const {
+  CLOSED_REVIEW_KEYS,
   artifactAudioQaReceipt,
+  artifactChoiceQuestions,
   artifactReviewPrompt,
+  exactArtifactChoice,
   parseArtifactReview,
+  reviewArtifactFrameChoices,
   reviewArtifactFrames,
   reviewPasses,
 } = require('../helper/lib/artifact-quality');
@@ -16,19 +20,57 @@ const prompt = artifactReviewPrompt('Use bold captions and purposeful visual cha
 assert.match(prompt, /caption/i);
 assert.match(prompt, /sound design/i);
 assert.match(prompt, /transitions/i);
-assert.match(prompt, /Return JSON only/i);
+assert.match(prompt, /JSON ONLY\. NO MARKDOWN OR PROSE/i);
+assert.match(prompt, /USE THESE EXACT KEYS/);
+assert.ok(prompt.length <= 4000);
 const batchPrompt = artifactReviewPrompt('Approved brief', {
   number: 2, count: 3,
   frames: [{ id: 'vision-frame-009', timeSeconds: 13, categories: ['graphics'] }],
 });
 assert.match(batchPrompt, /batch 2 of 3/i);
-assert.match(batchPrompt, /13/);
-assert.match(batchPrompt, /do not claim to have seen/i);
+assert.match(batchPrompt, /Do not claim to have seen other times/i);
+assert.match(batchPrompt, /TRUSTED_TARGETS=/);
 const sidecarPrompt = artifactReviewPrompt(
   'Captions must be delivered with the video.', null, 'sidecar');
 assert.match(sidecarPrompt, /intentionally external sidecar text/i);
 assert.match(sidecarPrompt, /Do not reject missing visible captions/i);
 assert.match(sidecarPrompt, /not applicable/i);
+const targetPrompt = artifactReviewPrompt('Approved brief', {
+  number: 1, count: 1,
+  frames: [{
+    id: 'frame-one', timeSeconds: 0,
+    targets: [
+      { id: 'target-one', expectation: 'First visible result.' },
+      { id: 'target-two', expectation: 'Second visible result.' },
+    ],
+  }],
+});
+assert.ok(targetPrompt.indexOf('target-one') < targetPrompt.indexOf('target-two'));
+assert.match(targetPrompt,
+  /"observedTargetIds":\["target-one","target-two"\]/);
+assert.match(targetPrompt, /Sound design and audio are not evaluated here/);
+assert.match(targetPrompt, /motion, timing, cuts, or unseen frames/);
+assert.throws(() => artifactReviewPrompt('', null, 'invalid'),
+  /caption delivery mode/);
+assert.deepStrictEqual(CLOSED_REVIEW_KEYS, [
+  'target', 'captions', 'framing', 'visualVariety', 'graphics',
+  'transitions', 'productionDesign',
+]);
+assert.strictEqual(exactArtifactChoice(' yes '), 'YES');
+assert.strictEqual(exactArtifactChoice('NO'), 'NO');
+assert.throws(() => exactArtifactChoice('YES.'), /exact YES or NO token/);
+const closedFrame = {
+  id: 'closed-frame', path: 'closed-frame.jpg', timeSeconds: 0,
+  targets: [{
+    id: 'closed-target', category: 'captions',
+    expectation: 'The exact promised visible result is present.',
+  }],
+};
+const closedQuestions = artifactChoiceQuestions(closedFrame, 'burned');
+assert.deepStrictEqual(closedQuestions.map(({ key }) => key),
+  CLOSED_REVIEW_KEYS);
+assert.ok(closedQuestions.every(({ question }) =>
+  !/audio|sound|heard/i.test(question)));
 
 const passing = parseArtifactReview(JSON.stringify({
   schema: 'autoeditor-artifact-review/v2',
@@ -125,18 +167,79 @@ for (const raw of [
 }
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'helper', 'main.js'), 'utf8');
+const artifactContractSource = fs.readFileSync(
+  path.join(__dirname, '..', 'helper', 'lib', 'artifact-contract.js'), 'utf8');
 assert.match(main, /void reviewArtifact\(event, action\)/);
 assert.match(main, /The draft was not exposed as a finished video/);
-assert.match(main, /retryRejectedRender\(action, artifact, issue\)/);
+assert.match(main, /await retryRejectedRender\(action, artifact, issue\)/);
 assert.match(main, /VISION-REJECTED/);
 assert.ok(main.indexOf('rememberResult(event, action.outputDir, metadata)') >
-  main.indexOf('if (!reviewPasses(review))'));
+  main.indexOf('if (semanticReview.performed && !reviewPasses(review))'));
 assert.ok(main.indexOf('stageArtifactForVision(artifact, promotion.approved)') <
-  main.indexOf('reviewed = await reviewArtifactFrames(capture.captured'));
+  main.indexOf('reviewed = await reviewArtifactFramesCalibrated(capture.captured'));
 const reviewArtifactSource = main.slice(main.indexOf('async function reviewArtifact('),
   main.indexOf('function createRevisionOutputDir('));
-assert.ok(reviewArtifactSource.indexOf('coverage = artifactVisionCoverage(') <
+assert.ok(reviewArtifactSource.indexOf(
+  'coverage = artifactFrameCaptureCoverage(plan, capture.captured)') <
   reviewArtifactSource.indexOf('promoteVisionArtifact(staged,'));
+assert.ok(reviewArtifactSource.indexOf(
+  'coverage = artifactFrameCaptureCoverage(plan, capture.captured)') <
+  reviewArtifactSource.indexOf('await semanticArtifactReviewCapability()'),
+  'every artifact must first pass exhaustive decoded-frame capture');
+assert.match(reviewArtifactSource,
+  /if \(!semanticCapability\.available && projectIntentExpected\)[\s\S]*requires a currently trusted visual quality capability/,
+  'a governed render must never bypass its required semantic capability');
+assert.match(reviewArtifactSource,
+  /qaReceipt\.deterministicVisualQa[\s\S]*verified deterministic visual-quality evidence/,
+  'every final artifact must carry independently verified deterministic visual evidence');
+assert.match(reviewArtifactSource,
+  /deterministicVisualQaSha256:[\s\S]*deterministicVisualAnalyzerReceiptSha256:/,
+  'the promoted result must expose the exact deterministic visual receipt hashes');
+assert.match(reviewArtifactSource,
+  /autoeditor-engine-artifact-contract\/v5[\s\S]*autoeditor-engine-artifact-contract\/v3/,
+  'governed and legacy final artifacts must use the deterministic v5/v3 contracts');
+assert.match(reviewArtifactSource,
+  /if \(semanticCapability\.available\)[\s\S]*reviewArtifactFramesCalibrated\(capture\.captured/,
+  'semantic review may run only behind a current trusted capability');
+assert.match(reviewArtifactSource,
+  /context: JSON\.stringify\(invocation\.model_request\)[\s\S]*expectedFrames:[\s\S]*includeRuntime: true/,
+  'production semantic review must send only the model request and retain bound runtime/frame evidence');
+assert.match(main,
+  /expected\.size_bytes !== data\.length[\s\S]*createHash\('sha256'\)[\s\S]*expected\.sha256/,
+  'the main process must re-hash each decoded frame before semantic inference');
+assert.match(main,
+  /pending\.includeRuntime[\s\S]*Object\.freeze\(\{ result, runtime: value\.runtime \}\)/,
+  'calibrated semantic inference must retain the exact worker runtime evidence');
+assert.match(reviewArtifactSource,
+  /reviewSchema: review\.schema[\s\S]*modelSha256: MODEL_PACK_TREE_SHA256[\s\S]*runtimeSha256: VISION_RUNTIME_LOCK_SHA256[\s\S]*semanticCoverageSha256:/,
+  'the final report must summarize its calibrated review and bound model/runtime/coverage identities');
+assert.match(reviewArtifactSource,
+  /mode: 'semantic-model'[\s\S]*attempted: true[\s\S]*performed: false[\s\S]*performed: true/,
+  'semantic review is performed only after a complete calibrated result exists');
+assert.match(reviewArtifactSource,
+  /semanticCoverageSha256:[\s\S]*calibratedReviewSha256:[\s\S]*semanticReceiptSetSha256:/,
+  'promotion metadata must bind calibrated coverage, decisions, and receipt evidence');
+assert.match(main,
+  /requireSemanticVisualQualification[\s\S]*semantic-visual-qualification-result\/v1[\s\S]*MODEL_PACK_TREE_SHA256[\s\S]*VISION_RUNTIME_LOCK_SHA256[\s\S]*webgpu\\0wasm/,
+  'a capability-name claim alone must never activate semantic promotion authority');
+assert.match(reviewArtifactSource,
+  /networkAttemptsBefore = visionSessionNetworkAttempts[\s\S]*visionSessionNetworkAttempts !== networkAttemptsBefore/,
+  'semantic review must reject every production-session network attempt');
+assert.match(reviewArtifactSource,
+  /mode: 'deterministic-only'[\s\S]*Semantic visual approval is unavailable and is not claimed/,
+  'legacy fallback must explicitly disclaim semantic visual approval');
+assert.match(reviewArtifactSource,
+  /semanticReview\.performed \? review\.score : null/,
+  'deterministic-only release must never expose a semantic score');
+assert.match(main,
+  /autoeditor-final-vision-qa\/v7[\s\S]*autoeditor-final-vision-qa\/v6/,
+  'the deterministic+calibrated report shape must use fresh governed/legacy schemas');
+assert.match(main,
+  /function enforceVisionSessionNetworkBoundary\(\)[\s\S]*urls: \['http:\/\/\*\/\*', 'https:\/\/\*\/\*'\][\s\S]*callback\(\{ cancel: true \}\)/,
+  'production vision must enforce the same session-level offline boundary as qualification');
+assert.match(reviewArtifactSource,
+  /if \(plan && \(!coverage \|\| coverage\.complete !== true\)\)[\s\S]*artifactFrameCaptureCoverage\(plan, capture\.captured\)/,
+  'semantic failures must preserve exhaustive decoded-frame capture coverage');
 assert.match(reviewArtifactSource,
   /assertVisionAction\(action\);\s*promoteVisionArtifact\(staged, artifactStat\.size, artifactSha256\)/);
 assert.match(main, /delivery\.file !== desiredBasename/);
@@ -172,7 +275,7 @@ assert.throws(() => qaBindingContext.artifactQaReleaseBinding(qaReport, {
 'the QA delivery basename must match the exact desired final path');
 assert.match(main, /coverageComplete: true/);
 assert.match(main, /VISION_QA_REPORT\.json/);
-assert.match(main, /autoeditor-final-vision-qa\/v3/);
+assert.match(main, /autoeditor-final-vision-qa\/v6/);
 assert.match(main, /readArtifactQaReport/);
 assert.match(main, /readArtifactCaptions/);
 assert.match(main, /artifactCaptionRenderEvents/);
@@ -181,8 +284,23 @@ assert.match(main, /audioQa\?\.pass === true/);
 assert.match(main, /sendVisionCancel/);
 assert.match(main, /assertVisionAction/);
 assert.match(main, /contract\.mode === 'premium-edl'/);
-assert.match(main, /contract\.mode !== 'generic-baseline'/);
+assert.match(artifactContractSource,
+  /contract\.mode === 'generic-baseline' && contract\.edl !== null/);
+assert.match(artifactContractSource,
+  /contract\.mode === 'premium-edl' && !contract\.edl/);
 assert.match(main, /sidecarBinding\(contract, 'edl', edlReceipt\)/);
+assert.match(reviewArtifactSource,
+  /sequenceExpected && !sequenceReceipt/,
+  'an approved sequence must carry its exact bound engine sidecar');
+assert.match(reviewArtifactSource,
+  /!sequenceExpected && sequenceReceipt/,
+  'an unapproved source sequence must never be promoted');
+assert.match(reviewArtifactSource,
+  /sequencePlanSha256\(approvedPlan\)/,
+  'final QA must bind the sequence receipt to the exact approved plan');
+assert.match(reviewArtifactSource,
+  /sourceManifestContractSha256\(approvedManifest\)/,
+  'final QA must bind the sequence receipt to the exact approved manifest');
 assert.match(main, /createRevisionOutputDir\(selectedRoot, revisionInput\)/);
 assert.match(main, /priorResult: revisionInput/);
 const revisionSource = main.slice(main.indexOf('function createRevisionOutputDir('),
@@ -401,18 +519,48 @@ vm.runInNewContext(
 assert.ok(main.indexOf("event.qaPass !== true") <
   main.indexOf('void reviewArtifact(event, action)'));
 const retryBody = main.match(
-  /function retryRejectedRender\(action, artifact, issue\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  /async function retryRejectedRender\(action, artifact, issue\) \{([\s\S]*?)\n\}/)?.[1] || '';
 assert.match(retryBody, /\.\.\.action\.payload/);
 assert.match(retryBody, /normalizeApplyRequest\(payload\)/);
 assert.match(retryBody, /visionAttempt: priorAttempts \+ 1/);
+assert.match(retryBody, /delete payload\.projectIntentAuthority/);
+assert.match(retryBody, /reserveLocalRender\(/);
+assert.match(retryBody, /await authorizeProjectIntentRequest\(/);
+assert.match(retryBody, /reservation\.projectIntentAuthorityKey = authorized\.signingKey/);
+assert.ok(retryBody.indexOf('delete payload.projectIntentAuthority') <
+  retryBody.indexOf('normalizeApplyRequest(payload)'));
+assert.ok(retryBody.indexOf('reserveLocalRender(') <
+  retryBody.indexOf('await authorizeProjectIntentRequest('));
 assert.ok(!retryBody.includes('delete payload.proposal'));
 const cancelBody = main.match(
   /async function cancelLocal\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
 assert.match(cancelBody, /action\.canceled = true/);
+assert.match(cancelBody, /action\.stage = 'canceling'/);
 assert.match(cancelBody, /rejectPendingVisionForAction/);
-assert.match(cancelBody, /await stopProcessTree\(action\.proc\)/);
+assert.match(cancelBody, /await Promise\.allSettled\(\[[\s\S]*stopProcessTree\(action\.proc\)/);
 assert.ok(cancelBody.indexOf('action.canceled = true') <
-  cancelBody.indexOf('await stopProcessTree(action.proc)'));
+  cancelBody.indexOf('stopProcessTree(action.proc)'));
+assert.ok(cancelBody.indexOf('stopProcessTree(action.proc)') <
+  cancelBody.indexOf('if (activeRender === action) activeRender = null'),
+  'the render lock must remain held until process and probe cleanup settle');
+assert.match(cancelBody,
+  /running: !!activeRender, rendering: !!activeRender,[\s\S]*activeRender: activeRenderState\(\)/,
+  'late cancellation completion must report current ownership, never force idle');
+assert.match(cancelBody, /runtimeCapabilityPreflight\?\.cancel\(\)/,
+  'cancel must await an in-flight capability probe as well as the render child');
+const childCloseBody = main.match(
+  /child\.on\('close', \(code\) => \{([\s\S]*?)\n  \}\);/)?.[1] || '';
+assert.match(childCloseBody,
+  /kind === 'render' && activeRender === action && !action\.qaPending && !action\.canceled/,
+  'a canceled render must retain the render lock until cancelLocal finishes descendant cleanup');
+const quitBody = main.match(
+  /app\.on\('before-quit', \(event\) => \{([\s\S]*?)\n\}\);/)?.[1] || '';
+assert.match(quitBody, /event\.preventDefault\(\)/);
+assert.match(quitBody, /quitDrainStarted/);
+assert.match(quitBody, /Promise\.allSettled\(\[/);
+assert.match(quitBody, /runtimeCapabilityPreflight\?\.cancel\(\)/);
+assert.match(quitBody, /quitDrainComplete = true;\s*app\.quit\(\)/,
+  'shutdown must re-enter Electron quit only after child/probe cleanup settles');
 
 const renderer = fs.readFileSync(path.join(
   __dirname, '..', 'helper', 'renderer', 'app.js'), 'utf8');
@@ -448,6 +596,30 @@ function reviewJson({ pass = true, issue = '', observedTargetIds = [] } = {}) {
 }
 
 (async () => {
+  const closedCalls = [];
+  const closedPositive = await reviewArtifactFrameChoices(closedFrame, {
+    requestChoice: async (_frame, question, descriptor) => {
+      closedCalls.push({ question, descriptor });
+      return 'YES';
+    },
+  });
+  assert.strictEqual(reviewPasses(closedPositive.review), true);
+  assert.deepStrictEqual(closedPositive.reviewedTargetIds, ['closed-target']);
+  assert.deepStrictEqual(closedCalls.map(({ descriptor }) => descriptor.key),
+    CLOSED_REVIEW_KEYS);
+  const closedDefective = await reviewArtifactFrameChoices(closedFrame, {
+    requestChoice: async (_frame, _question, descriptor) =>
+      ['captions', 'productionDesign'].includes(descriptor.key) ? 'NO' : 'YES',
+  });
+  assert.strictEqual(closedDefective.review.valid, true);
+  assert.strictEqual(closedDefective.review.pass, false);
+  assert.strictEqual(closedDefective.review.checks.captions, false);
+  assert.strictEqual(closedDefective.review.checks.productionDesign, false);
+  assert.deepStrictEqual(closedDefective.reviewedTargetIds, ['closed-target']);
+  await assert.rejects(reviewArtifactFrameChoices(closedFrame, {
+    requestChoice: async () => 'perhaps',
+  }), /exact YES or NO token/);
+
   const frames = Array.from({ length: 18 }, (_, index) => ({
     id: `frame-${String(index + 1).padStart(2, '0')}`,
     path: `frame-${String(index + 1).padStart(2, '0')}.jpg`,

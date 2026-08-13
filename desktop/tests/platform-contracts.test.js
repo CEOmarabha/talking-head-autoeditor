@@ -18,6 +18,9 @@ const legacyBuilder = fs.readFileSync(
   path.join(desktop, 'electron-builder.yml'), 'utf8');
 const helperMain = fs.readFileSync(
   path.join(desktop, 'helper', 'main.js'), 'utf8');
+const runtimeCapabilityRunner = fs.readFileSync(
+  path.join(desktop, 'helper', 'lib',
+    'runtime-capability-check-runner.js'), 'utf8');
 const helperBuilder = fs.readFileSync(
   path.join(desktop, 'electron-builder.helper.yml'), 'utf8');
 const helperWorkflow = readNormalized(
@@ -88,6 +91,24 @@ assert.ok(!main.includes("require('electron-updater')"));
 assert.ok(!main.includes('checkForUpdatesAndNotify'));
 assert.ok(!desktopPackage.dependencies?.['electron-updater']);
 assert.ok(!desktopPackage.devDependencies?.['electron-updater']);
+for (const contractSuite of [
+  'tests/transition-plan.test.js',
+  'tests/sfx-plan.test.js',
+  'tests/music-plan.test.js',
+  'tests/project-intent-authority.test.js',
+  'tests/project-intent-artifact.test.js',
+  'tests/runtime-capabilities.test.js',
+  'tests/runtime-capability-check-runner.test.js',
+  'tests/runtime-capability-preflight.test.js',
+  'tests/calibrated-semantic-choice.test.js',
+  'tests/semantic-artifact-review.test.js',
+  'tests/calibrated-semantic-promotion-gate.test.js',
+  'tests/semantic-visual-qualification.test.js',
+  'tests/semantic-visual-training.test.js',
+  'tests/stale-vision-benchmark-processes.test.js',
+]) {
+  assert.ok(desktopPackage.scripts.test.includes(contractSuite));
+}
 assert.ok(!product.includes('ryan:'));
 assert.ok(product.includes("process.env.PRODUCT || 'pse'"));
 assert.ok(legacyBuilder.includes('appId: com.marabha.pseautoeditor'));
@@ -112,6 +133,14 @@ for (const spec of [engineSpec, helperDaemonSpec]) {
   assert.ok(spec.includes('EXE(pyz, a.scripts, options'));
   assert.match(spec, /excludes=\[[^\]]*"av"/s);
 }
+assert.ok(engineSpec.includes(
+  '"autoeditor.render_capability_runtime_probe"'));
+assert.ok(helperMain.includes("name: 'render-capability-runtime-probe'"));
+assert.ok(helperMain.includes("'render_capability_runtime_probe.py'"));
+assert.ok(runtimeCapabilityRunner.includes(
+  "'autoeditor-engine-render-capability-self-test'"));
+assert.ok(runtimeCapabilityRunner.includes(
+  "'--render-capability-self-test', receiptFile, session"));
 assert.ok(helperMain.includes('AUTOEDITOR_CREATIVE_SMOKE_TEST'));
 assert.ok(helperMain.includes('spawn(p.daemon, [mode]'));
 assert.ok(helperMain.includes("localProcess('--local-render'"));
@@ -123,6 +152,111 @@ assert.ok(!helperWorkflow.includes('macos-15-intel'));
 assert.ok(helperWorkflow.includes(
   'Package and smoke-test the Windows x64 portable build'));
 assert.ok(helperWorkflow.includes('*-portable.zip'));
+const helperAssetStageAt = helperWorkflow.indexOf(
+  '- name: Stage engine, models, profiles, fonts, certificates and notices');
+const helperFfmpegGateAt = helperWorkflow.indexOf(
+  '- name: Verify required FFmpeg capabilities');
+const helperFrozenProbeAt = helperWorkflow.indexOf(
+  '- name: Exercise staged frozen production probes');
+const helperNodeSetupAt = helperWorkflow.indexOf(
+  '- uses: actions/setup-node@', helperFrozenProbeAt);
+const helperSourceSafetyAt = helperWorkflow.indexOf(
+  '- name: Run safety tests against the verified platform FFmpeg');
+assert.ok(helperAssetStageAt >= 0);
+assert.ok(helperFfmpegGateAt > helperAssetStageAt);
+assert.ok(helperFrozenProbeAt > helperFfmpegGateAt);
+assert.ok(helperNodeSetupAt > helperFrozenProbeAt);
+assert.ok(helperSourceSafetyAt > helperFrozenProbeAt);
+const helperFrozenProbeBlock = helperWorkflow.slice(
+  helperFrozenProbeAt, helperNodeSetupAt);
+for (const stagedBinding of [
+  'stage / "engine" / f"autoeditor-engine{suffix}"',
+  'stage / "bin" / f"ffmpeg{suffix}"',
+  'stage / "bin" / f"ffprobe{suffix}"',
+  'stage / "models" / "faster-whisper-small"',
+  'fonts / "WorkSans-Variable.ttf"',
+]) {
+  assert.ok(helperFrozenProbeBlock.includes(stagedBinding));
+}
+for (const frozenProbe of [
+  '--caption-render-self-test',
+  '--sfx-production-self-test',
+  '--music-production-self-test',
+  '--asr-capability-self-test',
+  '--render-capability-self-test',
+  '--dialogue-cleanup-capability-self-test',
+]) {
+  assert.strictEqual(
+    (helperFrozenProbeBlock.match(new RegExp(frozenProbe, 'g')) || []).length, 1);
+}
+for (const receipt of [
+  'ASR_RUNTIME_PROBE_RECEIPT.json',
+  'RENDER_CAPABILITY_RUNTIME_PROBE_RECEIPT.json',
+  'DIALOGUE_CLEANUP_RUNTIME_PROBE_RECEIPT.json',
+]) {
+  assert.strictEqual(
+    (helperFrozenProbeBlock.match(new RegExp(receipt, 'g')) || []).length, 1);
+}
+assert.ok(helperFrozenProbeBlock.includes('tempfile.mkdtemp('));
+assert.ok(helperFrozenProbeBlock.includes(
+  'prefix="autoeditor-frozen-probes-", dir=runner_temp'));
+assert.ok(helperFrozenProbeBlock.includes('probe_root.chmod(0o700)'));
+assert.ok(helperFrozenProbeBlock.includes('PROBE_TIMEOUT_SECONDS = 300'));
+assert.ok(helperFrozenProbeBlock.includes('FIXTURE_TIMEOUT_SECONDS = 120'));
+assert.ok(helperFrozenProbeBlock.includes('PROCESS_TREE_GRACE_SECONDS = 5'));
+assert.ok(helperFrozenProbeBlock.includes(
+  'PROCESS_TREE_KILL_TIMEOUT_SECONDS = 20'));
+assert.ok(helperFrozenProbeBlock.includes('MAX_COMMAND_OUTPUT_BYTES'));
+assert.ok(helperFrozenProbeBlock.includes('MAX_PROBE_FILE_BYTES'));
+assert.ok(helperFrozenProbeBlock.includes('MAX_PROBE_FILES'));
+assert.ok(helperFrozenProbeBlock.includes('MAX_PROBE_TREE_BYTES'));
+assert.ok(helperFrozenProbeBlock.includes('timeout=timeout'));
+assert.ok(helperFrozenProbeBlock.includes('subprocess.Popen('));
+assert.ok(helperFrozenProbeBlock.includes(
+  '"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP'));
+assert.ok(helperFrozenProbeBlock.includes('"start_new_session": True'));
+assert.ok(helperFrozenProbeBlock.includes(
+  '["taskkill.exe", "/PID", str(process.pid), "/T", "/F"]'));
+assert.ok(helperFrozenProbeBlock.includes(
+  'os.killpg(process.pid, signal.SIGTERM)'));
+assert.ok(helperFrozenProbeBlock.includes(
+  'os.killpg(process.pid, signal.SIGKILL)'));
+assert.ok(helperFrozenProbeBlock.includes('terminate_process_tree(process)'));
+assert.ok(helperFrozenProbeBlock.includes('process.kill()'));
+assert.ok(!helperFrozenProbeBlock.includes('shell=True'));
+const helperProbeCreateAt = helperFrozenProbeBlock.indexOf(
+  'probe_root = Path(tempfile.mkdtemp(');
+const helperProbeCreateEndAt = helperFrozenProbeBlock.indexOf(
+  ')).resolve()', helperProbeCreateAt) + ')).resolve()'.length;
+const helperProbeChmodAt = helperFrozenProbeBlock.indexOf(
+  'probe_root.chmod(0o700)', helperProbeCreateEndAt);
+assert.ok(helperProbeCreateAt >= 0);
+assert.ok(helperProbeCreateEndAt > helperProbeCreateAt);
+assert.ok(helperProbeChmodAt > helperProbeCreateEndAt);
+assert.strictEqual(helperFrozenProbeBlock.slice(
+  helperProbeCreateEndAt, helperProbeChmodAt).trim(), 'try:');
+const helperProbeTimeoutCatchAt = helperFrozenProbeBlock.indexOf(
+  'except subprocess.TimeoutExpired as error:');
+const helperProbeTreeKillAt = helperFrozenProbeBlock.indexOf(
+  'terminate_process_tree(process)', helperProbeTimeoutCatchAt);
+const helperProbeTimeoutRaiseAt = helperFrozenProbeBlock.indexOf(
+  'raise RuntimeError(f"{label} exceeded its timeout")',
+  helperProbeTimeoutCatchAt);
+assert.ok(helperProbeTimeoutCatchAt >= 0);
+assert.ok(helperProbeTreeKillAt > helperProbeTimeoutCatchAt);
+assert.ok(helperProbeTimeoutRaiseAt > helperProbeTreeKillAt);
+assert.ok(helperFrozenProbeBlock.includes('"HF_HOME": str(probe_root'));
+assert.ok(helperFrozenProbeBlock.includes('"HF_HUB_OFFLINE": "1"'));
+assert.ok(helperFrozenProbeBlock.includes('"TEMP": str(probe_root)'));
+assert.ok(helperFrozenProbeBlock.includes('"TMP": str(probe_root)'));
+assert.ok(helperFrozenProbeBlock.includes('"TMPDIR": str(probe_root)'));
+assert.ok(helperFrozenProbeBlock.includes('"TRANSFORMERS_OFFLINE": "1"'));
+assert.ok(helperFrozenProbeBlock.includes('event.get("errors") != {}'));
+assert.ok(helperFrozenProbeBlock.includes('finally:'));
+assert.ok(helperFrozenProbeBlock.includes('probe_root.is_symlink()'));
+assert.ok(helperFrozenProbeBlock.includes(
+  'cleanup_root.parent != runner_temp'));
+assert.ok(helperFrozenProbeBlock.includes('shutil.rmtree(cleanup_root)'));
 assert.ok(helperWorkflow.includes('Render real HyperFrames and Remotion probes'));
 assert.ok(helperWorkflow.includes('STAGE=$(realpath "$STAGE")'));
 assert.ok(helperWorkflow.includes(
@@ -322,6 +456,22 @@ assert.ok(helperWorkflow.includes(
   'python -m unittest tests.test_safety tests.test_asr'));
 assert.ok(workflow.includes(
   'python -m unittest tests.test_safety tests.test_asr'));
+for (const contractSuite of [
+  'tests.test_sequence_plan', 'tests.test_sequence_render',
+  'tests.test_story_pipeline_contract', 'tests.test_edit_policy',
+  'tests.test_project_intent_policy_bridge', 'tests.test_runtime_capabilities',
+  'tests.test_project_intent_pipeline_authority',
+  'tests.test_transition_plan', 'tests.test_transition_render',
+  'tests.test_render_capability_runtime_probe',
+  'tests.test_render_capability_engine_entry',
+  'tests.test_sfx_plan', 'tests.test_sfx_render', 'tests.test_sfx_production',
+  'tests.test_sfx_engine_entry', 'tests.test_asr_runtime_probe',
+  'tests.test_asr_engine_entry',
+  'tests.test_music_plan', 'tests.test_music_render',
+]) {
+  assert.ok(helperWorkflow.includes(contractSuite));
+  assert.ok(workflow.includes(contractSuite));
+}
 for (const nativeMediaRuntime of ['Electron', 'Remotion compositor']) {
   assert.ok(thirdPartyNotices.includes(nativeMediaRuntime));
 }
@@ -444,6 +594,21 @@ assert.ok(helperHtml.includes('Built by Omar Marabha'));
 // electron-builder cannot prune HyperFrames/Remotion out of the installer.
 assert.ok(helperBuilder.includes(
   'from: helper-staging/creative-runtime/node_modules'));
+assert.ok(helperBuilder.includes('from: helper-staging/models'));
+assert.ok(!legacyBuilder.includes('from: staging/models'));
+assert.ok(helperWorkflow.includes('lfs: true'));
+assert.ok(helperWorkflow.includes(
+  'packaging/vision-model-packs/$VISION_PACK'));
+assert.ok(helperWorkflow.includes(
+  'packaging/extract_cached_vision_model.py --verify-only'));
+assert.ok(helperWorkflow.includes(
+  'models/vision/smolvlm2-067788b187b95ebe'));
+assert.ok(helperWorkflow.includes('tests.test_cached_vision_model'));
+assert.ok(helperWorkflow.includes(
+  'desktop/helper/vision/LICENSE.transformers.txt'));
+assert.ok(helperWorkflow.includes(
+  '$STAGE/licenses/Apache-2.0.txt'));
+assert.ok(workflow.includes('tests.test_cached_vision_model'));
 // The DMG stays plain. Null selects dmg-builder's bundled image, while an
 // explicit color is its supported no-background-image path.
 assert.ok(helperBuilder.includes('backgroundColor: "#0b0d10"'));

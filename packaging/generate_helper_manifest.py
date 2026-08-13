@@ -301,6 +301,7 @@ def main() -> None:
             "python_utf8_mode",
             "in_process_low_speech_cutter",
             "typed_deepseek_revision_contract",
+            "local_vision_model",
             "hyperframes", "remotion", "chrome_headless_shell", "fonts",
             "certificate_bundle", "creator_profiles",
         ],

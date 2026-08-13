@@ -104,6 +104,8 @@ assert.ok(pipelineSource.includes('validate_story_acceptance('));
 assert.ok(pipelineSource.indexOf('story_source_words = transcribe(orig_src, work)') <
   pipelineSource.lastIndexOf('word_guarded_cut('));
 assert.ok(pipelineSource.includes(
-  'if not story_plan and not (a.edl and a.edl.exists()):'));
+  'if not story_plan and not sequence_handoff_receipt and not ('));
+assert.ok(pipelineSource.includes(
+  'a.edl and a.edl.exists()):'));
 
 console.log('helper local-only setup contract passed');

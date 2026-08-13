@@ -11,7 +11,7 @@ repo_root = spec_dir.parent
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
-            "onnxruntime"):
+            "onnxruntime", "tqdm"):
     # Every release lock includes these runtime backends.  Failing the freeze
     # is safer than creating an installer that opens normally and only finds
     # out on a friend's first transcript that a native ASR dependency was
@@ -28,6 +28,26 @@ a = Analysis(
                                    "autoeditor.premium",
                                    "autoeditor.creative_contract",
                                    "autoeditor.creative_constraints",
+                                   "autoeditor.sequence_plan",
+                                   "autoeditor.sequence_render",
+                                   "autoeditor.color_contract",
+                                   "autoeditor.render_capability_runtime_probe",
+                                   "autoeditor.sfx_plan",
+                                   "autoeditor.sfx_render",
+                                   "autoeditor.sfx_production",
+                                   "autoeditor.asr_runtime_probe",
+                                   "autoeditor.dialogue_cleanup_runtime_probe",
+                                   "autoeditor.music_plan",
+                                   "autoeditor.music_render",
+                                   "autoeditor.music_production",
+                                   "autoeditor.transition_plan",
+                                   "autoeditor.transition_render",
+                                   "autoeditor.edit_policy",
+                                   "autoeditor.project_intent_policy_bridge",
+                                   "autoeditor.project_intent_authority",
+                                   "autoeditor.runtime_capabilities",
+                                   "autoeditor.visual_quality_deterministic",
+                                   "autoeditor.visual_quality_production",
                                    "autoeditor.providers",
                                    "autoeditor.profiles",
                                    "autoeditor.config",

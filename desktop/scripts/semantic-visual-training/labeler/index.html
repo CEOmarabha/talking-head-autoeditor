@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AutoEditor semantic visual labeling</title>
+  <style>
+    body { font: 15px/1.4 sans-serif; margin: 24px; max-width: 960px; color: #111; }
+    code, pre { font-family: ui-monospace, Consolas, monospace; }
+    .row { display: flex; gap: 24px; align-items: flex-start; }
+    img { max-width: 420px; border: 1px solid #ccc; background: #111; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; padding: 6px; }
+    button { margin-top: 12px; padding: 8px 14px; }
+    .warn { color: #8a1f11; }
+    .ok { color: #0b5; }
+  </style>
+</head>
+<body>
+  <h1>Local semantic visual labeling</h1>
+  <p>
+    Offline only. Do not invent a gold label. Subjective classes need three
+    blind annotators and a distinct adjudicator. Qualification labels stay
+    sealed from training.
+  </p>
+  <div class="row">
+    <div>
+      <img id="frame" alt="frame preview">
+      <p id="asset"></p>
+    </div>
+    <form id="form">
+      <label>Annotator ID</label>
+      <input name="annotator_id" required pattern="[a-z][a-z0-9._-]{0,31}">
+      <label>Role</label>
+      <select name="role">
+        <option value="annotator">blind annotator</option>
+        <option value="adjudicator">adjudicator</option>
+      </select>
+      <label>Assertion class</label>
+      <select name="assertion_class">
+        <option>target</option>
+        <option>captions</option>
+        <option>framing</option>
+        <option>visualVariety</option>
+        <option>graphics</option>
+        <option>transitions</option>
+        <option>productionDesign</option>
+      </select>
+      <label>Split</label>
+      <select name="split">
+        <option value="development">development</option>
+        <option value="qualification">qualification</option>
+      </select>
+      <label>Source ID</label>
+      <input name="source_id" required>
+      <label>Template ID</label>
+      <input name="template_id" required>
+      <label>Label</label>
+      <select name="label">
+        <option>clean</option>
+        <option>defect</option>
+        <option>ambiguous</option>
+      </select>
+      <label>Assertion text</label>
+      <textarea name="assertion" rows="4" required></textarea>
+      <button type="submit">Save this annotation</button>
+      <p id="status"></p>
+    </form>
+  </div>
+  <script>
+    async function refresh() {
+      const next = await fetch('/api/next').then((r) => r.json());
+      document.getElementById('frame').src = next.preview || '';
+      document.getElementById('asset').textContent = next.asset
+        ? `${next.asset.relative_path} sha256:${next.asset.sha256}` : 'No unlabeled assets in inbox';
+      document.getElementById('form').dataset.asset = JSON.stringify(next.asset || null);
+    }
+    document.getElementById('form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const data = Object.fromEntries(new FormData(form).entries());
+      data.asset = JSON.parse(form.dataset.asset || 'null');
+      const response = await fetch('/api/label', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const result = await response.json();
+      const status = document.getElementById('status');
+      status.className = response.ok ? 'ok' : 'warn';
+      status.textContent = result.message || JSON.stringify(result);
+      if (response.ok) await refresh();
+    });
+    refresh();
+  </script>
+</body>
+</html>

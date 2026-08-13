@@ -7,9 +7,13 @@ const path = require('path');
 
 const MODEL_ID = 'HuggingFaceTB/SmolVLM2-256M-Video-Instruct';
 const MODEL_REVISION = '067788b187b95ebe7b2e040b3e4299e342e5b8fd';
-const CACHE_SCHEMA = 'autoeditor-local-media-analysis/v2';
+const CACHE_SCHEMA = 'autoeditor-local-media-analysis/v4';
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 30000;
+const MAX_TRANSCRIPT_TEXT_BYTES = 4 * MAX_TRANSCRIPT_CHARS;
+const MAX_TIMED_WORDS = 50000;
+const MAX_TRANSCRIPT_JSON_BYTES = 64 * 1024 * 1024;
+const MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_VISUAL_CHARS = 5000;
 const MAX_FRAMES_TOTAL = 8;
 const MAX_ARTIFACT_VISION_FRAMES = 128;
@@ -20,6 +24,8 @@ const SAMPLE_BYTES = 64 * 1024;
 const ARTIFACT_VISION_PLAN_SCHEMA = 'autoeditor-artifact-vision-plan/v2';
 const ARTIFACT_VISION_COVERAGE_SCHEMA =
   'autoeditor-artifact-vision-coverage/v2';
+const ARTIFACT_FRAME_CAPTURE_COVERAGE_SCHEMA =
+  'autoeditor-artifact-frame-capture-coverage/v1';
 const ARTIFACT_EVENT_LAYERS = Object.freeze([
   'punch_ins', 'broll', 'graphics', 'transitions',
 ]);
@@ -128,6 +134,127 @@ function fileFingerprint(file) {
   }
 }
 
+function sha256FileStable(file) {
+  return new Promise((resolve, reject) => {
+    let before;
+    try {
+      before = fs.statSync(file);
+      if (!before.isFile() || before.size < 1) {
+        throw new Error('attached video is empty');
+      }
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => {
+      try {
+        const after = fs.statSync(file);
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
+            before.dev !== after.dev || before.ino !== after.ino) {
+          throw new Error('attached video changed while it was being hashed');
+        }
+        resolve(hash.digest('hex'));
+      } catch (error) { reject(error); }
+    });
+  });
+}
+
+function normalizeTranscriptEvidence(transcriptRaw, parsedWords,
+                                     transcriptWasTruncated = false) {
+  const sanitizedTranscript = String(transcriptRaw || '')
+    .replace(/\0/g, '').trim();
+  const transcriptComplete = !transcriptWasTruncated &&
+    sanitizedTranscript.length <= MAX_TRANSCRIPT_CHARS;
+  const transcript = sanitizedTranscript.slice(0, MAX_TRANSCRIPT_CHARS);
+  if (!Array.isArray(parsedWords)) {
+    return Object.freeze({
+      transcript, transcriptComplete, words: Object.freeze([]),
+      timedWordCount: 0, timedWordsComplete: false,
+    });
+  }
+  const timedWordCount = parsedWords.length;
+  let structurallyComplete = timedWordCount <= MAX_TIMED_WORDS;
+  let priorStart = -1;
+  let priorEnd = -1;
+  const words = [];
+  for (const rawWord of parsedWords.slice(0, MAX_TIMED_WORDS)) {
+    const word = bounded(rawWord?.w, 120);
+    const start = rawWord?.s;
+    const end = rawWord?.e;
+    if (!word || typeof start !== 'number' || !Number.isFinite(start) ||
+        typeof end !== 'number' || !Number.isFinite(end) || start < 0 ||
+        end < start || start < priorStart || end < priorEnd) {
+      structurallyComplete = false;
+      continue;
+    }
+    words.push({ word, start, end });
+    priorStart = start;
+    priorEnd = end;
+  }
+  const timedWordsComplete = structurallyComplete &&
+    words.length === timedWordCount;
+  return Object.freeze({
+    transcript, transcriptComplete,
+    words: Object.freeze(words.map((word) => Object.freeze(word))),
+    timedWordCount, timedWordsComplete,
+  });
+}
+
+function shiftTimedWordsToContainerTimeline(parsedWords, audioStartOffsetMs) {
+  if (!Array.isArray(parsedWords)) {
+    throw new TypeError('timed transcript must be an array');
+  }
+  if (!Number.isSafeInteger(audioStartOffsetMs)) {
+    throw new TypeError('audio start offset must be exact integer milliseconds');
+  }
+  let priorStartMs = -1;
+  let priorEndMs = -1;
+  return Object.freeze(parsedWords.map((word, index) => {
+    const start = word?.s;
+    const end = word?.e;
+    if (typeof start !== 'number' || !Number.isFinite(start) || start < 0 ||
+        typeof end !== 'number' || !Number.isFinite(end) || end < start) {
+      throw new Error(`timed transcript word ${index + 1} has invalid local timing`);
+    }
+    const localStartMs = Math.round(start * 1000);
+    const localEndMs = Math.round(end * 1000);
+    const shiftedStartMs = localStartMs + audioStartOffsetMs;
+    const shiftedEndMs = localEndMs + audioStartOffsetMs;
+    if (!Number.isSafeInteger(localStartMs) || !Number.isSafeInteger(localEndMs) ||
+        !Number.isSafeInteger(shiftedStartMs) ||
+        !Number.isSafeInteger(shiftedEndMs) || shiftedStartMs < 0 ||
+        shiftedEndMs < shiftedStartMs || shiftedStartMs < priorStartMs ||
+        shiftedEndMs < priorEndMs) {
+      throw new Error(`timed transcript word ${index + 1} is outside the container timeline`);
+    }
+    priorStartMs = shiftedStartMs;
+    priorEndMs = shiftedEndMs;
+    return Object.freeze({
+      ...word,
+      s: shiftedStartMs / 1000,
+      e: shiftedEndMs / 1000,
+    });
+  }));
+}
+
+function readTranscriptPrefix(file) {
+  if (!fs.existsSync(file)) return { text: '', truncated: false };
+  const stat = fs.statSync(file);
+  const wanted = Math.min(stat.size, MAX_TRANSCRIPT_TEXT_BYTES);
+  const buffer = Buffer.alloc(wanted);
+  const handle = fs.openSync(file, 'r');
+  try {
+    if (wanted && fs.readSync(handle, buffer, 0, wanted, 0) !== wanted) {
+      throw new Error('transcript changed while it was being read');
+    }
+  } finally { fs.closeSync(handle); }
+  return { text: buffer.toString('utf8'), truncated: stat.size > wanted };
+}
+
 function parseRate(value) {
   if (typeof value !== 'string') return 0;
   const [top, bottom = '1'] = value.split('/');
@@ -135,12 +262,63 @@ function parseRate(value) {
   return Number.isFinite(result) ? Math.round(result * 1000) / 1000 : 0;
 }
 
+function streamDurationSeconds(stream) {
+  const direct = Number(stream?.duration);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const durationTs = Number(stream?.duration_ts);
+  if (Number.isFinite(durationTs) && durationTs > 0 &&
+      typeof stream?.time_base === 'string') {
+    const [numerator, denominator] = stream.time_base.split('/').map(Number);
+    const derived = durationTs * numerator / denominator;
+    if (Number.isFinite(derived) && derived > 0) return derived;
+  }
+  const tags = stream?.tags;
+  if (tags && typeof tags === 'object' && !Array.isArray(tags)) {
+    const matches = Object.entries(tags)
+      .filter(([key]) => String(key).toUpperCase() === 'DURATION');
+    if (matches.length === 1 && typeof matches[0][1] === 'string') {
+      const match = /^(\d{2,9}):([0-5]\d):([0-5]\d)(?:\.(\d{1,9}))?$/.exec(
+        matches[0][1]);
+      if (match) {
+        const fraction = match[4] ? Number(`0.${match[4]}`) : 0;
+        const derived = Number(match[1]) * 3600 + Number(match[2]) * 60 +
+          Number(match[3]) + fraction;
+        if (Number.isFinite(derived) && derived > 0) return derived;
+      }
+    }
+  }
+  return null;
+}
+
 function summarizeProbe(raw) {
   const format = raw && typeof raw.format === 'object' ? raw.format : {};
   const streams = Array.isArray(raw?.streams) ? raw.streams : [];
   const video = streams.find((stream) => stream.codec_type === 'video') || {};
   const audio = streams.find((stream) => stream.codec_type === 'audio') || null;
-  const duration = Number(format.duration || video.duration || 0);
+  const declaredFormatStart = format.start_time === undefined ||
+    format.start_time === null ? NaN : Number(format.start_time);
+  const streamStarts = streams.map((stream) => Number(stream?.start_time))
+    .filter(Number.isFinite);
+  const formatStart = Number.isFinite(declaredFormatStart)
+    ? declaredFormatStart
+    : (streamStarts.length ? Math.min(...streamStarts) : NaN);
+  const declaredDuration = Number(format.duration);
+  const derivedStreamEnds = streams.map((stream) => {
+    const start = Number(stream?.start_time);
+    const streamDuration = streamDurationSeconds(stream);
+    return Number.isFinite(start) && Number.isFinite(formatStart) &&
+      Number.isFinite(streamDuration)
+      ? start - formatStart + streamDuration : NaN;
+  }).filter((value) => Number.isFinite(value) && value > 0);
+  const duration = Number.isFinite(declaredDuration) && declaredDuration > 0
+    ? declaredDuration
+    : (derivedStreamEnds.length ? Math.max(...derivedStreamEnds) : 0);
+  const relativeStartMs = (stream) => {
+    if (stream?.start_time === undefined || stream?.start_time === null) return null;
+    const start = Number(stream.start_time);
+    return Number.isFinite(start) && Number.isFinite(formatStart)
+      ? Math.round((start - formatStart) * 1000) : null;
+  };
   return {
     durationSeconds: Number.isFinite(duration) ? Math.round(duration * 1000) / 1000 : 0,
     bytes: Number(format.size || 0) || 0,
@@ -150,11 +328,13 @@ function summarizeProbe(raw) {
       width: Number(video.width || 0) || 0,
       height: Number(video.height || 0) || 0,
       fps: parseRate(video.avg_frame_rate || video.r_frame_rate),
+      startOffsetMs: relativeStartMs(video),
     },
     audio: audio ? {
       codec: bounded(audio.codec_name, 80),
       sampleRate: Number(audio.sample_rate || 0) || 0,
       channels: Number(audio.channels || 0) || 0,
+      startOffsetMs: relativeStartMs(audio),
     } : null,
   };
 }
@@ -228,7 +408,8 @@ async function analyzeSignals(file, probe, runtime, emit, onChild) {
   return parseSignalReport(audioLog, sceneLog, analyzedSeconds);
 }
 
-async function transcribeVideo(file, output, runtime, env, emit, onChild) {
+async function transcribeVideo(file, output, runtime, env, emit, onChild,
+                               audioStartOffsetMs) {
   emit(`Listening and transcribing ${path.basename(file)} locally...`);
   await runCommand(runtime.engine, [file, '--transcribe-only', '--out', output], {
     cwd: runtime.root, env, timeoutMs: 10 * 60 * 1000, onChild,
@@ -238,20 +419,22 @@ async function transcribeVideo(file, output, runtime, env, emit, onChild) {
   });
   const textFile = path.join(output, 'TRANSCRIPT.txt');
   const wordsFile = path.join(output, 'TRANSCRIPT.json');
-  const transcript = fs.existsSync(textFile)
-    ? bounded(fs.readFileSync(textFile, 'utf8'), MAX_TRANSCRIPT_CHARS) : '';
-  let words = [];
+  const transcriptInput = readTranscriptPrefix(textFile);
+  let parsedWords = null;
   if (fs.existsSync(wordsFile)) {
     try {
+      if (fs.statSync(wordsFile).size > MAX_TRANSCRIPT_JSON_BYTES) {
+        throw new Error('timed transcript exceeds the local evidence limit');
+      }
       const parsed = JSON.parse(fs.readFileSync(wordsFile, 'utf8'));
-      if (Array.isArray(parsed)) words = parsed.slice(0, 5000).map((word) => ({
-        word: bounded(word?.w, 120),
-        start: Number(word?.s || 0),
-        end: Number(word?.e || 0),
-      })).filter((word) => word.word);
+      if (Array.isArray(parsed)) {
+        parsedWords = shiftTimedWordsToContainerTimeline(
+          parsed, audioStartOffsetMs);
+      }
     } catch (_) { /* plain transcript remains authoritative */ }
   }
-  return { transcript, words };
+  return normalizeTranscriptEvidence(
+    transcriptInput.text, parsedWords, transcriptInput.truncated);
 }
 
 function sampleTimes(duration, count) {
@@ -928,6 +1111,84 @@ function artifactVisionCoverage(plan, capturedFrames, reviewedTargetIds) {
   };
 }
 
+function artifactFrameCaptureCoverage(plan, capturedFrames) {
+  if (!plan || plan.schema !== ARTIFACT_VISION_PLAN_SCHEMA ||
+      !Array.isArray(plan.frames) || !plan.frames.length) {
+    throw new Error('artifact vision plan is invalid');
+  }
+  const plannedIds = new Set();
+  const captured = new Map();
+  for (const frame of plan.frames) {
+    if (!frame || typeof frame.id !== 'string' || !frame.id ||
+        plannedIds.has(frame.id) || !Array.isArray(frame.targets) ||
+        !frame.targets.length) {
+      throw new Error('artifact vision plan frame IDs are invalid');
+    }
+    plannedIds.add(frame.id);
+  }
+  for (const frame of Array.isArray(capturedFrames) ? capturedFrames : []) {
+    if (!frame || typeof frame.id !== 'string' || !frame.id ||
+        captured.has(frame.id)) {
+      throw new Error('artifact frame capture IDs are invalid');
+    }
+    captured.set(frame.id, frame);
+  }
+  const missingFrameIds = plan.frames.filter((frame) => !captured.has(frame.id))
+    .map((frame) => frame.id);
+  const unknownCapturedFrameIds = [...captured.keys()]
+    .filter((id) => !plannedIds.has(id)).sort();
+  const categoryNames = new Set(Object.keys(plan.categories || {}));
+  for (const frame of plan.frames) {
+    for (const target of frame.targets) categoryNames.add(target.category);
+  }
+  const categories = Object.create(null);
+  const uncapturedCategories = [];
+  for (const category of [...categoryNames].sort()) {
+    const categoryFrames = plan.frames.filter((frame) =>
+      frame.targets.some((target) => target.category === category));
+    const plannedTargets = categoryFrames.reduce((total, frame) => total +
+      frame.targets.filter((target) => target.category === category).length, 0);
+    const capturedTargets = categoryFrames.reduce((total, frame) =>
+      total + (captured.has(frame.id) ? frame.targets.filter(
+        (target) => target.category === category).length : 0), 0);
+    const available = plan.categories?.[category]?.available !== false;
+    const status = !available ? 'unavailable' : plannedTargets === 0
+      ? 'not-planned' : capturedTargets === plannedTargets
+        ? 'captured' : 'uncaptured';
+    categories[category] = {
+      available, plannedTargets, capturedTargets, status,
+    };
+    if (status === 'uncaptured') uncapturedCategories.push(category);
+  }
+  return {
+    schema: ARTIFACT_FRAME_CAPTURE_COVERAGE_SCHEMA,
+    complete: missingFrameIds.length === 0 &&
+      unknownCapturedFrameIds.length === 0 && uncapturedCategories.length === 0,
+    semanticReviewPerformed: false,
+    plannedFrameCount: plan.frames.length,
+    capturedFrameCount: plan.frames.length - missingFrameIds.length,
+    plannedTargetCount: plan.frames.reduce(
+      (total, frame) => total + frame.targets.length, 0),
+    capturedTargetCount: plan.frames.reduce((total, frame) =>
+      total + (captured.has(frame.id) ? frame.targets.length : 0), 0),
+    missingFrameIds,
+    unknownCapturedFrameIds,
+    uncapturedCategories,
+    categories,
+    captionSampling: plan.captionSampling || null,
+    cutSampling: plan.cutSampling || null,
+    frames: plan.frames.map((frame) => ({
+      id: frame.id,
+      timeSeconds: frame.timeSeconds,
+      targetIds: frame.targets.map((target) => target.id),
+      categories: [...new Set(frame.targets.map(
+        (target) => target.category))].sort(),
+      captured: captured.has(frame.id),
+      semanticallyReviewed: false,
+    })),
+  };
+}
+
 async function extractFrames(file, probe, output, count, runtime, onChild) {
   const frames = [];
   for (const [index, seconds] of sampleTimes(probe.durationSeconds, count).entries()) {
@@ -971,7 +1232,14 @@ async function extractArtifactVisionFrames(file, plan, output, runtime, onChild,
       if (!fs.existsSync(frame) || fs.statSync(frame).size < 1) {
         throw new Error('FFmpeg did not produce a frame');
       }
-      captured.push({ ...planned, path: frame });
+      const frameStat = fs.statSync(frame);
+      const frameSha256 = await sha256FileStable(frame);
+      captured.push({
+        ...planned,
+        path: frame,
+        sha256: frameSha256,
+        size_bytes: frameStat.size,
+      });
     } catch (error) {
       captureBlocked = bounded(error?.message || error, 500) ||
         'artifact frame capture failed';
@@ -992,7 +1260,7 @@ function assistantText(value) {
 function readCache(file, digest) {
   try {
     const raw = fs.readFileSync(file, 'utf8');
-    if (Buffer.byteLength(raw, 'utf8') > 100000) return null;
+    if (Buffer.byteLength(raw, 'utf8') > MAX_CACHE_BYTES) return null;
     const value = JSON.parse(raw);
     if (value?.schema !== CACHE_SCHEMA || value?.digest !== digest ||
         !value.report || typeof value.report !== 'object') return null;
@@ -1012,9 +1280,17 @@ async function analyzeOne(file, index, frameCount, {
   runtime, env, cacheRoot, describeFrames, emit, onChild,
 }) {
   const before = fileFingerprint(file);
-  const cacheFile = path.join(cacheRoot, `${before.digest}.json`);
-  const cached = readCache(cacheFile, before.digest);
+  const sourceSha256 = await sha256FileStable(file);
+  const sourceId = `source-${sourceSha256.slice(0, 24)}`;
+  const cacheFile = path.join(cacheRoot, `${sourceSha256}.json`);
+  const cached = readCache(cacheFile, sourceSha256);
   if (cached) {
+    const afterCacheRead = fileFingerprint(file);
+    const afterCacheSha256 = await sha256FileStable(file);
+    if (afterCacheRead.digest !== before.digest ||
+        afterCacheSha256 !== sourceSha256) {
+      throw new Error('attached video changed during local analysis');
+    }
     emit(`Using the saved local analysis for ${path.basename(file)}.`);
     return cached;
   }
@@ -1025,9 +1301,16 @@ async function analyzeOne(file, index, frameCount, {
     const signals = await analyzeSignals(file, probe, runtime, emit, onChild);
     const transcriptDir = path.join(work, 'transcript');
     fs.mkdirSync(transcriptDir, { recursive: true, mode: 0o700 });
-    let speech = { transcript: '', words: [] };
+    let speech = {
+      transcript: '', transcriptComplete: false, words: [],
+      timedWordCount: 0, timedWordsComplete: false,
+    };
     if (probe.audio) {
-      try { speech = await transcribeVideo(file, transcriptDir, runtime, env, emit, onChild); }
+      try {
+        speech = await transcribeVideo(
+          file, transcriptDir, runtime, env, emit, onChild,
+          probe.audio.startOffsetMs);
+      }
       catch (error) { emit(`Local transcription was unavailable: ${bounded(error.message, 500)}`); }
     }
     let visualSummary = '';
@@ -1043,19 +1326,27 @@ async function analyzeOne(file, index, frameCount, {
       emit(`Local visual analysis was unavailable: ${bounded(error.message, 500)}`);
     }
     const after = fileFingerprint(file);
-    if (after.digest !== before.digest) {
+    const afterSha256 = await sha256FileStable(file);
+    if (after.digest !== before.digest || afterSha256 !== sourceSha256) {
       throw new Error('attached video changed during local analysis');
     }
     const report = {
+      sourceId,
+      sourceSha256,
+      sourceBytes: before.size,
       file: path.basename(file),
       technical: probe,
       signals,
       transcript: speech.transcript,
+      transcriptComplete: speech.transcriptComplete,
       timedWords: speech.words,
+      timedWordCount: speech.timedWordCount,
+      timedWordsComplete: speech.timedWordsComplete,
+      transcriptTimeline: 'container-relative-ms/v1',
       visualSummary,
       localOnly: true,
     };
-    if (visualComplete) writeCache(cacheFile, before.digest, report);
+    if (visualComplete) writeCache(cacheFile, sourceSha256, report);
     return report;
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -1091,12 +1382,14 @@ async function analyzeMedia({
 }
 
 module.exports = {
+  ARTIFACT_FRAME_CAPTURE_COVERAGE_SCHEMA,
   ARTIFACT_VISION_COVERAGE_SCHEMA,
   ARTIFACT_VISION_PLAN_SCHEMA,
   CACHE_SCHEMA,
   MODEL_ID,
   MODEL_REVISION,
   analyzeMedia,
+  artifactFrameCaptureCoverage,
   artifactVisionCoverage,
   artifactVisionPlan,
   artifactCaptionRenderEvents,
@@ -1104,10 +1397,12 @@ module.exports = {
   extractArtifactVisionFrames,
   extractFrames,
   fileFingerprint,
+  normalizeTranscriptEvidence,
   parseArtifactCaptions,
   parseSignalReport,
   probeVideo,
   sampleTimes,
+  shiftTimedWordsToContainerTimeline,
   summarizeProbe,
   visionFrameBatches,
 };

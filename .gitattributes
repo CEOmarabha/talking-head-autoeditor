@@ -6,3 +6,5 @@
 /desktop/helper/vision/*.wasm binary
 /desktop/helper/vision/*.json text eol=lf
 /desktop/helper/vision/*.txt text eol=lf
+/packaging/vision-model-packs/**/*.json text eol=lf
+/packaging/vision-model-packs/**/*.onnx filter=lfs diff=lfs merge=lfs -text

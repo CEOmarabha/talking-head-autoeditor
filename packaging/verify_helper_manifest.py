@@ -17,6 +17,7 @@ REQUIRED_LOCAL_CAPABILITIES = {
     "faster_whisper_small", "faster_whisper_medium",
     "python_utf8_mode",
     "in_process_low_speech_cutter", "typed_deepseek_revision_contract",
+    "local_vision_model",
     "node", "hyperframes", "remotion",
     "chrome_headless_shell", "fonts", "certificate_bundle",
     "creator_profiles",
