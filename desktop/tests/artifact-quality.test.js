@@ -191,6 +191,7 @@ const revisionContext = { fs, path };
 vm.runInNewContext(`${revisionSource}; this.createRevisionOutputDir = createRevisionOutputDir;`,
   revisionContext);
 const revisionFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'autoeditor-revisions-'));
+const revisionFixtureReal = fs.realpathSync.native(revisionFixture);
 try {
   const prior = path.join(revisionFixture, 'PSE_SHORT_9x16.mp4');
   const priorBytes = Buffer.from('immutable accepted version');
@@ -199,14 +200,14 @@ try {
   const secondRevision = revisionContext.createRevisionOutputDir(revisionFixture, prior);
   assert.notStrictEqual(firstRevision, secondRevision,
     'every revision attempt must receive a collision-safe immutable output folder');
-  assert.strictEqual(path.dirname(firstRevision), path.join(revisionFixture, 'Revisions'));
-  assert.strictEqual(path.dirname(secondRevision), path.join(revisionFixture, 'Revisions'));
+  assert.strictEqual(path.dirname(firstRevision), path.join(revisionFixtureReal, 'Revisions'));
+  assert.strictEqual(path.dirname(secondRevision), path.join(revisionFixtureReal, 'Revisions'));
   assert.deepStrictEqual(fs.readFileSync(prior), priorBytes,
     'starting or failing a revision must not mutate the prior accepted result');
   assert.notStrictEqual(path.join(firstRevision, path.basename(prior)), prior,
     'a successful revision result path must be distinct for before/after feedback');
   for (const generated of [firstRevision, secondRevision]) {
-    const relative = path.relative(revisionFixture, generated);
+    const relative = path.relative(revisionFixtureReal, generated);
     assert.ok(relative && !relative.startsWith(`..${path.sep}`) &&
       !path.isAbsolute(relative), 'generated revision folders may not escape the selected root');
   }
