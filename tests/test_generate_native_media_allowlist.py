@@ -190,6 +190,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             components[name] = generator.helper_manifest.directory_receipt(
                 component,
                 normalize_windows_executables=platform == "windows-x64",
+                normalize_macos_machos=platform in {"mac-arm64", "mac-x64"},
             )
         return {
             "account_capabilities": {},
@@ -198,7 +199,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             "receipt_algorithm": (
                 "pe-authenticode-content-v1"
                 if platform == "windows-x64"
-                else "raw-sha256-v1"
+                else "macho-codesign-content-v1"
             ),
             "required_local_capabilities": [],
             "schema": generator.RUNTIME_BUILD_SCHEMA,
@@ -362,6 +363,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                     "ffprobe-mp4",
                     "lavfi-input",
                     "libx264-aac-mp4",
+                    "literal-stdin-s16le",
                     "wrapped-avframe-null-video",
                 ],
                 "status": "passed",
@@ -647,7 +649,11 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                     authenticated, app_root, "windows-x64"
                 )
 
-    def test_windows_ffmpeg_requires_exact_shared_v3_artifact_verifier(self):
+    def test_windows_ffmpeg_requires_exact_shared_v4_artifact_verifier(self):
+        self.assertEqual(
+            generator.WINDOWS_FFMPEG_BUILD_SCHEMA,
+            generator.windows_ffmpeg_verifier.RECEIPT_SCHEMA,
+        )
         source = self._authenticated({"source": True}, compact=True)
         payload = self._ffmpeg_build_receipt(source.sha256)
         authenticated = self._authenticated(payload)
@@ -693,6 +699,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             "app_root": Path("final-app"),
             "license_dir": Path("licenses"),
             "link_evidence_dir": Path("link-evidence"),
+            "linkage_dir": Path("linkage"),
             "repository_commit": "e" * 40,
         }
         with mock.patch.object(
@@ -709,10 +716,21 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                 ),
                 payload,
             )
-        fake.create_receipt.assert_called_once()
         self.assertEqual(
-            fake.create_receipt.call_args.kwargs["ffmpeg"],
-            Path("final-app/resources/bin/ffmpeg.exe"),
+            fake.create_receipt.call_args.kwargs,
+            {
+                "source_lock_path": source_lock.path,
+                "capabilities_path": capabilities.path,
+                "ffmpeg": Path("final-app/resources/bin/ffmpeg.exe"),
+                "ffprobe": Path("final-app/resources/bin/ffprobe.exe"),
+                "license_dir": Path("licenses"),
+                "link_evidence_dir": Path("link-evidence"),
+                "linkage_dir": Path("linkage"),
+                "source_bundle": source_archive.path,
+                "source_manifest": source.path,
+                "repository_commit": "e" * 40,
+                "repo_root": ROOT,
+            },
         )
         fake.validate_receipt_against_contracts.assert_called_once()
 
@@ -761,7 +779,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             generator.MissingProducerContractError,
-            "exact shared verify_windows_ffmpeg.py v3 verifier is unavailable",
+            "exact shared verify_windows_ffmpeg.py v4 verifier is unavailable",
         ):
             with mock.patch.object(
                 generator, "windows_ffmpeg_verifier", None
@@ -881,8 +899,28 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
                         "mac-arm64",
                     )
 
-    def test_macos_fails_with_precise_missing_contracts_after_usable_inputs(self):
+    def test_macos_loads_exact_ffmpeg_and_remotion_claims(self):
         fixture = self._authenticated({"fixture": True})
+        ffmpeg_path = "Contents/Resources/bin/ffmpeg"
+        remotion_path = (
+            "Contents/Resources/creative-runtime/node_modules/@remotion/"
+            "compositor-darwin-arm64/ffmpeg"
+        )
+        ffmpeg_claim = SimpleNamespace(
+            path=ffmpeg_path,
+            architecture="arm64",
+            formula_inventory_sha256="1" * 64,
+            sha256="2" * 64,
+            bytes=101,
+        )
+        remotion_claim = SimpleNamespace(
+            path=remotion_path,
+            architecture="arm64",
+            lineage_id="npm:@remotion/compositor-darwin-arm64@4.0.507",
+            source_manifest_sha256="3" * 64,
+            sha256="4" * 64,
+            bytes=102,
+        )
         inputs = generator.GeneratorInputs(
             onnx_receipt=Path("onnx"),
             onnx_receipt_sha256="a" * 64,
@@ -892,6 +930,12 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             creative_runtime_lock_sha256="c" * 64,
             runtime_build_manifest=Path("runtime"),
             runtime_build_manifest_sha256="d" * 64,
+            electron_native_receipt=Path("electron-native"),
+            electron_native_receipt_sha256="f" * 64,
+            mac_ffmpeg_receipt=Path("mac-ffmpeg"),
+            mac_ffmpeg_receipt_sha256="1" * 64,
+            mac_remotion_receipt=Path("mac-remotion"),
+            mac_remotion_receipt_sha256="2" * 64,
             mac_normalization_receipt=Path("normalization"),
             mac_normalization_receipt_sha256="e" * 64,
         )
@@ -909,14 +953,49 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             generator, "_validate_runtime_build_manifest"
         ), mock.patch.object(
             generator, "_validate_normalization"
+        ), mock.patch.object(
+            generator.electron_native,
+            "load_authenticated_receipt",
+            return_value=({"native": True}, "f" * 64),
+        ), mock.patch.object(
+            generator.electron_native, "validate_claim_modes"
+        ), mock.patch.object(
+            generator.electron_native,
+            "claims_from_receipt",
+            return_value={},
+        ), mock.patch.object(
+            generator.mac_ffmpeg,
+            "load_authenticated_receipt",
+            return_value=({"lineage_id": "mac-ffmpeg"}, b"ffmpeg"),
+        ), mock.patch.object(
+            generator.mac_ffmpeg,
+            "verify_app",
+            return_value={ffmpeg_path: ffmpeg_claim},
+        ), mock.patch.object(
+            generator.mac_remotion,
+            "load_authenticated_receipt",
+            return_value=({"lineage_id": "mac-remotion"}, b"remotion"),
+        ), mock.patch.object(
+            generator.mac_remotion,
+            "verify_app",
+            return_value={remotion_path: remotion_claim},
         ):
-            with self.assertRaisesRegex(
-                generator.MissingProducerContractError,
-                "Mac FFmpeg bundle receipt.*Mac Remotion.*final Electron app",
-            ):
-                generator._load_producers(
-                    Path("unused"), "mac-arm64", inputs
-                )
+            owners, build, claims = generator._load_producers(
+                Path("unused"), "mac-arm64", inputs
+            )
+        self.assertIsNone(build)
+        self.assertEqual(claims[ffmpeg_path].sha256, "2" * 64)
+        self.assertEqual(claims[remotion_path].sha256, "4" * 64)
+        self.assertEqual(
+            owners["main-ffmpeg"].source_manifest_sha256, "1" * 64
+        )
+        self.assertEqual(
+            owners["remotion"].source_manifest_sha256, "3" * 64
+        )
+        self.assertFalse(any(
+            claim.owner.component in {"browser", "frozen-engine", "frozen-helper"}
+            for claim in claims.values()
+        ))
 
     def test_unique_owner_rejects_unclaimed_and_multiply_claimed_paths(self):
         relative = "AutoEditor Helper.exe"
@@ -937,7 +1016,7 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         ):
                 generator._unique_owner(relative, [owner, other])
 
-    def test_production_owners_leave_final_electron_paths_unclaimed(self):
+    def test_production_owners_bind_final_electron_paths_to_exact_receipt(self):
         platform = "windows-x64"
         contracts = generator.native.PLATFORM_COMPONENT_RULES[platform]
         onnx = self._authenticated({"onnx": True}, name="onnx.json")
@@ -957,8 +1036,21 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
             remotion=remotion,
             ffmpeg_source=source,
             normalization=None,
+            electron_native_sha256="f" * 64,
         )
-        self.assertNotIn("electron", owners)
+        self.assertEqual(
+            owners["electron"],
+            generator.ProducerOwner(
+                "electron",
+                contracts["electron"]["lineage_id"],
+                "f" * 64,
+                "exact final Electron native producer receipt",
+            ),
+        )
+        self.assertEqual(
+            owners["supporting-native"].source_manifest_sha256,
+            "f" * 64,
+        )
         self.assertEqual(
             owners["browser"],
             generator.ProducerOwner(
@@ -1226,10 +1318,14 @@ class NativeMediaAllowlistGeneratorTests(unittest.TestCase):
         help_text = result.stdout
         self.assertIn("--onnx-receipt-sha256", help_text)
         self.assertIn("--electron-chromium-receipt-sha256", help_text)
+        self.assertIn("--electron-native-receipt-sha256", help_text)
+        self.assertIn("--mac-ffmpeg-receipt-sha256", help_text)
+        self.assertIn("--mac-remotion-receipt-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-manifest-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-lock-sha256", help_text)
         self.assertIn("--windows-ffmpeg-capabilities-sha256", help_text)
         self.assertIn("--windows-ffmpeg-source-bundle-sha256", help_text)
+        self.assertIn("--windows-ffmpeg-linkage-dir", help_text)
         self.assertIn("--windows-ffmpeg-repository-commit", help_text)
         self.assertNotIn("--producer", help_text)
 

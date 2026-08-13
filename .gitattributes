@@ -1,2 +1,8 @@
 /packaging/windows-ffmpeg-capabilities.json text eol=lf
 /packaging/windows-ffmpeg-sources.lock.json text eol=lf
+/packaging/electron-chromium-provenance.lock.json text eol=lf
+/desktop/helper/vision/*.js -text
+/desktop/helper/vision/*.mjs -text
+/desktop/helper/vision/*.wasm binary
+/desktop/helper/vision/*.json text eol=lf
+/desktop/helper/vision/*.txt text eol=lf

@@ -1,0 +1,32 @@
+{
+  "model": {
+    "id": "HuggingFaceTB/SmolVLM2-256M-Video-Instruct",
+    "license": "Apache-2.0",
+    "revision": "067788b187b95ebe7b2e040b3e4299e342e5b8fd"
+  },
+  "onnxruntime_web": {
+    "commit": "b7804b056c30aa35c1748f8e4e239d0e2ff25d6d",
+    "files": {
+      "ort-wasm-simd-threaded.asyncify.mjs": "5959c6733039619c9af710d8e1bae8d6e84402787990637be987c2b1bd6c5fa9",
+      "ort-wasm-simd-threaded.asyncify.wasm": "e0c0c6d3e73d43b8a249972f8358f845b08cc16fec3c80efafdf8bed40366786",
+      "ort-wasm-simd-threaded.mjs": "5f2cd914554830762579c372d0211614c1e3f40ab3f6c0cfcf0900343229071d",
+      "ort-wasm-simd-threaded.wasm": "f4f290847a4df02d0b93cdbf39b4b0e71acefbe80573e7e6b9342a7abd7b290a"
+    },
+    "license": "MIT",
+    "version": "1.26.0-dev.20260416-b7804b056c"
+  },
+  "schema": "autoeditor-local-vision-runtime/v1",
+  "transformers_js": {
+    "file": "transformers.web.min.js",
+    "license": "Apache-2.0",
+    "sha256": "ecbc8ebdec206ac4282a552eea97782d43d41b754197baff723a1c2ee3cfbca9",
+    "version": "4.2.0"
+  },
+  "vision_worker": {
+    "bundle": "vision-worker.bundle.js",
+    "bundle_sha256": "b8c5785088b3b3f69add8b7e41657e0f4eb4eb5d53e6564d14c9a184eaf68edb",
+    "builder": "esbuild 0.28.1",
+    "entry": "vision-worker.js",
+    "entry_sha256": "e19c59bdce4611243a73053ffa78df527f9c890a489195ff689e2fa6cb5cd3df"
+  }
+}

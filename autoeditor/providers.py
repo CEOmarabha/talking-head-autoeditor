@@ -27,6 +27,7 @@ __all__ = [
     "extract_json",
     "llm_json",
     "llm_available",
+    "telegram_configured",
     "notify",
     "send_video",
     "load_dotenv",
@@ -367,6 +368,11 @@ def _tg() -> tuple[str, str] | None:
                  (os.environ.get("TELEGRAM_CHAT_ID")
                   or os.environ.get("TELEGRAM_HOME_CHANNEL")))
     return (tok, chat) if tok and chat else None
+
+
+def telegram_configured() -> bool:
+    """Return whether an explicit Telegram destination is available."""
+    return _tg() is not None
 
 
 def notify(text: str) -> bool:

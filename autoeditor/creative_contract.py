@@ -11,7 +11,14 @@ import math
 import re
 from typing import Iterable
 
-PROTOCOL_VERSION = "pse-creative-edl/2026-07-28.1"
+from .creative_constraints import (
+    CreativeConstraintsError,
+    canonical_text as canonical_constraint_text,
+    validate_creative_constraints,
+    word_tokens as constraint_word_tokens,
+)
+
+PROTOCOL_VERSION = "pse-creative-edl/2026-08-12.3"
 TIMELINE_SPACE = "post_cut_seconds"
 REQUIRED_TOP_LEVEL = (
     "protocol_version", "timeline_space",
@@ -67,6 +74,33 @@ _NUMBER_SCALES = {
     "million": 1_000_000.0,
     "billion": 1_000_000_000.0,
 }
+_NEGATION_WORDS = frozenset({
+    "ain't", "aren't", "barely", "can't", "cannot", "couldn't",
+    "didn't", "doesn't", "don't", "hadn't", "hardly", "hasn't",
+    "haven't", "isn't", "neither", "never", "nobody", "none", "nor",
+    "not", "nothing", "nowhere", "scarcely", "shouldn't", "wasn't",
+    "weren't", "without", "won't", "wouldn't",
+})
+_NEGATION_MENTION_PREFIXES = frozenset({
+    "answer", "answered", "answers", "getting", "got", "heard", "hear",
+    "hearing", "or", "say", "saying", "says", "said", "than", "versus",
+    "vs", "word",
+})
+_NEGATION_MENTION_FOLLOWS = frozenset({
+    "answer", "feels", "is", "means", "or", "versus", "vs", "was",
+})
+_QUESTION_HEADS = frozenset({
+    "am", "are", "aren't", "can", "can't", "could", "couldn't", "did",
+    "didn't", "do", "does", "doesn't", "don't", "had", "has", "have",
+    "how", "is", "isn't", "may", "might", "must", "shall", "should",
+    "shouldn't", "was", "wasn't", "were", "weren't", "what", "when",
+    "where", "which", "who", "why", "will", "won't", "would",
+    "wouldn't",
+})
+_ASSERTION_HEADS = frozenset({
+    "he", "i", "it", "she", "that", "the", "there", "they", "this",
+    "we", "you",
+})
 
 # Receipts need the same contract identity in source checkouts and PyInstaller
 # builds, where this module's .py file does not exist. Keep this payload limited
@@ -84,6 +118,19 @@ _CONTRACT_PAYLOAD = json.dumps(
         "span_limits": _SPAN_LIMITS,
         "viz_templates": sorted(VIZ_TEMPLATES),
         "graphic_kinds": sorted(GRAPHIC_KINDS),
+        "graphic_display_limits": {
+            "text_characters": 44,
+            "bar_items": [2, 5],
+            "bar_label_characters": 26,
+        },
+        "semantic_polarity": {
+            "negation_words": sorted(_NEGATION_WORDS),
+            "negation_mention_prefixes": sorted(_NEGATION_MENTION_PREFIXES),
+            "negation_mention_follows": sorted(_NEGATION_MENTION_FOLLOWS),
+            "question_heads": sorted(_QUESTION_HEADS),
+            "assertion_heads": sorted(_ASSERTION_HEADS),
+            "negative_imperative_forms": ["do not", "don't"],
+        },
     },
     ensure_ascii=True,
     sort_keys=True,
@@ -101,7 +148,7 @@ class CreativeContractError(ValueError):
 
 
 def _tokens(text: object) -> list[str]:
-    return re.findall(r"[a-z0-9']+", str(text or "").lower())
+    return constraint_word_tokens(text)
 
 
 def _content_tokens(text: object) -> set[str]:
@@ -109,6 +156,169 @@ def _content_tokens(text: object) -> set[str]:
         token for token in _tokens(text)
         if len(token) > 2 and token not in _STOPWORDS
     }
+
+
+def _logical_negation(tokens: list[str]) -> bool:
+    """Return whether tokens use negation rather than merely name "no".
+
+    "No" is often a quoted answer or concept in creator speech ("the word
+    no", "no versus yes").  Treat those deterministic forms as mentions so a
+    comparison label does not acquire a false negative polarity.
+    """
+    for index, token in enumerate(tokens):
+        if token in _NEGATION_WORDS:
+            return True
+        if token != "no":
+            continue
+        prior = tokens[index - 1] if index else ""
+        following = tokens[index + 1] if index + 1 < len(tokens) else ""
+        mentioned = (
+            prior in _NEGATION_MENTION_PREFIXES
+            or following in _NEGATION_MENTION_FOLLOWS
+            or len(tokens) == 1
+            or "yes" in tokens
+        )
+        if not mentioned:
+            return True
+    return False
+
+
+_DO_IMPERATIVE_OBJECTS = {
+    "assignment",
+    "exercise",
+    "job",
+    "step",
+    "steps",
+    "task",
+    "thing",
+    "work",
+}
+
+
+def _do_is_imperative(text: str, tokens: list[str]) -> bool:
+    """Recognize explicit DO commands without guessing over ASR questions.
+
+    Missing ASR punctuation makes ``Do the results matter`` ambiguous.  Bias
+    that form toward a question so a graphic cannot turn it into an assertion;
+    only direct-object command forms are treated as imperatives.
+    """
+    if "?" in text or not tokens or tokens[0] != "do":
+        return False
+    if len(tokens) == 1:
+        return True
+    if tokens[1] in {"it", "so", "that", "this", "these", "those"}:
+        return True
+    return bool(
+        len(tokens) >= 3
+        and tokens[1] in {"a", "an", "my", "our", "the", "your"}
+        and tokens[2] in _DO_IMPERATIVE_OBJECTS
+    )
+
+
+def _negative_imperative(tokens: list[str]) -> bool:
+    """Recognize explicit negative commands, including contracted DON'T."""
+    return bool(
+        len(tokens) >= 2
+        and (
+            tokens[0] == "don't"
+            or (len(tokens) >= 3 and tokens[:2] == ["do", "not"])
+        )
+    )
+
+
+def _is_interrogative(text: str) -> bool:
+    tokens = _tokens(text)
+    return bool(
+        "?" in text
+        or (
+            tokens
+            and tokens[0] in _QUESTION_HEADS
+            and not _negative_imperative(tokens)
+            and not _do_is_imperative(text, tokens)
+        )
+    )
+
+
+def _display_mood(text: str) -> str:
+    """Classify copy only when its mood is explicit; noun labels are neutral."""
+    tokens = _tokens(text)
+    if not tokens:
+        return "fragment"
+    if "?" in text:
+        return "question"
+    # Without question punctuation, a negative callout such as DO NOT WAIT
+    # is an assertion/imperative, even when an auxiliary starts the string.
+    if _negative_imperative(tokens):
+        return "assertion"
+    if _logical_negation(tokens):
+        return "assertion"
+    if _do_is_imperative(text, tokens):
+        return "assertion"
+    if tokens[0] in _QUESTION_HEADS:
+        return "question"
+    if tokens[0] in _ASSERTION_HEADS:
+        return "assertion"
+    return "fragment"
+
+
+def _semantic_clauses(text: str) -> list[str]:
+    # Contrast conjunctions delimit polarity scope. Punctuation is retained so
+    # a selected source clause still carries its question marker.
+    prepared = re.sub(
+        r"\b(?:but|however|whereas)\b", ";", text, flags=re.I
+    )
+    return [
+        clause.strip()
+        for clause in re.findall(r"[^,.!?;:\n]+[?!]?", prepared)
+        if clause.strip()
+    ] or [text]
+
+
+def _semantic_source(display: str, anchor: str, nearby_text: str) -> str:
+    """Select the spoken clause most lexically connected to display copy."""
+    display_tokens = _content_tokens(display)
+
+    def best_clause(source: str) -> tuple[int, str]:
+        candidates = _semantic_clauses(source)
+        scored = [
+            (len(display_tokens & _content_tokens(clause)), -index, clause)
+            for index, clause in enumerate(candidates)
+        ]
+        score, _position, clause = max(scored, default=(0, 0, source))
+        return score, clause
+
+    anchor_score, anchor_clause = best_clause(anchor)
+    if anchor_score:
+        return anchor_clause
+    _nearby_score, nearby_clause = best_clause(nearby_text)
+    return nearby_clause
+
+
+def _copy_polarity_error(display: str, anchor: str,
+                         nearby_text: str) -> str | None:
+    """Reject on-screen copy that changes source negation or question mood."""
+    if not _tokens(display):
+        return None
+    source = _semantic_source(display, anchor, nearby_text)
+    source_negative = _logical_negation(_tokens(source))
+    display_negative = _logical_negation(_tokens(display))
+    source_question = _is_interrogative(source)
+    display_mood = _display_mood(display)
+    mood_changed = (
+        (source_question and display_mood == "assertion")
+        or (not source_question and display_mood == "question")
+    )
+    if source_negative != display_negative:
+        if mood_changed:
+            return (
+                "changes negation polarity and interrogative polarity "
+                "relative to its spoken anchor"
+            )
+        return "changes negation polarity relative to its spoken anchor"
+
+    if mood_changed:
+        return "changes interrogative polarity relative to its spoken anchor"
+    return None
 
 
 def transcript_payload(words: list[dict]) -> str:
@@ -284,8 +494,11 @@ def _number_is_spoken(value: str, nearby_text: str) -> bool:
     )
 
 
-def _anchor_span(anchor: str, words: list[dict],
-                 proposed_s: float) -> tuple[float, float, float] | None:
+def _anchor_span(
+    anchor: str,
+    words: list[dict],
+    proposed_s: float,
+) -> tuple[float, float, float, str] | None:
     wanted = _tokens(anchor)
     wanted_content = _content_tokens(anchor)
     if not 5 <= len(wanted) <= 20 or not wanted_content:
@@ -315,6 +528,7 @@ def _anchor_span(anchor: str, words: list[dict],
         float(words[start]["s"]),
         float(words[end - 1]["e"]),
         1.0,
+        " ".join(str(word.get("w", "")) for word in words[start:end]),
     )
 
 
@@ -381,7 +595,7 @@ def _normalize_event(layer: str, event: object, index: int,
     if anchor_match is None:
         errors.append(f"{label}.anchor_quote is not grounded in the transcript")
         return None
-    anchor_s, anchor_e, anchor_score = anchor_match
+    anchor_s, anchor_e, anchor_score, spoken_anchor = anchor_match
     if abs(proposed_s - anchor_s) > 3.0:
         errors.append(
             f"{label}.s is more than 3 seconds from its spoken anchor"
@@ -497,6 +711,18 @@ def _normalize_event(layer: str, event: object, index: int,
                         f"{label}.viz on-screen copy is not grounded in "
                         "the transcript near its anchor"
                     )
+                display_strings = [title]
+                display_strings.extend(clean_viz.get("items", []))
+                for display_index, display in enumerate(display_strings):
+                    polarity_error = _copy_polarity_error(
+                        str(display), spoken_anchor, nearby_text
+                    )
+                    if polarity_error:
+                        normalized["display_copy_grounded"] = False
+                        errors.append(
+                            f"{label}.viz display[{display_index}] "
+                            f"{polarity_error}"
+                        )
     else:
         kind = str(event.get("kind", "")).lower()
         if kind not in GRAPHIC_KINDS:
@@ -548,6 +774,21 @@ def _normalize_event(layer: str, event: object, index: int,
                 f"{label} on-screen copy is not grounded in the transcript "
                 "near its anchor"
             )
+        display_strings = [text]
+        display_strings.extend(
+            str(item.get("label", ""))
+            for item in normalized.get("items", [])
+            if isinstance(item, dict)
+        )
+        for display_index, display in enumerate(display_strings):
+            polarity_error = _copy_polarity_error(
+                display, spoken_anchor, nearby_text
+            )
+            if polarity_error:
+                normalized["display_copy_grounded"] = False
+                errors.append(
+                    f"{label} display[{display_index}] {polarity_error}"
+                )
     return normalized
 
 
@@ -580,10 +821,34 @@ def _max_visual_gap(edl: dict, duration: float) -> float:
     return max(max(0.0, end - start) for start, end in points)
 
 
+def _approved_opener_present(words: list[dict], constraints: dict) -> bool:
+    wanted = canonical_constraint_text(constraints["opener"]["exact_text"])
+    expected_words = wanted.split(" ")
+    limit = float(constraints["opener"]["max_start_seconds"])
+    for start in range(len(words) - len(expected_words) + 1):
+        if float(words[start].get("s", limit + 1)) > limit:
+            break
+        heard = canonical_constraint_text(" ".join(
+            str(word.get("w", ""))
+            for word in words[start:start + len(expected_words)]
+        ))
+        if heard == wanted:
+            return True
+    return False
+
+
 def validate_edl(raw: dict, words: list[dict], clips: list[dict],
-                 duration: float, style: str = "long") -> tuple[dict, dict]:
+                 duration: float, style: str = "long", *,
+                 constraints: dict | None = None) -> tuple[dict, dict]:
     """Validate, transcript-anchor, score, and canonicalize a model EDL."""
     errors: list[str] = []
+    try:
+        approved = (
+            validate_creative_constraints(constraints)
+            if constraints is not None else None
+        )
+    except CreativeConstraintsError as exc:
+        raise CreativeContractError([str(exc)]) from exc
     if not isinstance(raw, dict):
         raise CreativeContractError(["EDL root must be an object"])
     missing = [key for key in REQUIRED_TOP_LEVEL if key not in raw]
@@ -643,22 +908,73 @@ def validate_edl(raw: dict, words: list[dict], clips: list[dict],
                 errors.append("broll and graphics collide on screen")
                 break
 
+    if approved is not None:
+        policy = approved["visual_policy"]
+        if len(edl["graphics"]) != policy["graphics_exact"]:
+            errors.append(
+                "graphics count does not equal the approved exact count of "
+                f"{policy['graphics_exact']}"
+            )
+        if len(edl["broll"]) != policy["broll_exact"]:
+            errors.append(
+                "broll count does not equal the approved exact count of "
+                f"{policy['broll_exact']}"
+            )
+        required = approved["required_graphic"]
+        if required is not None:
+            match = any(
+                event.get("kind") == required["kind"]
+                and canonical_constraint_text(event.get("text"))
+                    == required["text"]
+                and canonical_constraint_text(event.get("anchor_quote"))
+                    == required["anchor_text"]
+                for event in edl["graphics"]
+            )
+            if not match:
+                errors.append(
+                    "the exact approved required graphic is missing or changed"
+                )
+        if not _approved_opener_present(words, approved):
+            errors.append(
+                "the exact approved opener is absent from its allowed start window"
+            )
+
     first_speech = float(words[0]["s"]) if words else 0.0
     hook_limit = first_speech + (2.5 if style == "short" else 2.0)
-    hook_ok = any(
-        float(event["s"]) <= hook_limit for event in edl["punch_ins"]
+    hook_required = (
+        approved["visual_policy"]["opening_punch_required"]
+        if approved is not None else True
+    )
+    hook_ok = (
+        not hook_required
+        or any(float(event["s"]) <= hook_limit for event in edl["punch_ins"])
     )
     visual_limit = first_speech + (3.0 if style == "short" else 8.0)
-    opening_visual_ok = any(
-        float(event["s"]) <= visual_limit
-        for layer in ("broll", "graphics") for event in edl[layer]
-    ) if duration >= 8.0 else True
+    visual_required = (
+        approved["visual_policy"]["opening_visual_required"]
+        if approved is not None else duration >= 8.0
+    )
+    opening_visual_ok = (
+        not visual_required
+        or any(
+            float(event["s"]) <= visual_limit
+            for layer in ("broll", "graphics") for event in edl[layer]
+        )
+    )
     max_gap = _max_visual_gap(edl, duration)
-    gap_limit = 12.0 if style == "short" else 75.0
-    coverage_ok = max_gap <= gap_limit
+    configured_gap = (
+        approved["visual_policy"]["max_visual_gap_seconds"]
+        if approved is not None else (12.0 if style == "short" else 75.0)
+    )
+    gap_limit = configured_gap
+    coverage_ok = gap_limit is None or max_gap <= gap_limit
     framework = _has_framework_language(words)
+    framework_diagram_required = not (
+        approved is not None and policy["broll_exact"] == 0
+    )
     diagram_ok = (
         not framework
+        or not framework_diagram_required
         or any(event.get("viz") for event in edl["broll"])
     )
     score = (
@@ -685,6 +1001,7 @@ def validate_edl(raw: dict, words: list[dict], clips: list[dict],
         "hook_ok": hook_ok,
         "opening_visual_ok": opening_visual_ok,
         "coverage_ok": coverage_ok,
+        "approved_constraints_applied": approved is not None,
         "max_visual_gap_seconds": round(max_gap, 3),
         "diagram_required": framework,
         "diagram_ok": diagram_ok,

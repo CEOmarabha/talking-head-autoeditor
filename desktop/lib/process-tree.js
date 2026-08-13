@@ -4,7 +4,10 @@ function stopProcessTree(proc, platform = process.platform,
   spawnImpl = spawn) {
   if (!proc || !proc.pid) return Promise.resolve();
   if (platform !== 'win32') {
-    try { proc.kill('SIGTERM'); } catch (_) { /* already exited */ }
+    try {
+      if (proc.__autoeditorProcessGroup) process.kill(-proc.pid, 'SIGTERM');
+      else proc.kill('SIGTERM');
+    } catch (_) { /* already exited */ }
     return Promise.resolve();
   }
   return new Promise((resolve) => {

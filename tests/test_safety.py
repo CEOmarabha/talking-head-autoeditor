@@ -5,9 +5,12 @@ import argparse
 import contextlib
 import hashlib
 import http.client
+import inspect
 import io
 import json
+import math
 import os
+import re
 import runpy
 import shutil
 import struct
@@ -15,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import wave
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -316,7 +320,10 @@ class SafetyContracts(unittest.TestCase):
                 "python_utf8_mode",
                 payload["required_local_capabilities"],
             )
-            self.assertEqual(payload["receipt_algorithm"], "raw-sha256-v1")
+            self.assertEqual(
+                payload["receipt_algorithm"],
+                "macho-codesign-content-v1",
+            )
             self.assertEqual(
                 payload["account_capabilities"]["remotion"],
                 "required: free-license eligibility or paid key",
@@ -917,7 +924,57 @@ class SafetyContracts(unittest.TestCase):
                 self.assertEqual(
                     premium._api_key("ELEVENLABS_API_KEY", old_key), ""
                 )
-                self.assertEqual(premium._resolve_sfx("boom"), root / "boom.wav")
+                resolved = premium._resolve_sfx("boom")
+                self.assertEqual(resolved, root / "boom.wav")
+                self.assertNotEqual(resolved.read_bytes(), b"old-generated-audio")
+
+    def test_clean_install_builds_deterministic_48k_sfx_fallbacks(self):
+        edl = {
+            "punch_ins": [{"s": 0.25, "e": 1.0, "scale": 1.12}],
+            "broll": [{
+                "s": 2.0, "e": 5.0,
+                "viz": {"template": "steps", "items": ["one", "two"]},
+            }],
+            "graphics": [{"s": 6.0, "e": 8.0, "kind": "stat"}],
+        }
+        with tempfile.TemporaryDirectory() as td, mock.patch.dict(
+            os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }
+        ), mock.patch.object(premium, "SFX_DIR", Path(td) / "missing-sfx"):
+            first = premium.build_sfx_plan(edl)
+            first_bytes = {path.name: path.read_bytes() for path, _, _ in first}
+            second = premium.build_sfx_plan(edl)
+            second_bytes = {path.name: path.read_bytes() for path, _, _ in second}
+
+        self.assertEqual(len(first), 6)
+        self.assertEqual(
+            {path.name for path, _, _ in first},
+            {"boom.wav", "whoosh.wav", "pop.wav", "riser.wav", "impact.wav"},
+        )
+        self.assertEqual(
+            [(path.name, timestamp, gain) for path, timestamp, gain in first],
+            [(path.name, timestamp, gain) for path, timestamp, gain in second],
+        )
+        self.assertEqual(first_bytes, second_bytes)
+        for data in first_bytes.values():
+            with contextlib.closing(wave.open(io.BytesIO(data), "rb")) as cue:
+                self.assertEqual(cue.getframerate(), 48_000)
+                self.assertEqual(cue.getnchannels(), 1)
+                self.assertEqual(cue.getsampwidth(), 2)
+                self.assertGreater(cue.getnframes(), 0)
+
+    def test_sfx_plan_fails_when_a_planned_cue_cannot_be_produced(self):
+        edl = {"punch_ins": [{"s": 0.0, "e": 1.0, "scale": 1.12}]}
+        with tempfile.TemporaryDirectory() as td:
+            blocked = Path(td) / "not-a-directory"
+            blocked.write_text("storage unavailable")
+            with mock.patch.dict(os.environ, {
+                "AUTOEDITOR_PACKAGED": "1", "ELEVENLABS_API_KEY": "",
+            }), mock.patch.object(
+                premium, "SFX_DIR", blocked
+            ), self.assertRaisesRegex(RuntimeError, "boom"):
+                premium.build_sfx_plan(edl)
 
     def test_premium_media_checks_use_packaged_ffmpeg_paths(self):
         probe_result = mock.Mock(
@@ -1239,6 +1296,15 @@ class SafetyContracts(unittest.TestCase):
         }, clear=True):
             self.assertEqual(providers._tg(), ("token", "12345"))
 
+    def test_telegram_configuration_is_explicit(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(providers.telegram_configured())
+        with mock.patch.dict(os.environ, {
+            "TELEGRAM_BOT_TOKEN": "token",
+            "TELEGRAM_CHAT_ID": "12345",
+        }, clear=True):
+            self.assertTrue(providers.telegram_configured())
+
     def test_creative_contract_keeps_the_complete_transcript(self):
         words = [
             {"w": f"word{i}", "s": i * 0.2, "e": i * 0.2 + 0.1}
@@ -1368,7 +1434,7 @@ class SafetyContracts(unittest.TestCase):
         source_hash = creative_contract.contract_sha256()
         self.assertEqual(
             source_hash,
-            "b95e53c789c1e0cc9c745dd101275f1844ce951db266cc67c2e99756d9a8157f",
+            "69268bf0d64b966b2f0ef5fc5d2a0bd52de2ac246d4c02eb63f837b7a311b732",
         )
         missing_source = (
             Path("/pyinstaller") / "autoeditor" / "creative_contract.py"
@@ -1699,6 +1765,475 @@ class SafetyContracts(unittest.TestCase):
             "12.5%", "the result was twelve point five percent"
         ))
 
+    def test_every_graphic_kind_uses_a_caption_disjoint_lane_in_all_aspects(self):
+        events = {
+            "keyword": {"text": "KEY POINT"},
+            "stat": {"text": "RESULT", "value": "87%"},
+            "callout": {"text": "BAD TIME VS MINUTE"},
+            "bars": {"text": "COMPARISON", "items": [
+                {"label": "FIRST", "value": 1},
+                {"label": "SECOND", "value": 2},
+            ]},
+        }
+        for width, height in ((360, 640), (640, 360), (1080, 1920),
+                              (1920, 1080)):
+            lane = premium._graphic_lane_geometry(width, height)
+            caption_bottom = round(
+                height * premium.CAPTION_RESERVED_BOTTOM_FRAC
+            )
+            self.assertGreaterEqual(lane["y"], caption_bottom)
+            self.assertLessEqual(lane["y"] + lane["height"], height)
+            view = premium._graphic_viewport(width, height)
+            self.assertGreaterEqual(
+                lane["x"],
+                view["x"] + math.ceil(
+                    view["width"] * premium.PLATFORM_SAFE_LEFT_FRAC
+                ),
+            )
+            self.assertLessEqual(
+                lane["x"] + lane["width"],
+                view["x"] + view["width"] - math.ceil(
+                    view["width"] * premium.PLATFORM_SAFE_RIGHT_FRAC
+                ),
+            )
+            self.assertLessEqual(
+                lane["y"] + lane["height"],
+                view["y"] + math.floor(
+                    view["height"]
+                    * (1.0 - premium.PLATFORM_SAFE_BOTTOM_FRAC)
+                ),
+            )
+            for kind, event in events.items():
+                with self.subTest(width=width, height=height, kind=kind):
+                    check = premium._graphic_caption_geometry_check(
+                        width, height, lane
+                    )
+                    self.assertTrue(check["ok"])
+                    markup = premium._hf_kind_markup(
+                        kind, event, 2.0, width, height
+                    )
+                    self.assertIsNotNone(markup)
+                    self.assertIn(f'top:{int(lane["height"] * 0.12)}px',
+                                  markup[0])
+
+    def test_graphic_lane_is_enclosed_by_each_nine_sixteen_crop_viewport(self):
+        events = {
+            "keyword": {"text": "KEY POINT"},
+            "stat": {"text": "RESULT", "value": "87%"},
+            "callout": {"text": "BAD TIME VS MINUTE"},
+            "bars": {"text": "COMPARISON", "items": [
+                {"label": "FIRST", "value": 1},
+                {"label": "SECOND", "value": 2},
+            ]},
+        }
+        cases = (
+            # 1920x1080 source center-cropped horizontally to 9:16.
+            (1920, 1080, (656.25, 0.0, 607.5, 1080.0)),
+            # A 720x1920 source center-cropped vertically to 9:16.
+            (720, 1920, (0.0, 320.0, 720.0, 1280.0)),
+        )
+        for width, height, viewport in cases:
+            view = premium._graphic_viewport(width, height, viewport)
+            lane = premium._graphic_lane_geometry(width, height, viewport)
+            with self.subTest(width=width, height=height):
+                self.assertGreaterEqual(lane["x"], view["x"])
+                self.assertGreaterEqual(lane["y"], view["y"])
+                self.assertLessEqual(
+                    lane["x"] + lane["width"], view["x"] + view["width"]
+                )
+                self.assertLessEqual(
+                    lane["y"] + lane["height"], view["y"] + view["height"]
+                )
+            for kind, event in events.items():
+                with self.subTest(width=width, height=height, kind=kind):
+                    check = premium._graphic_caption_geometry_check(
+                        width, height, lane, viewport=viewport
+                    )
+                    self.assertTrue(check["ok"])
+                    self.assertTrue(check["in_viewport"])
+                    markup = premium._hf_kind_markup(
+                        kind, event, 2.0, width, height, viewport=viewport
+                    )
+                    self.assertIsNotNone(markup)
+                    self.assertIn(
+                        f'top:{int(lane["height"] * 0.12)}px', markup[0]
+                    )
+            outside = dict(lane, x=view["x"] - 1)
+            failed = premium._graphic_caption_geometry_check(
+                width, height, outside, viewport=viewport
+            )
+            self.assertFalse(failed["ok"])
+            self.assertFalse(failed["in_viewport"])
+
+    def test_graphic_geometry_gate_rejects_platform_ui_overlap(self):
+        width, height = 720, 1280
+        view = premium._graphic_viewport(width, height)
+        lane = premium._graphic_lane_geometry(width, height)
+        self.assertEqual(lane, {
+            "x": 80, "y": 333, "width": 520, "height": 153,
+        })
+        unsafe = {
+            **lane,
+            "x": lane["x"] + 1,
+            "width": lane["width"],
+        }
+        check = premium._graphic_caption_geometry_check(
+            width, height, unsafe
+        )
+        self.assertFalse(check["ok"])
+        self.assertTrue(check["in_viewport"])
+        self.assertFalse(check["platform_safe"])
+        bottom_unsafe = {
+            **lane,
+            "y": view["y"] + round(view["height"] * 0.72),
+        }
+        check = premium._graphic_caption_geometry_check(
+            width, height, bottom_unsafe
+        )
+        self.assertFalse(check["ok"])
+        self.assertFalse(check["platform_safe"])
+
+    def test_invalid_graphic_viewports_fail_before_render(self):
+        invalid = (
+            (0, 0, 1080),
+            (-1, 0, 608, 1080),
+            (1500, 0, 608, 1080),
+            (0, 0, float("nan"), 1080),
+        )
+        for viewport in invalid:
+            with self.subTest(viewport=viewport), self.assertRaises(ValueError):
+                premium._graphic_lane_geometry(1920, 1080, viewport)
+
+    def test_unsafe_graphic_geometry_fails_and_remains_release_blocking(self):
+        width, height = 1080, 1920
+        unsafe = {
+            "y": round(height * premium.CAPTION_RESERVED_TOP_FRAC),
+            "height": round(height * 0.12),
+        }
+        check = premium._graphic_caption_geometry_check(
+            width, height, unsafe
+        )
+        self.assertFalse(check["ok"])
+        self.assertFalse(check["separate"])
+        edl = {
+            "graphics": [{"s": 0.0, "e": 1.0, "kind": "keyword",
+                          "text": "UNSAFE"}],
+            "broll": [],
+            "resolution": {
+                "graphics_ok": True,
+                "graphics_caption_clearance_ok": False,
+            },
+        }
+        self.assertEqual(premium.broll_layers(edl, []), [])
+        self.assertFalse(edl["resolution"]["ok"])
+
+    def test_pillow_graphics_emit_release_bound_clearance_for_every_kind(self):
+        from PIL import Image
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        graphics = [
+            {"s": 0.0, "e": 1.0, "kind": "keyword", "text": "KEY POINT"},
+            {"s": 1.0, "e": 2.0, "kind": "stat", "text": "RESULT",
+             "value": "87%"},
+            {"s": 2.0, "e": 3.0, "kind": "callout",
+             "text": "BAD TIME VS MINUTE"},
+            {"s": 3.0, "e": 4.0, "kind": "bars", "text": "COMPARE",
+             "items": [{"label": "NO", "value": 1},
+                       {"label": "YES", "value": 2}]},
+        ]
+        for width, height in ((360, 640), (640, 360)):
+            with self.subTest(width=width, height=height), \
+                    tempfile.TemporaryDirectory() as td, \
+                    mock.patch.object(
+                        premium, "_hf_render_graphic", return_value=False
+                    ):
+                edl = {"graphics": [dict(event) for event in graphics]}
+                layers = premium.build_graphics(
+                    edl, Path(td), str(font_file), width, height
+                )
+                self.assertEqual([layer["kind"] for layer in layers],
+                                 [event["kind"] for event in graphics])
+                self.assertTrue(
+                    edl["resolution"]["graphics_caption_clearance_ok"]
+                )
+                self.assertTrue(edl["resolution"]["ok"])
+                for layer in layers:
+                    self.assertTrue(layer["caption_clearance"]["ok"])
+                    frame = Image.open(
+                        Path(layer["seq"]) / "f_0015.png"
+                    ).getchannel("A")
+                    bounds = frame.getbbox()
+                    self.assertIsNotNone(bounds)
+                    self.assertLessEqual(bounds[3], layer["height"])
+                    self.assertGreaterEqual(
+                        layer["y"] + bounds[1],
+                        round(height * premium.CAPTION_RESERVED_BOTTOM_FRAC),
+                    )
+
+    def test_pillow_graphics_render_inside_exact_crop_viewport_for_every_kind(self):
+        from PIL import Image
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        graphics = [
+            {"s": 0.0, "e": 1.0, "kind": "keyword", "text": "KEY POINT"},
+            {"s": 1.0, "e": 2.0, "kind": "stat", "text": "RESULT",
+             "value": "87%"},
+            {"s": 2.0, "e": 3.0, "kind": "callout",
+             "text": "BAD TIME VS MINUTE"},
+            {"s": 3.0, "e": 4.0, "kind": "bars", "text": "COMPARE",
+             "items": [{"label": "NO", "value": 1},
+                       {"label": "YES", "value": 2}]},
+        ]
+        cases = (
+            (1280, 720, (437.5, 0.0, 405.0, 720.0)),
+            (360, 960, (0.0, 160.0, 360.0, 640.0)),
+        )
+        for width, height, viewport in cases:
+            with self.subTest(width=width, height=height), \
+                    tempfile.TemporaryDirectory() as td, \
+                    mock.patch.object(
+                        premium, "_hf_render_graphic", return_value=False
+                    ):
+                edl = {"graphics": [dict(event) for event in graphics]}
+                layers = premium.build_graphics(
+                    edl, Path(td), str(font_file), width, height,
+                    viewport=viewport,
+                )
+                lane = premium._graphic_lane_geometry(
+                    width, height, viewport
+                )
+                self.assertEqual(len(layers), len(graphics))
+                for layer in layers:
+                    self.assertEqual(
+                        (layer["x"], layer["y"], layer["width"],
+                         layer["height"]),
+                        (lane["x"], lane["y"], lane["width"],
+                         lane["height"]),
+                    )
+                    self.assertTrue(layer["caption_clearance"]["ok"])
+                    frame = Image.open(
+                        Path(layer["seq"]) / "f_0015.png"
+                    ).convert("RGBA")
+                    self.assertEqual(frame.size,
+                                     (lane["width"], lane["height"]))
+                    bounds = frame.getchannel("A").getbbox()
+                    self.assertIsNotNone(bounds)
+                    self.assertGreater(bounds[0], 0)
+                    self.assertGreater(bounds[1], 0)
+                    self.assertLess(bounds[2], frame.width)
+                    self.assertLess(bounds[3], frame.height)
+
+    def test_hyperframes_layers_keep_exact_crop_offsets_for_every_kind(self):
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        graphics = [
+            {"s": 0.0, "e": 1.0, "kind": "keyword", "text": "KEY POINT"},
+            {"s": 1.0, "e": 2.0, "kind": "stat", "text": "RESULT",
+             "value": "87%"},
+            {"s": 2.0, "e": 3.0, "kind": "callout",
+             "text": "BAD TIME VS MINUTE"},
+            {"s": 3.0, "e": 4.0, "kind": "bars", "text": "COMPARE",
+             "items": [{"label": "NO", "value": 1},
+                       {"label": "YES", "value": 2}]},
+        ]
+        viewport = (437.5, 0.0, 405.0, 720.0)
+        lane = premium._graphic_lane_geometry(1280, 720, viewport)
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+                premium, "_hf_render_graphic", return_value=True
+        ) as render:
+            edl = {"graphics": graphics}
+            layers = premium.build_graphics(
+                edl, Path(td), str(font_file), 1280, 720,
+                viewport=viewport,
+            )
+        self.assertEqual(render.call_count, len(graphics))
+        self.assertTrue(all(
+            call.kwargs["viewport"] == viewport
+            for call in render.call_args_list
+        ))
+        self.assertEqual([layer["kind"] for layer in layers],
+                         [graphic["kind"] for graphic in graphics])
+        for layer in layers:
+            self.assertEqual(
+                (layer["x"], layer["y"], layer["width"], layer["height"]),
+                (lane["x"], lane["y"], lane["width"], lane["height"]),
+            )
+            self.assertTrue(layer["caption_clearance"]["ok"])
+
+    def test_vs_callout_renders_two_compact_pills_with_divider(self):
+        from PIL import Image
+
+        self.assertEqual(
+            premium._comparison_parts("BAD TIME VS MINUTE"),
+            ("BAD TIME", "MINUTE"),
+        )
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+                premium, "_hf_render_graphic", return_value=False):
+            edl = {"graphics": [{
+                "s": 0.0, "e": 1.0, "kind": "callout",
+                "text": "BAD TIME VS MINUTE",
+            }]}
+            layer = premium.build_graphics(
+                edl, Path(td), str(font_file), 720, 1280
+            )[0]
+            image = Image.open(
+                Path(layer["seq"]) / "f_0015.png"
+            ).convert("RGBA")
+            backing_x = set()
+            for y in range(image.height):
+                for x in range(image.width):
+                    red, green, blue, alpha = image.getpixel((x, y))
+                    if (red, green, blue, alpha) == (0, 0, 0, 218):
+                        backing_x.add(x)
+            runs = []
+            for x in sorted(backing_x):
+                if not runs or x > runs[-1][-1] + 1:
+                    runs.append([x])
+                else:
+                    runs[-1].append(x)
+        pill_runs = [
+            run for run in runs
+            if len(run) >= layer["width"] * 0.12
+        ]
+        self.assertEqual(len(pill_runs), 2)
+        self.assertTrue(layer["caption_clearance"]["ok"])
+
+    def test_approved_forty_four_character_graphic_copy_is_never_truncated(self):
+        from PIL import Image
+
+        exact = "ELEVEN CHARS TWELVE MORE THAN TWENTY CHARS!!"
+        self.assertEqual(len(exact), premium.GRAPHIC_TEXT_MAX_CHARS)
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        lane = premium._graphic_lane_geometry(720, 1280)
+
+        for kind in ("keyword", "callout", "stat", "bars"):
+            event = {"s": 0.0, "e": 1.0, "kind": kind, "text": exact}
+            if kind == "stat":
+                event["value"] = "87%"
+            elif kind == "bars":
+                event["items"] = [
+                    {"label": "NO", "value": 1},
+                    {"label": "YES", "value": 2},
+                ]
+            with self.subTest(renderer="hyperframes", kind=kind):
+                markup = premium._hf_kind_markup(
+                    kind, event, 1.0, 720, 1280
+                )
+                self.assertIsNotNone(markup)
+                self.assertIn(exact, markup[0])
+                self.assertNotIn(exact[:40] + "<", markup[0])
+            with self.subTest(renderer="pillow", kind=kind), \
+                    tempfile.TemporaryDirectory() as td, \
+                    mock.patch.object(
+                        premium, "_hf_render_graphic", return_value=False
+                    ):
+                edl = {"graphics": [event]}
+                with mock.patch.object(
+                        premium, "_fit_graphic_font",
+                        wraps=premium._fit_graphic_font
+                ) as fit:
+                    layer = premium.build_graphics(
+                        edl, Path(td), str(font_file), 720, 1280
+                    )[0]
+                fitted_texts = [call.args[1] for call in fit.call_args_list]
+                self.assertIn(exact, fitted_texts)
+                self.assertEqual(layer["text"], exact)
+                frame = Image.open(
+                    Path(layer["seq"]) / "f_0015.png"
+                ).getchannel("A")
+                bounds = frame.getbbox()
+                self.assertIsNotNone(bounds)
+                self.assertGreater(bounds[0], 0)
+                self.assertLess(bounds[2], lane["width"])
+                self.assertTrue(layer["caption_clearance"]["platform_safe"])
+
+    def test_bars_preserve_all_five_validated_labels_in_both_renderers(self):
+        from PIL import Image
+
+        labels = [
+            "ALPHA LABEL EXACTLY TWENTY",
+            "BRAVO LABEL EXACTLY TWENTY",
+            "CHARLIE LABEL IS PRESERVED",
+            "DELTA LABEL IS PRESERVED",
+            "ECHO LABEL IS PRESERVED",
+        ]
+        self.assertEqual(len(labels), 5)
+        self.assertTrue(all(len(label) <= 26 for label in labels))
+        items = [
+            {"label": label, "value": index + 1}
+            for index, label in enumerate(labels)
+        ]
+        event = {
+            "s": 0.0, "e": 1.0, "kind": "bars",
+            "text": "ALL FIVE LABELS", "items": items,
+        }
+
+        markup = premium._hf_kind_markup(
+            "bars", event, 1.0, 720, 1280
+        )
+        self.assertIsNotNone(markup)
+        for index, label in enumerate(labels):
+            self.assertIn(label, markup[0])
+            self.assertIn(f'id="bar{index}"', markup[0])
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+                premium, "_hf_render_graphic", return_value=False):
+            edl = {"graphics": [event]}
+            layer = premium.build_graphics(
+                edl, Path(td), str(font_file), 720, 1280
+            )[0]
+            frame = Image.open(
+                Path(layer["seq"]) / "f_0015.png"
+            ).getchannel("A")
+
+        self.assertEqual(layer["items"], items)
+        self.assertEqual(
+            edl["resolution"]["graphics_copy_integrity"][0]["items"], items
+        )
+        self.assertTrue(edl["resolution"]["graphics_copy_integrity_ok"])
+        self.assertEqual(
+            edl["production_receipt"]["graphics_copy_integrity"]["events"][0]
+            ["items"],
+            items,
+        )
+        self.assertTrue(
+            edl["production_receipt"]["graphics_copy_integrity"]["ok"]
+        )
+        bounds = frame.getbbox()
+        self.assertIsNotNone(bounds)
+        self.assertGreater(bounds[0], 0)
+        self.assertGreater(bounds[1], 0)
+        self.assertLess(bounds[2], frame.width)
+        self.assertLess(bounds[3], frame.height)
+
+    def test_graphics_copy_integrity_fails_if_renderer_alters_items(self):
+        event = {
+            "s": 0.0, "e": 1.0, "kind": "bars", "text": "COMPARE",
+            "items": [
+                {"label": "FIRST EXACT LABEL", "value": 1},
+                {"label": "SECOND EXACT LABEL", "value": 2},
+            ],
+        }
+        planned = premium._graphic_copy_binding(event)
+        accepted = premium._graphic_copy_integrity([event], [planned])
+        altered_layer = {**planned, "items": [
+            {**planned["items"][0], "label": "ALTERED"},
+            *planned["items"][1:],
+        ]}
+        rejected = premium._graphic_copy_integrity(
+            [event], [altered_layer]
+        )
+        self.assertTrue(accepted["ok"])
+        self.assertFalse(rejected["ok"])
+        self.assertFalse(rejected["events"][0]["ok"])
+
     def test_bar_values_cannot_be_negative(self):
         spoken = (
             "This opening sentence contains enough real spoken words today "
@@ -1863,6 +2398,12 @@ class SafetyContracts(unittest.TestCase):
             for probe in result["probes"]
         ))
 
+    def test_internal_sync_visual_threshold_allows_encode_noise_only(self):
+        self.assertEqual(pipeline.SYNC_VISUAL_MAE_MAX, 13.0)
+        source = inspect.getsource(pipeline.verify_sync)
+        self.assertIn("mae <= SYNC_VISUAL_MAE_MAX", source)
+        self.assertIn("abs(off_ms) <= 25.0", source)
+
     def test_live_command_imports_the_canonical_pipeline(self):
         root = Path(__file__).resolve().parent.parent
         tracked = (
@@ -1970,7 +2511,7 @@ class SafetyContracts(unittest.TestCase):
             subprocess.run([
                 pipeline.FFMPEG, "-v", "error", "-y",
                 "-i", str(reference), "-vf",
-                "drawbox=x=40:y=20:w=240:h=70:color=yellow:t=fill:"
+                "drawbox=x=40:y=47:w=240:h=21:color=yellow:t=fill:"
                 "enable='between(t,1,2)'",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(present),
             ], check=True)
@@ -1986,6 +2527,23 @@ class SafetyContracts(unittest.TestCase):
             )
         self.assertTrue(found["ok"])
         self.assertFalse(missing["ok"])
+
+    def test_visual_artifact_probe_covers_graphics_not_caption_lane(self):
+        source = inspect.getsource(pipeline._visual_frame_difference)
+        self.assertIn("floor(ih*0.15)", source)
+        self.assertIn("floor(ih*0.25)", source)
+        self.assertIn("26%-38%", source)
+        self.assertNotIn("floor(ih*0.55):0:0", source)
+
+    def test_graphics_receive_exact_delivery_viewport_before_render(self):
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        viewport = source.index("delivery_viewport = _delivery_viewport(")
+        graphics = source.index("gfx_layers = prem.build_graphics(")
+        self.assertLess(viewport, graphics)
+        branch = source[graphics:source.index("broll_lyrs =", graphics)]
+        self.assertIn("viewport=delivery_viewport", branch)
+        master = inspect.getsource(pipeline.render_master)
+        self.assertIn("x={g.get('x', 0)}", master)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
@@ -2425,11 +2983,14 @@ class SafetyContracts(unittest.TestCase):
             "edl": None,
             "background": None,
             "no_llm": False,
+            "creative_constraints": None,
         }
         cases = [
             {**base, "no_premium": True, "edl": Path("plan.json")},
             {**base, "no_premium": True, "background": Path("bg.png")},
             {**base, "no_premium": True, "no_llm": True},
+            {**base, "no_premium": True,
+             "creative_constraints": Path("constraints.json")},
             {**base, "edl": Path("plan.json"), "no_llm": True},
         ]
         for values in cases:
@@ -2523,6 +3084,106 @@ class SafetyContracts(unittest.TestCase):
                     if bounds:
                         self.assertGreaterEqual(bounds[0], int(left) - 1)
                         self.assertLessEqual(bounds[2], int(right) + 2)
+
+    def test_caption_semantic_chunks_do_not_end_on_connectors(self):
+        text = (
+            "you feel like a lot of pressure versus the word no it feels "
+            "like protection and getting the word no out of people"
+        ).split()
+        words = [
+            {"w": word, "s": index * 0.2, "e": index * 0.2 + 0.15}
+            for index, word in enumerate(text)
+        ]
+        chunks = pipeline._caption_semantic_chunks(words, 3)
+        endings = {
+            re.sub(r"[^a-z0-9']", "", chunk[-1]["w"].lower())
+            for chunk in chunks[:-1]
+        }
+        self.assertFalse(endings & pipeline._CAPTION_NO_END)
+        self.assertTrue(all(1 <= len(chunk) <= 3 for chunk in chunks))
+        phrases = [" ".join(word["w"] for word in chunk) for chunk in chunks]
+        self.assertNotIn("and getting the", phrases)
+        self.assertNotIn("than getting the", phrases)
+
+    def test_caption_band_pixels_include_solid_white_and_dark_backing(self):
+        from PIL import Image
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        with tempfile.TemporaryDirectory() as td:
+            band = pipeline.build_caption_band(
+                [
+                    {"w": "Clear", "s": 0.0, "e": 0.4},
+                    {"w": "type", "s": 0.4, "e": 0.8},
+                ],
+                Path(td), str(font_file), 720, 1280, "10", 0.9,
+                scale=0.062, max_words=3, safe_width=720.0,
+            )
+            state = sorted((Path(td) / "capband").glob("state_*.png"))[0]
+            image = Image.open(state).convert("RGBA")
+            pixels = list(
+                image.get_flattened_data()
+                if hasattr(image, "get_flattened_data") else image.getdata()
+            )
+        self.assertTrue(band["pixel_quality"]["ok"])
+        self.assertGreaterEqual(
+            band["pixel_quality"]["minimum_solid_fill_ratio"], 0.42
+        )
+        self.assertGreaterEqual(
+            band["pixel_quality"]["minimum_contrast_ratio"], 7.0
+        )
+        self.assertTrue(any(r >= 245 and g >= 245 and b >= 245 and a >= 245
+                            for r, g, b, a in pixels))
+        self.assertTrue(any(r <= 8 and g <= 8 and b <= 8 and a >= 160
+                            for r, g, b, a in pixels))
+
+    def test_caption_layout_measures_the_same_stroke_it_renders(self):
+        from PIL import Image, ImageDraw
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        canvas = Image.new("RGBA", (720, 180), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(canvas)
+        chunk = [
+            {"w": "Premium", "s": 0.0, "e": 0.3},
+            {"w": "captions", "s": 0.3, "e": 0.7},
+        ]
+        font, stroke, _widths, x, y, safe = pipeline._caption_layout(
+            draw, chunk, str(font_file), 80, 720, 180, 720.0
+        )
+        expected = pipeline._caption_stroke(font.size)
+        self.assertEqual(stroke, expected)
+        self.assertTrue(safe)
+        bounds = draw.textbbox(
+            (x, y), "Premium captions", font=font, stroke_width=stroke
+        )
+        left, right = pipeline._caption_safe_bounds(720, 720.0)
+        self.assertGreaterEqual(bounds[0], left - 0.5)
+        self.assertLessEqual(bounds[2], right + 0.5)
+
+    def test_caption_pixel_gate_rejects_thin_hollow_glyphs(self):
+        from PIL import Image, ImageDraw, ImageFont
+
+        root = Path(pipeline.__file__).resolve().parent.parent
+        font_file = root / "desktop/helper/renderer/WorkSans-Variable.ttf"
+        image = Image.new("RGBA", (720, 180), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((80, 20, 640, 160), fill=(0, 0, 0, 172))
+        thin = ImageFont.truetype(str(font_file), 80)
+        draw.text((100, 38), "Thin text", font=thin, fill=(255, 255, 255, 255),
+                  stroke_width=9, stroke_fill=(0, 0, 0, 255))
+        quality = pipeline._caption_pixel_quality(image)
+        self.assertFalse(quality["ok"])
+        self.assertLess(quality["solid_fill_ratio"], 0.42)
+
+    def test_upper_caption_lane_avoids_conservative_face_mouth_zone(self):
+        view_top, view_height, caption_height = 320.0, 1280.0, 210
+        caption_y = pipeline._caption_lane_y(
+            view_top, view_height, caption_height, "upper"
+        )
+        subject_top = view_top + view_height * 0.26
+        self.assertGreaterEqual(caption_y, view_top)
+        self.assertLessEqual(caption_y + caption_height, subject_top)
 
     def test_caption_band_fails_closed_on_an_unreadable_long_token(self):
         root = Path(pipeline.__file__).resolve().parent.parent
@@ -2708,32 +3369,180 @@ class SafetyContracts(unittest.TestCase):
         self.assertIn("Hello, world.", text)
         self.assertNotIn("Hello-world", text)
 
-    def test_cleanup_loop_cuts_and_retranscribes_inside_each_pass(self):
-        tree = ast.parse(Path(pipeline.__file__).read_text(encoding="utf-8"))
-        main = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "main"
-        )
-        loops = [
-            node for node in ast.walk(main)
-            if isinstance(node, ast.For)
-            and isinstance(node.iter, ast.Call)
-            and isinstance(node.iter.func, ast.Name)
-            and node.iter.func.id == "range"
-            and any(
-                isinstance(arg, ast.Constant) and arg.value == 6
-                for arg in node.iter.args
-            )
+    def test_script_correction_splits_a_low_confidence_collapsed_phrase(self):
+        words = [
+            {"w": "word", "s": 0.0, "e": 0.2, "p": 0.99},
+            {"w": "no", "s": 0.2, "e": 0.4, "p": 0.99},
+            {"w": "other", "s": 0.4, "e": 0.7, "p": 0.83},
+            {"w": "people", "s": 0.7, "e": 1.0, "p": 0.99},
         ]
-        self.assertEqual(len(loops), 1)
-        calls = {
-            node.func.id
-            for statement in loops[0].body
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        self.assertIn("apply_cuts", calls)
-        self.assertIn("transcribe", calls)
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / "script.txt"
+            script.write_text("word no out of people", encoding="utf-8")
+            corrected = pipeline.script_correct(words, script)
+        self.assertEqual(
+            [word["w"] for word in corrected],
+            ["word", "no", "out", "of", "people"],
+        )
+        self.assertEqual(corrected[2]["s"], 0.4)
+        self.assertEqual(corrected[3]["e"], 0.7)
+
+    def test_script_correction_preserves_confident_short_paraphrase(self):
+        words = [
+            {"w": "word", "s": 0.0, "e": 0.2, "p": 0.99},
+            {"w": "another", "s": 0.2, "e": 0.5, "p": 0.99},
+            {"w": "people", "s": 0.5, "e": 0.8, "p": 0.99},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / "script.txt"
+            script.write_text("word out of people", encoding="utf-8")
+            corrected = pipeline.script_correct(words, script)
+        self.assertEqual(
+            [word["w"] for word in corrected],
+            ["word", "another", "people"],
+        )
+
+    def test_script_correction_restores_exact_sentence_punctuation(self):
+        words = [
+            {"w": "than", "s": 0.0, "e": 0.2, "p": 0.99},
+            {"w": "getting", "s": 0.2, "e": 0.4, "p": 0.99},
+            {"w": "the", "s": 0.4, "e": 0.5, "p": 0.99},
+            {"w": "word.", "s": 0.5, "e": 0.7, "p": 0.99},
+            {"w": "Yes,", "s": 0.7, "e": 0.9, "p": 0.99},
+            {"w": "out", "s": 0.9, "e": 1.0, "p": 0.99},
+            {"w": "of", "s": 1.0, "e": 1.1, "p": 0.99},
+            {"w": "people", "s": 1.1, "e": 1.4, "p": 0.99},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / "script.txt"
+            script.write_text(
+                "than getting the word yes out of people.",
+                encoding="utf-8",
+            )
+            corrected = pipeline.script_correct(words, script)
+        self.assertEqual(
+            [word["w"] for word in corrected],
+            ["than", "getting", "the", "word", "yes", "out", "of",
+             "people."],
+        )
+
+    def test_cleanup_loop_cuts_and_retranscribes_inside_each_pass(self):
+        self.assertEqual(pipeline.MAX_CLEANUP_PASSES, 2)
+        self.assertGreater(pipeline.MIN_CLEANUP_SECONDS, 0)
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "range(1, MAX_CLEANUP_PASSES + 1)", source
+        )
+        self.assertIn("cleanup_seconds < MIN_CLEANUP_SECONDS", source)
+        self.assertIn("cut = apply_cuts(cut, merged, work)", source)
+        self.assertIn("words = transcribe(cut, work)", source)
+
+    def test_operator_edl_skips_autonomous_cut_before_director_timeline(self):
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        director = source.index("elif a.edl and a.edl.exists():")
+        automatic = source.index("cut, retention, raw_words = word_guarded_cut(")
+        self.assertLess(director, automatic)
+        branch = source[director:automatic]
+        self.assertIn("cut = src", branch)
+        self.assertIn("raw_words = transcribe(cut, work)", branch)
+        self.assertIn("words = raw_words", branch)
+        self.assertNotIn("apply_cuts", branch)
+
+    def test_word_integrity_uses_measured_words_not_caption_spelling(self):
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "integrity_words, words = _integrity_and_caption_words(", source
+        )
+        self.assertIn(
+            'SequenceMatcher(a=[_n(w["w"]) for w in integrity_words]',
+            source,
+        )
+
+    def test_integrity_baseline_is_isolated_from_caption_corrections(self):
+        measured = [
+            {"w": "other", "s": 0.0, "e": 0.4, "p": 0.2},
+            {"w": "people", "s": 0.4, "e": 0.8, "p": 1.0},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / "script.txt"
+            script.write_text("out of people", encoding="utf-8")
+            integrity, captions = pipeline._integrity_and_caption_words(
+                measured, script
+            )
+        self.assertEqual(
+            [word["w"] for word in integrity], ["other", "people"]
+        )
+        self.assertEqual(
+            [word["w"] for word in captions], ["out", "of", "people"]
+        )
+        self.assertEqual(
+            [word["w"] for word in measured], ["other", "people"]
+        )
+
+    def test_later_timeline_mutations_refresh_integrity_before_display(self):
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        anomaly = source.split(
+            'log("phase 3A: re-transcribing post-anomaly timeline")', 1
+        )[1].split("font_file, font_ok", 1)[0]
+        director = source.split(
+            'log("phase 3R: re-transcribing post-cut timeline")', 1
+        )[1].split('info["duration"] = _dur(cut)', 1)[0]
+        for branch in (anomaly, director):
+            self.assertIn("measured_words = transcribe(cut, work)", branch)
+            self.assertIn(
+                "integrity_words, words = _integrity_and_caption_words(",
+                branch,
+            )
+
+    def test_delivery_encode_contract_and_desktop_skip_precede_watch_copy(self):
+        arguments = pipeline.DELIVERY_VIDEO_ARGS
+        self.assertEqual(arguments[arguments.index("-g") + 1], "60")
+        for flag in ("-color_primaries", "-color_trc", "-colorspace"):
+            self.assertEqual(arguments[arguments.index(flag) + 1], "bt709")
+        self.assertEqual(arguments[arguments.index("-bsf:v") + 1], (
+            "h264_metadata=colour_primaries=1:transfer_characteristics=1:"
+            "matrix_coefficients=1"
+        ))
+        self.assertEqual(arguments[arguments.index("-movflags") + 1], "+faststart")
+        source = Path(pipeline.__file__).read_text(encoding="utf-8")
+        self.assertIn('"-ar", "48000", master', source)
+        self.assertIn("loudnorm=I=-14:TP=-1", source)
+        self.assertLess(
+            source.index('or not providers.telegram_configured()'),
+            source.index('tg_file = work / "tg_copy.mp4"'),
+        )
+
+    def test_delivery_color_metadata_gate_fails_closed(self):
+        good = subprocess.CompletedProcess(
+            [], 0,
+            stdout=json.dumps({"streams": [{
+                "color_space": "bt709",
+                "color_transfer": "bt709",
+                "color_primaries": "bt709",
+            }]}).encode("utf-8"),
+            stderr=b"",
+        )
+        missing = subprocess.CompletedProcess(
+            [], 0,
+            stdout=json.dumps({"streams": [{
+                "color_space": "bt709",
+                "color_transfer": "unknown",
+                "color_primaries": "unknown",
+            }]}).encode("utf-8"),
+            stderr=b"",
+        )
+        with mock.patch.object(pipeline, "run", return_value=good):
+            accepted = pipeline.verify_delivery_color_metadata(
+                Path("delivered.mp4")
+            )
+        with mock.patch.object(pipeline, "run", return_value=missing):
+            rejected = pipeline.verify_delivery_color_metadata(
+                Path("delivered.mp4")
+            )
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(accepted["color_transfer"], "bt709")
+        self.assertFalse(rejected["ok"])
+        self.assertIn("lacks explicit BT.709", rejected["note"])
 
     def test_incomplete_semantic_judgment_blocks_cut_implicated_sentence(self):
         with tempfile.TemporaryDirectory() as td:

@@ -40,6 +40,9 @@ extract_source() {
 inside_container() {
   [[ "${AUTOEDITOR_WINDOWS_FFMPEG_CONTAINER:-}" == "1" ]] || \
     fail "The internal build may run only in the pinned container"
+  local evidence_only=${AUTOEDITOR_WINDOWS_FFMPEG_EVIDENCE_ONLY:-0}
+  [[ "$evidence_only" == "0" || "$evidence_only" == "1" ]] || \
+    fail "The internal evidence-only selector must be exactly 0 or 1"
   [[ "$(pwd -P)" == "/build/autoeditor-media" ]] || \
     fail "The internal build directory must be /build/autoeditor-media"
   [[ -d /source-cache && -d /artifact && -d /repository ]] || \
@@ -186,11 +189,13 @@ inside_container() {
       --unstripped-executable "/artifact/linkage/${program}_g.exe" \
       --receipt "/artifact/linkage/$program-linkage-receipt.json"
   done
-  python3 /repository/packaging/verify_windows_ffmpeg.py verify-link-evidence \
-    --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
-    --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
-    --link-evidence-dir /artifact/link-evidence \
-    --linkage-dir /artifact/linkage
+  if [[ "$evidence_only" == "0" ]]; then
+    python3 /repository/packaging/verify_windows_ffmpeg.py verify-link-evidence \
+      --source-lock /repository/packaging/windows-ffmpeg-sources.lock.json \
+      --capabilities /repository/packaging/windows-ffmpeg-capabilities.json \
+      --link-evidence-dir /artifact/link-evidence \
+      --linkage-dir /artifact/linkage
+  fi
   "$TARGET-strip" --strip-all ffmpeg.exe ffprobe.exe
   install -m 0755 ffmpeg.exe /artifact/ffmpeg.exe
   install -m 0755 ffprobe.exe /artifact/ffprobe.exe
@@ -227,8 +232,13 @@ inside_container() {
 outer_build() {
   local output_dir=
   local repository_commit=
+  local evidence_only=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --evidence-only)
+        evidence_only=1
+        shift
+        ;;
       --output-dir)
         [[ $# -ge 2 ]] || fail "--output-dir requires a value"
         output_dir=$2
@@ -243,7 +253,7 @@ outer_build() {
     esac
   done
   [[ -n "$output_dir" && -n "$repository_commit" ]] || \
-    fail "Usage: $0 --output-dir PATH --repository-commit 40_HEX_SHA"
+    fail "Usage: $0 [--evidence-only] --output-dir PATH --repository-commit 40_HEX_SHA"
   [[ "$repository_commit" =~ ^[0-9a-f]{40}$ ]] || \
     fail "--repository-commit must be an exact 40-character SHA-1"
   command -v curl >/dev/null || fail "curl is required"
@@ -358,6 +368,7 @@ PY
   docker run --rm --network=none \
     --user "$(id -u):$(id -g)" \
     --env AUTOEDITOR_WINDOWS_FFMPEG_CONTAINER=1 \
+    --env AUTOEDITOR_WINDOWS_FFMPEG_EVIDENCE_ONLY="$evidence_only" \
     --volume "$REPO_ROOT:/repository:ro" \
     --volume "$source_cache:/source-cache:ro" \
     --volume "$container_work:/build/autoeditor-media" \
@@ -384,7 +395,17 @@ PY
       --unstripped-executable "$output_dir/linkage/${program}_g.exe" \
       --receipt "$output_dir/linkage/$program-linkage-receipt.json"
   done
-  printf '%s\n' "Windows FFmpeg source build completed: $output_dir"
+  if [[ "$evidence_only" == "1" ]]; then
+    local evidence_marker="$output_dir/WINDOWS_FFMPEG_EVIDENCE_ONLY.txt"
+    printf '%s\n' \
+      "AutoEditor Windows FFmpeg evidence only" \
+      "repository_commit=$repository_commit" \
+      "promotable=false" > "$evidence_marker"
+    touch -d '@1785458830' "$evidence_marker"
+    printf '%s\n' "Windows FFmpeg source evidence build completed: $output_dir"
+  else
+    printf '%s\n' "Windows FFmpeg source build completed: $output_dir"
+  fi
 }
 
 if [[ "${1:-}" == "--inside-container" ]]; then

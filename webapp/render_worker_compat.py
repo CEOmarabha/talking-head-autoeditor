@@ -20,6 +20,9 @@ except ImportError as e:  # pragma: no cover
         "pip install cryptography  (required by the render worker)") from e
 
 
+AUTOEDITOR_USER_AGENT = "AutoEditor-Helper/0.1.0"
+
+
 def aes_gcm_decrypt(key32: bytes, iv: bytes, ct_and_tag: bytes) -> bytes:
     """Decrypt WebCrypto AES-GCM output (ciphertext||tag, 12-byte IV)."""
     return AESGCM(key32).decrypt(iv, ct_and_tag, None)
@@ -33,6 +36,7 @@ def http_json(url: str, payload: dict | None, token: str = "",
               timeout: int = 60) -> dict:
     data = canonical_json_bytes(payload or {})
     req = urllib.request.Request(url, data=data, headers={
+        "User-Agent": AUTOEDITOR_USER_AGENT,
         "content-type": "application/json",
         **({"authorization": f"Bearer {token}"} if token else {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -96,6 +100,7 @@ def http_get(url: str, dst: Path, token: str = "",
              timeout: int = 600,
              headers: Mapping[str, str] | None = None) -> None:
     req = urllib.request.Request(url, headers={
+        "User-Agent": AUTOEDITOR_USER_AGENT,
         **({"authorization": f"Bearer {token}"} if token else {}),
         **dict(headers or {}),
     })
@@ -114,6 +119,7 @@ def http_put(url: str, src: Path, token: str = "", sha256_hex: str = "",
                 yield chunk
 
     headers = {
+        "User-Agent": AUTOEDITOR_USER_AGENT,
         **({"authorization": f"Bearer {token}"} if token else {}),
         **({"x-autoeditor-sha256": sha256_hex} if sha256_hex else {}),
         **dict(headers or {}),
@@ -144,6 +150,7 @@ def http_put_range(url: str, src: Path, offset: int, length: int,
                 yield chunk
 
     request_headers = {
+        "User-Agent": AUTOEDITOR_USER_AGENT,
         **({"authorization": f"Bearer {token}"} if token else {}),
         **dict(headers or {}),
         "content-length": str(length),

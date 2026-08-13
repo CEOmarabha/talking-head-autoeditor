@@ -3,18 +3,46 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
+import importlib.util
 import json
 import platform
 import struct
+import sys
 from pathlib import Path
 
 
 IGNORED_RECEIPT_NAMES = {".DS_Store", ".gitkeep"}
+MAX_RUNTIME_MACHO_BYTES = 512 * 1024 * 1024
+MACHO_FAMILY_MAGICS = {
+    b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+}
 
 
 class ManifestReceiptError(ValueError):
     """A file cannot be represented by the release receipt contract."""
+
+
+@functools.lru_cache(maxsize=1)
+def _load_macos_receipt_module():
+    source = Path(__file__).with_name("macos_remotion_receipt.py")
+    spec = importlib.util.spec_from_file_location(
+        "autoeditor_macos_receipt_normalizer", source
+    )
+    if spec is None or spec.loader is None:
+        raise ManifestReceiptError(f"cannot load macOS receipt normalizer: {source}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
 
 
 def file_sha256(path: Path) -> str:
@@ -139,9 +167,51 @@ def pe_authenticode_content_receipt(path: Path) -> dict:
     return {"bytes": canonical_size, "sha256": digest.hexdigest()}
 
 
+def macho_codesign_content_receipt(path: Path) -> dict:
+    """Hash all Mach-O bytes except a strictly validated code signature.
+
+    The normalizer requires a thin 64-bit executable, dylib, or bundle. Signed
+    inputs must pass exact ``/usr/bin/codesign --verify --strict`` and carry one
+    terminal signature inside the terminal ``__LINKEDIT`` segment. Signature
+    removal is bound to that former suffix, then the one allocation field that
+    codesign legitimately changes is canonicalized. Every other Mach-O byte is
+    hashed, including loader metadata and non-section ``__LINKEDIT`` payloads.
+    """
+    try:
+        file_size = path.stat().st_size
+        if file_size <= 0 or file_size > MAX_RUNTIME_MACHO_BYTES:
+            raise ManifestReceiptError(
+                f"{path} exceeds the bounded Mach-O receipt size"
+            )
+        raw = path.read_bytes()
+        module = _load_macos_receipt_module()
+        normalized = module._normalize_macho_bytes(
+            raw,
+            str(path),
+            max_bytes=MAX_RUNTIME_MACHO_BYTES,
+            require_uuid=False,
+            general_codesign_layout=True,
+        )
+    except ManifestReceiptError:
+        raise
+    except Exception as exc:
+        raise ManifestReceiptError(
+            f"cannot normalize Mach-O executable {path}: {exc}"
+        ) from exc
+    return {
+        "bytes": len(normalized),
+        "sha256": hashlib.sha256(normalized).hexdigest(),
+    }
+
+
 def directory_receipt(
-    root: Path, *, normalize_windows_executables: bool = False
+    root: Path,
+    *,
+    normalize_windows_executables: bool = False,
+    normalize_macos_machos: bool = False,
 ) -> dict:
+    if normalize_windows_executables and normalize_macos_machos:
+        raise ManifestReceiptError("receipt normalization target is ambiguous")
     digest = hashlib.sha256()
     count = size = 0
     files = (
@@ -152,8 +222,17 @@ def directory_receipt(
     )
     for path in sorted(files):
         relative = path.relative_to(root).as_posix()
+        try:
+            with path.open("rb") as handle:
+                magic = handle.read(4)
+        except OSError as exc:
+            raise ManifestReceiptError(f"cannot inspect receipt file {path}: {exc}") from exc
         if normalize_windows_executables and path.suffix.casefold() == ".exe":
             executable = pe_authenticode_content_receipt(path)
+            item_hash = executable["sha256"]
+            item_size = executable["bytes"]
+        elif normalize_macos_machos and magic in MACHO_FAMILY_MAGICS:
+            executable = macho_codesign_content_receipt(path)
             item_hash = executable["sha256"]
             item_size = executable["bytes"]
         else:
@@ -196,6 +275,7 @@ def main() -> None:
         components[name] = directory_receipt(
             path,
             normalize_windows_executables=args.target_os == "windows",
+            normalize_macos_machos=args.target_os == "mac",
         )
 
     payload = {
@@ -205,7 +285,11 @@ def main() -> None:
         "receipt_algorithm": (
             "pe-authenticode-content-v1"
             if args.target_os == "windows"
-            else "raw-sha256-v1"
+            else (
+                "macho-codesign-content-v1"
+                if args.target_os == "mac"
+                else "raw-sha256-v1"
+            )
         ),
         "builder": {
             "python": platform.python_version(),

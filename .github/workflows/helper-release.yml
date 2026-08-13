@@ -6,7 +6,7 @@ on:
       version:
         description: Version for an unsigned acceptance build
         required: true
-        default: 0.1.0
+        default: 0.1.5
   push:
     tags: ["helper-v*"]
 
@@ -24,7 +24,11 @@ env:
   WHISPER_MEDIUM_REVISION: 08e178d48790749d25932bbc082711ddcfdfbc4f
 
 jobs:
+  windows_ffmpeg:
+    uses: ./.github/workflows/windows-ffmpeg.yml
+
   build:
+    needs: windows_ffmpeg
     strategy:
       fail-fast: false
       matrix:
@@ -36,10 +40,6 @@ jobs:
           - os: macos-15
             target_os: mac
             arch: arm64
-            electron_target: mac
-          - os: macos-15-intel
-            target_os: mac
-            arch: x64
             electron_target: mac
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
@@ -273,30 +273,158 @@ jobs:
             exit 1
           fi
 
-      - name: Bundle verified FFmpeg and FFprobe on Windows
+      - name: Build and verify exact macOS FFmpeg corresponding source
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          SOURCE_CACHE="$RUNNER_TEMP/macos-ffmpeg-source-cache"
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          mkdir -p "$EVIDENCE"
+          python packaging/verify_macos_ffmpeg_source.py contracts \
+            --lock packaging/macos-ffmpeg-sources.lock.json
+          python packaging/verify_macos_ffmpeg_source.py fetch-cache \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --source-cache "$SOURCE_CACHE"
+          python packaging/verify_macos_ffmpeg_source.py verify-cache \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --source-cache "$SOURCE_CACHE"
+          python packaging/verify_macos_ffmpeg_source.py verify-environment \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" --source-cache "$SOURCE_CACHE" \
+            --bottle-cache "$(brew --cache)" --cellar "$(brew --cellar)" \
+            --output "$EVIDENCE/macos-ffmpeg-environment-${{ matrix.arch }}.json"
+          python packaging/verify_macos_ffmpeg_source.py write-bundle-lock \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --output "$EVIDENCE/macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json"
+          python packaging/source_bundle.py build \
+            --lock "$EVIDENCE/macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json" \
+            --source-cache "$SOURCE_CACHE" --repository . \
+            --repository-commit "$GITHUB_SHA" \
+            --output-tar "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --output-manifest "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json"
+          python packaging/verify_macos_ffmpeg_source.py verify-bundle \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --archive "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --manifest "$EVIDENCE/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            --repository-commit "$GITHUB_SHA"
+          cp packaging/macos-ffmpeg-sources.lock.json "$EVIDENCE/"
+
+      - name: Download the accepted source-built Windows FFmpeg
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.windows_ffmpeg.outputs.artifact_id }}
+          path: ${{ runner.temp }}/windows-ffmpeg-accepted
+
+      - name: Stage accepted source-built Windows FFmpeg
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_FFMPEG_ARTIFACT_ID: ${{ needs.windows_ffmpeg.outputs.artifact_id }}
+          WINDOWS_FFMPEG_ARTIFACT_NAME: ${{ needs.windows_ffmpeg.outputs.artifact_name }}
+          WINDOWS_FFMPEG_ARTIFACT_DIGEST: ${{ needs.windows_ffmpeg.outputs.artifact_digest }}
         run: |
-          $asset = "ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
-          $release = Invoke-RestMethod `
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
-          $metadata = $release.assets | Where-Object { $_.name -eq $asset }
-          if (-not $metadata) { throw "Pinned FFmpeg release asset is missing" }
-          Invoke-WebRequest $metadata.browser_download_url -OutFile ffmpeg.zip
-          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          $expected = "8e148d10ce8da1dca931c2f35c3a180100520bb48940f4bf1c0a3c1627467331"
-          $published = $metadata.digest.Replace("sha256:", "").ToLower()
-          if ($published -ne $expected) {
-            throw "BtbN latest changed from the audited FFmpeg archive. Review and repin before releasing"
+          $source = Join-Path $env:RUNNER_TEMP "windows-ffmpeg-accepted"
+          $expectedName = "windows-ffmpeg-accepted-$env:GITHUB_SHA"
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_ID -notmatch '^[1-9][0-9]*$') {
+            throw "Accepted Windows FFmpeg artifact ID is invalid"
           }
-          if ($actual -ne $expected) { throw "FFmpeg archive digest does not match the audited digest" }
-          Expand-Archive ffmpeg.zip -DestinationPath fftmp
-          Copy-Item "fftmp/*/bin/ffmpeg.exe" "desktop/helper-staging/bin/"
-          Copy-Item "fftmp/*/bin/ffprobe.exe" "desktop/helper-staging/bin/"
-          Copy-Item "fftmp/*/LICENSE.txt" `
-            "desktop/helper-staging/licenses/FFMPEG-GPL-3.0.txt"
-          Set-Content "desktop/helper-staging/licenses/FFMPEG_BUILD.txt" `
-            "asset=$asset`nsha256=$actual`nbytes=$($metadata.size)`nrelease_id=$($release.id)`npublished_at=$($release.published_at)`nsource=$($metadata.browser_download_url)"
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_NAME -ne $expectedName) {
+            throw "Accepted Windows FFmpeg artifact name is not bound to this commit"
+          }
+          if ($env:WINDOWS_FFMPEG_ARTIFACT_DIGEST `
+              -notmatch '^[0-9a-f]{64}$') {
+            throw "Accepted Windows FFmpeg artifact digest is invalid"
+          }
+          $expectedRoot = @(
+            "ffmpeg.exe"
+            "ffprobe.exe"
+            "licenses"
+            "link-evidence"
+            "linkage"
+            "windows-ffmpeg-build-receipt.json"
+            "windows-ffmpeg-corresponding-source.manifest.json"
+            "windows-ffmpeg-corresponding-source.tar"
+          ) | Sort-Object
+          $actualRoot = @(
+            Get-ChildItem -LiteralPath $source -Force | ForEach-Object Name
+          ) | Sort-Object
+          $rootDrift = @(Compare-Object $expectedRoot $actualRoot)
+          if ($rootDrift.Count -ne 0) {
+            throw "Accepted Windows FFmpeg artifact root set drifted"
+          }
+          python packaging/verify_windows_ffmpeg.py verify-receipt `
+            --receipt "$source\windows-ffmpeg-build-receipt.json" `
+            --ffmpeg "$source\ffmpeg.exe" `
+            --ffprobe "$source\ffprobe.exe" `
+            --license-dir "$source\licenses" `
+            --link-evidence-dir "$source\link-evidence" `
+            --linkage-dir "$source\linkage" `
+            --source-bundle "$source\windows-ffmpeg-corresponding-source.tar" `
+            --source-manifest "$source\windows-ffmpeg-corresponding-source.manifest.json" `
+            --repository-commit "$env:GITHUB_SHA" `
+            --repo-root "$env:GITHUB_WORKSPACE"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt verification failed"
+          }
+          python packaging/verify_windows_ffmpeg.py assert-promotable `
+            --receipt "$source\windows-ffmpeg-build-receipt.json"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Accepted Windows FFmpeg receipt is not promotable"
+          }
+
+          $stage = Join-Path $env:GITHUB_WORKSPACE "desktop/helper-staging"
+          $provenance = Join-Path $stage "licenses/windows-ffmpeg"
+          $notices = Join-Path $provenance "runtime-notices"
+          $linkReceipts = Join-Path $provenance "linkage"
+          New-Item -ItemType Directory -Force -Path `
+            $notices, $linkReceipts | Out-Null
+          Copy-Item -LiteralPath "$source\ffmpeg.exe" `
+            -Destination "$stage\bin\ffmpeg.exe"
+          Copy-Item -LiteralPath "$source\ffprobe.exe" `
+            -Destination "$stage\bin\ffprobe.exe"
+          foreach ($notice in @(
+              "FFmpeg-COPYING.GPLv2",
+              "LLVM-LICENSE.TXT",
+              "LLVM-compiler-rt-LICENSE.TXT",
+              "MinGW-w64-runtime-NOTICES.txt",
+              "x264-COPYING",
+              "zlib-LICENSE")) {
+            Copy-Item -LiteralPath "$source\licenses\$notice" `
+              -Destination "$notices\$notice"
+          }
+          foreach ($evidence in @(
+              "windows-ffmpeg-build-receipt.json",
+              "windows-ffmpeg-corresponding-source.manifest.json",
+              "windows-ffmpeg-corresponding-source.tar")) {
+            Copy-Item -LiteralPath "$source\$evidence" `
+              -Destination "$provenance\$evidence"
+          }
+          foreach ($receipt in @(
+              "ffmpeg-linkage-receipt.json",
+              "ffprobe-linkage-receipt.json")) {
+            Copy-Item -LiteralPath "$source\linkage\$receipt" `
+              -Destination "$linkReceipts\$receipt"
+          }
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-sources.lock.json" `
+            -Destination "$provenance\windows-ffmpeg-sources.lock.json"
+          Copy-Item -LiteralPath `
+            "packaging\windows-ffmpeg-capabilities.json" `
+            -Destination "$provenance\windows-ffmpeg-capabilities.json"
+          $artifactReceipt = @(
+            "artifact_id=$env:WINDOWS_FFMPEG_ARTIFACT_ID"
+            "artifact_name=$env:WINDOWS_FFMPEG_ARTIFACT_NAME"
+            "artifact_digest=$env:WINDOWS_FFMPEG_ARTIFACT_DIGEST"
+            "repository_commit=$env:GITHUB_SHA"
+          ) -join "`n"
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText(
+            "$provenance\WINDOWS_FFMPEG_ACCEPTED_ARTIFACT.txt",
+            "$artifactReceipt`n",
+            $utf8)
 
       - name: Verify required FFmpeg capabilities
         shell: bash
@@ -384,24 +512,38 @@ jobs:
           cp "$STAGE/creative-runtime/node_modules/gsap/dist/gsap.min.js" \
             "$STAGE/creative/hyperframes-graphics/vendor/gsap.min.js"
           cp -R templates/remotion-viz "$STAGE/creative/remotion-viz"
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            NODE=$(realpath "$STAGE/node/node.exe")
-          else
-            NODE=$(realpath "$STAGE/node/node")
-          fi
-          "$NODE" "$STAGE/creative-runtime/node_modules/hyperframes/bin/hyperframes.mjs" \
-            browser ensure
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell.exe -print -quit)
-            DEST=chrome-headless-shell-win64
-          else
-            BROWSER=$(find "$HOME/.cache/hyperframes/chrome" -type f \
-              -name chrome-headless-shell -print -quit)
-            DEST=chrome-headless-shell-mac
-          fi
-          test -n "$BROWSER" && test -f "$BROWSER"
-          cp -R "$(dirname "$BROWSER")" "$STAGE/browser/$DEST"
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses "$STAGE/licenses" \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --electron-dist-dir "$RUNNER_TEMP/electron-dist" \
+            --browser-dir "$STAGE/browser"
+
+      - name: Keep only the target ONNX Runtime native payload
+        shell: bash
+        run: |
+          python packaging/prune_onnxruntime_node.py \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --transaction-parent "$RUNNER_TEMP" \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+
+      - name: Fetch the exact pinned Mac Remotion source tarball
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          TARBALL="remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          NPM_TARBALL="compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          URL="https://registry.npmjs.org/@remotion/compositor-darwin-${{ matrix.arch }}/-/$NPM_TARBALL"
+          curl --proto '=https' --tlsv1.2 -fsSL "$URL" \
+            -o "$EVIDENCE/$TARBALL"
+          test -s "$EVIDENCE/$TARBALL"
 
       - name: Prune the exact stale Windows Remotion FFmpeg runtime
         if: runner.os == 'Windows'
@@ -474,9 +616,6 @@ jobs:
           rm -rf packaging/dist packaging/build \
             build/autoeditor-engine build/autoeditor-helper-daemon \
             "$HOME/.cache/huggingface" "$HOME/.cache/hyperframes"
-          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
-            rm -rf ffmpeg.zip fftmp
-          fi
           python -m pip cache purge >/dev/null || true
           npm cache clean --force >/dev/null 2>&1 || true
           test -s desktop/helper-staging/models/faster-whisper-small/model.bin
@@ -490,6 +629,17 @@ jobs:
       - name: Write exact runtime manifest
         shell: bash
         run: |
+          python packaging/prune_onnxruntime_node.py --verify-only \
+            --stage-root desktop/helper-staging \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/helper-staging/licenses \
+            --product helper \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
           python packaging/generate_helper_manifest.py \
             --stage desktop/helper-staging \
             --output desktop/helper-staging/runtime-manifest.json \
@@ -541,6 +691,7 @@ jobs:
           npx electron-builder --config electron-builder.helper.yml \
             --${{ matrix.electron_target }} \
             --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             "${EXTRA_CONFIG[@]}"
 
@@ -589,6 +740,75 @@ jobs:
             --target-arch "${{ matrix.arch }}" \
             --version "${{ steps.release.outputs.version }}"
           echo "Packed creative runtime is complete."
+
+      - name: Create and verify exact packed Mac FFmpeg and Remotion receipts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          REMOTION_TARBALL="$EVIDENCE/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" --tarball "$REMOTION_TARBALL" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+
+      - name: Create exact packed Electron native producer receipt
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target_os }}" == "windows" ]]; then
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+              -name 'AutoEditor Helper.exe' -print -quit)
+            APP_ROOT=$(dirname "$APP_EXE")
+            TARGET="windows-x64"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip"
+          else
+            APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+            test "$APP_COUNT" = 1
+            APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+              -name 'AutoEditor Helper.app' -print -quit)
+            TARGET="mac-${{ matrix.arch }}"
+            ARCHIVE="$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip"
+          fi
+          test -n "$APP_ROOT" && test -d "$APP_ROOT"
+          RECEIPT="$RUNNER_TEMP/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "$TARGET" \
+            --electron-archive "$ARCHIVE" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --output "$RECEIPT"
+          test -s "$RECEIPT"
 
       - name: Release duplicate staging bytes before artifact acceptance
         shell: bash
@@ -659,12 +879,34 @@ jobs:
           if (-not (Test-Path $runtimeCache)) {
             throw "Installed Helper did not retain its verified runtime package"
           }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version "${{ steps.release.outputs.version }}" `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper Electron native receipt verification failed"
+          }
           python packaging/verify_helper_manifest.py `
             --resources (Join-Path $root "resources") `
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
             --target-os "${{ matrix.target_os }}" `
             --target-arch "${{ matrix.arch }}" `
             --version "${{ steps.release.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Installed frozen engine is missing" }
           & $engine --self-test
@@ -710,6 +952,39 @@ jobs:
             throw "Windows uninstall smoke test failed"
           }
 
+      - name: Package and smoke-test the Windows x64 portable build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $unpacked = Join-Path $env:HELPER_DIST "win-unpacked"
+          $app = Join-Path $unpacked "AutoEditor Helper.exe"
+          if (-not (Test-Path -LiteralPath $app)) {
+            throw "Accepted unpacked Windows app is missing"
+          }
+          $portable = Join-Path $env:HELPER_DIST `
+            "AutoEditor-Helper-${{ steps.release.outputs.version }}-windows-x64-portable.zip"
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          if (-not (Test-Path -LiteralPath $sevenZip)) {
+            throw "7-Zip is unavailable on the Windows runner"
+          }
+          & $sevenZip a -tzip -mx=1 $portable (Join-Path $unpacked "*")
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $portable) `
+              -or (Get-Item -LiteralPath $portable).Length -le 0) {
+            throw "Portable ZIP creation failed"
+          }
+          $verifyRoot = Join-Path $env:RUNNER_TEMP "helper-portable-verify"
+          New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
+          & $sevenZip x -y "-o$verifyRoot" $portable
+          if ($LASTEXITCODE -ne 0) { throw "Portable ZIP extraction failed" }
+          $portableApp = Join-Path $verifyRoot "AutoEditor Helper.exe"
+          $env:AUTOEDITOR_SMOKE_TEST = "1"
+          try {
+            $smoke = Start-Process $portableApp -Wait -PassThru
+          } finally {
+            Remove-Item Env:AUTOEDITOR_SMOKE_TEST -ErrorAction SilentlyContinue
+          }
+          if ($smoke.ExitCode -ne 0) { throw "Portable Helper smoke test failed" }
+
       - name: Smoke-test macOS app, DMG, signing and notarization
         if: runner.os == 'macOS'
         shell: bash
@@ -738,13 +1013,38 @@ jobs:
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
           MOUNTED_APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' \
             -print -quit)
-          test -n "$MOUNTED_APP"
+          MOUNTED_APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$MOUNTED_APP_COUNT" = 1
           if xattr -lr "$MOUNTED_APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
             echo "Finder metadata is attached to the app inside the DMG" >&2
             exit 1
           fi
           codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$MOUNTED_APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${{ steps.release.outputs.version }}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          NATIVE_EVIDENCE="$RUNNER_TEMP/mac-native-accepted-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$NATIVE_EVIDENCE/macos-ffmpeg-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$NATIVE_EVIDENCE/macos-remotion-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$MOUNTED_APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
           MOUNTED_BIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
             "$MOUNTED_APP/Contents/Info.plist")
           test -x "$MOUNTED_APP/Contents/MacOS/$MOUNTED_BIN"
@@ -776,6 +1076,16 @@ jobs:
           hdiutil detach "$MOUNT" -force
           trap - EXIT
 
+      - name: Upload accepted Mac native producer evidence
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/mac-native-accepted-${{ matrix.arch }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
       - name: Upload unsigned acceptance artifact
         if: steps.release.outputs.tagged != 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -784,8 +1094,10 @@ jobs:
           path: |
             ${{ runner.temp }}/helper-dist/nsis-web/*.exe
             ${{ runner.temp }}/helper-dist/nsis-web/*.nsis.7z
+            ${{ runner.temp }}/helper-dist/*-portable.zip
             ${{ runner.temp }}/helper-dist/*.dmg
             ${{ runner.temp }}/helper-dist/*.blockmap
+            ${{ runner.temp }}/electron-native-${{ matrix.target_os }}-${{ matrix.arch }}.json
             desktop/helper-staging/runtime-manifest.json
           if-no-files-found: error
           compression-level: 0
@@ -837,6 +1149,12 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os windows --target-arch x64
           python ../packaging/prepare_nsis_web.py \
             --build-resources build \
             --licenses helper-staging/licenses
@@ -893,6 +1211,7 @@ jobs:
           PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.azure.js \
             --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
 
@@ -910,8 +1229,28 @@ jobs:
           PACKAGE_URL="https://autoeditor-web.mromarmarabha.workers.dev/download/helper/runtime/windows-x64/$GITHUB_REF_NAME/$GITHUB_SHA"
           npx electron-builder --config electron-builder.helper.yml \
             --win --x64 --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST" \
             --config.nsisWeb.appPackageUrl="$PACKAGE_URL"
+
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_EXE=$(find "$HELPER_DIST" -maxdepth 2 -type f \
+            -name 'AutoEditor Helper.exe' -print -quit)
+          APP_ROOT=$(dirname "$APP_EXE")
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target windows-x64 \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-win32-x64.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-windows-x64.json"
 
       - name: Release duplicate signed staging bytes before acceptance
         shell: bash
@@ -1048,6 +1387,25 @@ jobs:
           if (-not (Test-Path $runtimeCache)) {
             throw "Signed Helper did not retain its verified runtime package"
           }
+          $electronReceipt = Join-Path $env:RUNNER_TEMP `
+            "electron-native-windows-x64.json"
+          $electronArchive = Join-Path $env:RUNNER_TEMP `
+            "electron-dist/electron-v43.3.0-win32-x64.zip"
+          $electronReceiptSha = (Get-FileHash -Algorithm SHA256 `
+            $electronReceipt).Hash.ToLowerInvariant()
+          python packaging/electron_native_receipt.py verify `
+            --app-root $root --target windows-x64 `
+            --electron-archive $electronArchive `
+            --source-lock packaging/electron-chromium-provenance.lock.json `
+            --builder-config desktop/electron-builder.helper.yml `
+            --package-json desktop/package.json `
+            --icon desktop/build/icon.ico `
+            --version ($env:GITHUB_REF_NAME -replace '^helper-v', '') `
+            --receipt $electronReceipt `
+            --expected-receipt-sha256 $electronReceiptSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper Electron native receipt verification failed"
+          }
           $resources = Join-Path $root "resources"
           $resourceExecutables = @(Get-ChildItem $resources -Recurse -Filter *.exe -File)
           if ($resourceExecutables.Count -eq 0) {
@@ -1064,6 +1422,9 @@ jobs:
             --expected-manifest desktop/helper-staging/runtime-manifest.json `
             --target-os windows --target-arch x64 `
             --version ($env:GITHUB_REF_NAME -replace '^helper-v', '')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed installed Helper runtime manifest verification failed"
+          }
           $engine = Join-Path $root "resources/engine/autoeditor-engine.exe"
           if (-not (Test-Path $engine)) { throw "Signed installed frozen engine is missing" }
           & $engine --self-test
@@ -1136,6 +1497,8 @@ jobs:
             --output "$RECEIPT"
           cp desktop/helper-staging/runtime-manifest.json \
             "$RECEIPT_DIR/runtime-manifest-windows-x64.json"
+          cp "$RUNNER_TEMP/electron-native-windows-x64.json" \
+            "$RECEIPT_DIR/electron-native-windows-x64.json"
           KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
           SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
           TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")
@@ -1177,8 +1540,6 @@ jobs:
         include:
           - os: macos-15
             arch: arm64
-          - os: macos-15-intel
-            arch: x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     permissions:
@@ -1198,6 +1559,11 @@ jobs:
           name: prepared-helper-mac-${{ matrix.arch }}
           path: ${{ runner.temp }}/prepared-helper
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: accepted-mac-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/accepted-mac-native
+
       - name: Restore the runtime that passed unsigned acceptance
         shell: bash
         run: |
@@ -1205,6 +1571,32 @@ jobs:
             -C desktop
           test -f desktop/helper-staging/runtime-manifest.json
           rm -f "$RUNNER_TEMP/prepared-helper/helper-stage-mac-${{ matrix.arch }}.tar.gz"
+
+      - name: Verify accepted Mac source and receipt input set
+        shell: bash
+        run: |
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          EXPECTED=$(printf '%s\n' \
+            "macos-ffmpeg-bundle-lock-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            "macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            "macos-ffmpeg-environment-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-${{ matrix.arch }}.json" \
+            "macos-ffmpeg-sources.lock.json" \
+            "macos-remotion-${{ matrix.arch }}.json" \
+            "remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" | \
+            LC_ALL=C sort)
+          ACTUAL=$(find "$ACCEPTED" -mindepth 1 -maxdepth 1 -type f \
+            -exec basename {} \; | LC_ALL=C sort)
+          [[ "$ACTUAL" == "$EXPECTED" ]]
+          cmp packaging/macos-ffmpeg-sources.lock.json \
+            "$ACCEPTED/macos-ffmpeg-sources.lock.json"
+          python packaging/verify_macos_ffmpeg_source.py verify-bundle \
+            --lock packaging/macos-ffmpeg-sources.lock.json \
+            --arch "${{ matrix.arch }}" \
+            --archive "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.tar" \
+            --manifest "$ACCEPTED/macos-ffmpeg-corresponding-source-${{ matrix.arch }}.manifest.json" \
+            --repository-commit "$GITHUB_SHA"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -1218,7 +1610,43 @@ jobs:
 
       - name: Install locked packaging dependencies without signing credentials
         working-directory: desktop
-        run: npm ci
+        shell: bash
+        run: |
+          npm ci
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os mac --target-arch "${{ matrix.arch }}"
+
+      - name: Restore exact Mac FFmpeg receipt source environment
+        shell: bash
+        run: |
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          BREW_VERSION=$(brew --version)
+          test "${BREW_VERSION%%$'\n'*}" = 'Homebrew 6.0.12'
+          brew install ffmpeg
+          EXPECTED=desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt
+          while IFS=' ' read -r FORMULA VERSION BOTTLE_TAG \
+              BOTTLE_REBUILD BOTTLE_SHA EXTRA; do
+            [[ -n "$FORMULA" && -n "$VERSION" && -n "$BOTTLE_TAG" ]]
+            [[ -n "$BOTTLE_REBUILD" && -n "$BOTTLE_SHA" && -z "$EXTRA" ]]
+            brew fetch --force "$FORMULA"
+          done < "$EXPECTED"
+          while IFS=' ' read -r FORMULA _; do
+            [[ "$FORMULA" == "ffmpeg" ]] && continue
+            brew reinstall --force-bottle "$FORMULA"
+          done < "$EXPECTED"
+          brew reinstall --force-bottle ffmpeg
+          OBSERVED="$RUNNER_TEMP/signed-mac-ffmpeg-formulae-${{ matrix.arch }}.txt"
+          python packaging/verify_macos_ffmpeg_formulae.py \
+            --ffmpeg "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" --expected "$EXPECTED" \
+            --expected-arch "${{ matrix.arch }}" --output "$OBSERVED"
+          cmp "$EXPECTED" "$OBSERVED"
 
       - name: Build the signed and notarized macOS installer
         shell: bash
@@ -1241,7 +1669,62 @@ jobs:
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           npx electron-builder --config electron-builder.helper.yml \
             --mac --${{ matrix.arch }} --publish never \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$HELPER_DIST"
+
+      - name: Create and verify exact signed Mac FFmpeg and Remotion receipts
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          ACCEPTED="$RUNNER_TEMP/accepted-mac-native"
+          SIGNED="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          mkdir -p "$SIGNED"
+          FFMPEG_RECEIPT="$SIGNED/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED/macos-remotion-signed-${{ matrix.arch }}.json"
+          LOCK_SHA=$(shasum -a 256 packaging/helper-runtime/package-lock.json | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --ffmpeg-source "$(brew --prefix ffmpeg)/bin/ffmpeg" \
+            --ffprobe-source "$(brew --prefix ffmpeg)/bin/ffprobe" \
+            --cellar "$(brew --cellar)" \
+            --formula-inventory desktop/helper-staging/licenses/FFMPEG_FORMULAE.txt \
+            --expected-arch "${{ matrix.arch }}" --output "$FFMPEG_RECEIPT"
+          python packaging/macos_remotion_receipt.py generate \
+            --app-root "$APP_ROOT" \
+            --package-lock packaging/helper-runtime/package-lock.json \
+            --package-lock-sha256 "$LOCK_SHA" \
+            --tarball "$ACCEPTED/remotion-compositor-darwin-${{ matrix.arch }}-$REMOTION_VERSION.tgz" \
+            --expected-arch "${{ matrix.arch }}" --output "$REMOTION_RECEIPT"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP_ROOT" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
+
+      - name: Create exact signed packed Electron native producer receipt
+        shell: bash
+        run: |
+          APP_COUNT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
+          APP_ROOT=$(find "$HELPER_DIST" -maxdepth 3 -type d \
+            -name 'AutoEditor Helper.app' -print -quit)
+          VERSION="${GITHUB_REF_NAME#helper-v}"
+          python packaging/electron_native_receipt.py create \
+            --app-root "$APP_ROOT" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico --version "$VERSION" \
+            --output "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
 
       - name: Release duplicate signed staging bytes before acceptance
         shell: bash
@@ -1264,7 +1747,9 @@ jobs:
           hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -readonly -noautoopen
           trap 'hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true' EXIT
           APP=$(find "$MOUNT" -maxdepth 1 -type d -name '*.app' -print -quit)
-          test -n "$APP"
+          APP_COUNT=$(find "$MOUNT" -maxdepth 1 -type d \
+            -name '*.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = 1
           test -z "$(find "$APP" \( -name '.DS_Store' -o -name '._*' \) -print -quit)"
           if xattr -lr "$APP" 2>/dev/null | \
               grep -Eq 'com\.apple\.(FinderInfo|ResourceFork)'; then
@@ -1272,6 +1757,29 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict --verbose=4 "$APP"
+          ELECTRON_RECEIPT="$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json"
+          ELECTRON_RECEIPT_SHA=$(shasum -a 256 "$ELECTRON_RECEIPT" | awk '{print $1}')
+          python packaging/electron_native_receipt.py verify \
+            --app-root "$APP" --target "mac-${{ matrix.arch }}" \
+            --electron-archive "$RUNNER_TEMP/electron-dist/electron-v43.3.0-darwin-${{ matrix.arch }}.zip" \
+            --source-lock packaging/electron-chromium-provenance.lock.json \
+            --builder-config desktop/electron-builder.helper.yml \
+            --package-json desktop/package.json \
+            --icon desktop/build/icon.ico \
+            --version "${GITHUB_REF_NAME#helper-v}" \
+            --receipt "$ELECTRON_RECEIPT" \
+            --expected-receipt-sha256 "$ELECTRON_RECEIPT_SHA"
+          SIGNED_NATIVE="$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"
+          FFMPEG_RECEIPT="$SIGNED_NATIVE/macos-ffmpeg-signed-${{ matrix.arch }}.json"
+          REMOTION_RECEIPT="$SIGNED_NATIVE/macos-remotion-signed-${{ matrix.arch }}.json"
+          FFMPEG_SHA=$(shasum -a 256 "$FFMPEG_RECEIPT" | awk '{print $1}')
+          REMOTION_SHA=$(shasum -a 256 "$REMOTION_RECEIPT" | awk '{print $1}')
+          python packaging/macos_ffmpeg_receipt.py verify \
+            --app-root "$APP" --receipt "$FFMPEG_RECEIPT" \
+            --receipt-sha256 "$FFMPEG_SHA" --expected-arch "${{ matrix.arch }}"
+          python packaging/macos_remotion_receipt.py verify \
+            --app-root "$APP" --receipt "$REMOTION_RECEIPT" \
+            --receipt-sha256 "$REMOTION_SHA" --expected-arch "${{ matrix.arch }}"
           codesign -dv --verbose=4 "$APP" 2>&1 | \
             grep -q 'Authority=Developer ID Application'
           spctl --assess --type execute --verbose=2 "$APP"
@@ -1328,6 +1836,13 @@ jobs:
             --output "$RECEIPT"
           cp desktop/helper-staging/runtime-manifest.json \
             "$RECEIPT_DIR/runtime-manifest-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/electron-native-mac-${{ matrix.arch }}.json" \
+            "$RECEIPT_DIR/electron-native-mac-${{ matrix.arch }}.json"
+          cp "$RUNNER_TEMP/mac-native-signed-${{ matrix.arch }}"/*.json \
+            "$RECEIPT_DIR/"
+          mkdir -p "$RECEIPT_DIR/accepted-native"
+          cp -R "$RUNNER_TEMP/accepted-mac-native/." \
+            "$RECEIPT_DIR/accepted-native/"
           KEY=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$RECEIPT")
           SHA=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$RECEIPT")
           TYPE=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["content_type"])' "$RECEIPT")

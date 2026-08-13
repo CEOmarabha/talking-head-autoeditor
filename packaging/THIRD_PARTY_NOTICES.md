@@ -33,6 +33,13 @@ sizes are recorded beside this file in `runtime-manifest.json`.
 - faster-whisper 1.2.1, MIT License.
 - CTranslate2 4.8.1, MIT License.
 - Hugging Face faster-whisper small and medium model files, MIT License.
+- Transformers.js 4.2.0, Apache License 2.0.
+- ONNX Runtime Web 1.26.0 development build at commit
+  b7804b056c30aa35c1748f8e4e239d0e2ff25d6d, MIT License.
+- HuggingFaceTB SmolVLM2-256M-Video-Instruct at revision
+  067788b187b95ebe7b2e040b3e4299e342e5b8fd, Apache License 2.0. The
+  quantized model is downloaded into the app's local browser cache on first
+  use and runs on the user's computer.
 - HyperFrames 0.7.99, Apache License 2.0.
 - Remotion 4.0.507, Remotion License. Individuals and organizations of up to
   three people qualify for the free license. Other collaborations and

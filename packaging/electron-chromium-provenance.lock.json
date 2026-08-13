@@ -1,0 +1,153 @@
+{
+  "chrome_headless_shell": {
+    "archives": {
+      "mac-arm64": {
+        "archive_root": "chrome-headless-shell-mac-arm64",
+        "binary": "chrome-headless-shell",
+        "bytes": 99137906,
+        "filename": "chrome-headless-shell-mac-arm64.zip",
+        "sha256": "e4ca218c9cb2da2117cabd1ca4a2318a9a80efffbba242045be68d708ce3a5ed",
+        "stage_root": "chrome-headless-shell-mac",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7928.2/mac-arm64/chrome-headless-shell-mac-arm64.zip"
+      },
+      "mac-x64": {
+        "archive_root": "chrome-headless-shell-mac-x64",
+        "binary": "chrome-headless-shell",
+        "bytes": 103765768,
+        "filename": "chrome-headless-shell-mac-x64.zip",
+        "sha256": "3b4e27aa52345a4177f0b69211ef3e70476cfab156f75d7c3dc11342ef488ae2",
+        "stage_root": "chrome-headless-shell-mac",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7928.2/mac-x64/chrome-headless-shell-mac-x64.zip"
+      },
+      "windows-x64": {
+        "archive_root": "chrome-headless-shell-win64",
+        "binary": "chrome-headless-shell.exe",
+        "bytes": 120932410,
+        "filename": "chrome-headless-shell-win64.zip",
+        "sha256": "ec7d7cfbc9d97093c9269d6a26de78a3244a49f3112ff9616e2ccb5ac3afeb24",
+        "stage_root": "chrome-headless-shell-win64",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/152.0.7928.2/win64/chrome-headless-shell-win64.zip"
+      }
+    },
+    "cft_revision": "1656291",
+    "notices": {
+      "mac": {
+        "about": {
+          "archive_member": "ABOUT",
+          "bytes": 248,
+          "output_filename": "Chrome-Headless-Shell-ABOUT.txt",
+          "sha256": "34d078ce3003087a8374e7c6156fda374769b8047d6ddaf419d66414aa48edfb"
+        },
+        "license": {
+          "archive_member": "LICENSE.headless_shell",
+          "bytes": 1855737,
+          "output_filename": "Chrome-Headless-Shell-LICENSE.txt",
+          "sha256": "fa3c4920c528c1cb14b4bfb480b1e8a71add17585b4776ce1f258cd14587b00b"
+        }
+      },
+      "windows": {
+        "about": {
+          "archive_member": "ABOUT",
+          "bytes": 257,
+          "output_filename": "Chrome-Headless-Shell-ABOUT.txt",
+          "sha256": "122b32f3ee3f1e8d65c774f5257fc6cc2127b666148ced0ce2efa3ea57e1d93c"
+        },
+        "license": {
+          "archive_member": "LICENSE.headless_shell",
+          "bytes": 2126763,
+          "output_filename": "Chrome-Headless-Shell-LICENSE.txt",
+          "sha256": "b8e35b682081095c7082a84021aa612c740a62c479eccb8a9846838f5c82cd1f"
+        }
+      }
+    },
+    "source": {
+      "commit": "8e122fd6ce1b7bb7bcef0fd0b2e96018ff110c4d",
+      "repository": "https://chromium.googlesource.com/chromium/src.git",
+      "tag": "152.0.7928.2"
+    },
+    "version": "152.0.7928.2",
+    "version_output": "Google Chrome for Testing 152.0.7928.2"
+  },
+  "electron": {
+    "archives": {
+      "mac-arm64": {
+        "bytes": 122102881,
+        "filename": "electron-v43.3.0-darwin-arm64.zip",
+        "sha256": "ee939d1564d83d61032b3b3cb23af4e46005a4900c91f0695f7ed793f0ce6e83",
+        "url": "https://github.com/electron/electron/releases/download/v43.3.0/electron-v43.3.0-darwin-arm64.zip"
+      },
+      "mac-x64": {
+        "bytes": 124293997,
+        "filename": "electron-v43.3.0-darwin-x64.zip",
+        "sha256": "7347bbd5fb529eea64f9c2d148bb1c19222d98946ff234ffe27953a1bbcb9dae",
+        "url": "https://github.com/electron/electron/releases/download/v43.3.0/electron-v43.3.0-darwin-x64.zip"
+      },
+      "windows-x64": {
+        "bytes": 144396349,
+        "filename": "electron-v43.3.0-win32-x64.zip",
+        "sha256": "18528bedc6a9b04bdc5efb7b803cbc3cb0e5ea6415d54046e23d464d89a00da9",
+        "url": "https://github.com/electron/electron/releases/download/v43.3.0/electron-v43.3.0-win32-x64.zip"
+      }
+    },
+    "chromium": {
+      "commit": "69bf1c67cb894365d151bd020bb0171fd583633a",
+      "repository": "https://chromium.googlesource.com/chromium/src.git",
+      "tag": "150.0.7871.212",
+      "version": "150.0.7871.212"
+    },
+    "notices": {
+      "chromium_licenses": {
+        "mac": {
+          "archive_member": "LICENSES.chromium.html",
+          "bytes": 19956019,
+          "output_filename": "Electron-LICENSES.chromium.html",
+          "sha256": "4fc0507a046b9ecd0738b2dd64119b5ec8bc29ac0221b63edb693fd5fd497c87"
+        },
+        "windows": {
+          "archive_member": "LICENSES.chromium.html",
+          "bytes": 20313957,
+          "output_filename": "Electron-LICENSES.chromium.html",
+          "sha256": "b911161e6594ec76b872498b423c54406168f2974e0d407a847f7de1e5ff94dd"
+        }
+      },
+      "license": {
+        "archive_member": "LICENSE",
+        "bytes": 1096,
+        "output_filename": "Electron-LICENSE.txt",
+        "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+      }
+    },
+    "npm_package": {
+      "bytes": 194534,
+      "filename": "electron-43.3.0.tgz",
+      "integrity": "sha512-nLlvu0WFjftWsSaTkV2B/c4NDuJBspTyXu8vKSQ6vLvFt8uG3NgN49LLKcXddwX0GqVvAQDhciWp+4xOdTdhew==",
+      "members": {
+        "package/LICENSE": {
+          "bytes": 1096,
+          "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+        },
+        "package/checksums.json": {
+          "bytes": 8138,
+          "sha256": "3cc7d8c0e3822e924b1c20ca300581a128c81f3ec846372063a8f7aa3625f1a9"
+        },
+        "package/package.json": {
+          "bytes": 744,
+          "sha256": "3d4cb058d752ffea804929bec188b02671de846c049128b31b5dd8e50e102c56"
+        }
+      },
+      "resolved": "https://registry.npmjs.org/electron/-/electron-43.3.0.tgz",
+      "sha256": "581b6b729df7582407aca4817e71078e815bb96de764185276a8fd15b5905399"
+    },
+    "source": {
+      "commit": "1aa21d231aeaf5634880a6e60187256e9f2fd4f9",
+      "deps_blob": "5edf5704707973a93c2af16c1ed3cf1b852b72d3",
+      "repository": "https://github.com/electron/electron.git",
+      "tag": "v43.3.0",
+      "tag_object": "51209d845e68865d5cca5cfec3a645f1ff7df48c",
+      "tree": "bae3a10ebeb1d9dfb845565e7bcf600322c1366b"
+    },
+    "version": "43.3.0"
+  },
+  "provenance_status": "complete",
+  "schema": "autoeditor-electron-chromium-provenance-lock/v1"
+}

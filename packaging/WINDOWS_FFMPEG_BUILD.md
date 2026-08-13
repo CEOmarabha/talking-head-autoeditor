@@ -113,7 +113,8 @@ the repository commit and tree, and canonical receipts for every regular file
 inside both LLD reproducer archives. It also binds each classified linkage
 receipt and the matching unstripped executable used to inspect PE imports.
 Runtime smoke checks exercise lavfi, float PCM output, wrapped-frame video to
-the null muxer, libx264 and AAC in MP4, and FFprobe stream inspection.
+the null muxer, an exact raw PCM round trip through literal standard input,
+libx264 and AAC in MP4, and FFprobe stream inspection.
 
 Recompute the receipt before accepting an artifact:
 
@@ -159,11 +160,11 @@ LLVM compiler-rt, MinGW-w64, x264, and zlib are code-bearing sources.
 llvm-mingw and NASM are pinned build-only sources and cannot appear as claimed
 link-input origins.
 
-The initial closure pins were derived from workflow run `31267037435`, artifact
-ID `9024578626`, at repository commit
-`df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c`. The source lock records the
-exact artifact name, its 527332259-byte size, and archive SHA-256
-`e89dc5a20dc9b69aaa65c389f6accc39afccf0199820c1a1a57350e67ab9fe28`.
+The current closure pins were derived from workflow run `31285765635`, artifact
+ID `9029845841`, at repository commit
+`fdb7d3b582ccddf6e39684dfefda08630f7005d7`. The source lock records the
+exact artifact name, its 531504031-byte size, and archive SHA-256
+`61c9c141f2defbb5dd33c30d3c24ff9cacf673afd623d3c849281dd67b386002`.
 
 For code-bearing archive selections, the classifier records the exact archive
 path, member name, global member ordinal, byte count, format, and SHA-256. A
@@ -205,10 +206,11 @@ program-specific pins in the source lock.
 
 ## Required Runtime Contract
 
-The network protocol set is exactly `file` and `pipe` for input and output.
-HTTP, HTTPS, TCP, UDP, RTMP, and every other protocol fail the gate. The
-capability JSON records every required encoder, decoder, filter, demuxer, and
-muxer. A missing item fails receipt creation.
+The local I/O protocol set is exactly `fd`, `file`, and `pipe` for input and
+output. FFmpeg 8.1 translates a literal `-` input to `fd:` and a literal `-`
+output to `pipe:`. HTTP, HTTPS, TCP, UDP, RTMP, and every other protocol fail
+the gate. The capability JSON records every required encoder, decoder, filter,
+demuxer, and muxer. A missing item fails receipt creation.
 
 The executable license expression is `GPL-2.0-or-later` because libx264 is
 enabled. The source bundle uses the repository's deterministic source-bundle

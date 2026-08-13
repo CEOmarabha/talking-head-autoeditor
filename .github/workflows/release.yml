@@ -323,6 +323,19 @@ jobs:
             --stage-root desktop/staging \
             --package-lock packaging/helper-runtime/package-lock.json
 
+      - name: Stage hash-locked Electron and Chromium notices
+        shell: bash
+        run: |
+          python packaging/stage_electron_chromium_provenance.py stage \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock desktop/package-lock.json \
+            --electron-root desktop/node_modules/electron \
+            --licenses desktop/staging/licenses \
+            --product pse \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}" \
+            --electron-dist-dir "$RUNNER_TEMP/electron-dist"
+
       - name: Generate byte-verifiable product runtime manifest
         shell: bash
         env:
@@ -331,6 +344,12 @@ jobs:
           PRODUCT_VERSION: ${{ steps.product.outputs.version }}
           PRODUCT_ID: ${{ steps.product.outputs.product }}
         run: |
+          python packaging/stage_electron_chromium_provenance.py verify \
+            --lock packaging/electron-chromium-provenance.lock.json \
+            --licenses desktop/staging/licenses \
+            --product pse \
+            --target-os "${{ matrix.target_os }}" \
+            --target-arch "${{ matrix.arch }}"
           python - <<'PY'
           import json
           import os
@@ -420,6 +439,7 @@ jobs:
           npx --no-install electron-builder --config electron-builder.yml \
             --config.appId="$APP_ID" \
             --config.productName="$PRODUCT_NAME" \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$DESKTOP_DIST" \
             "$TARGET" "$ARCH" \
             --publish never
@@ -703,7 +723,15 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install locked packaging dependencies without signing credentials
         working-directory: desktop
-        run: npm ci
+        shell: bash
+        run: |
+          npm ci
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os windows --target-arch x64
       - name: Build the signed PSE Windows installer
         shell: bash
         working-directory: desktop
@@ -723,6 +751,7 @@ jobs:
           npx --no-install electron-builder --config electron-builder.yml \
             --config.appId=com.marabha.pseautoeditor \
             --config.productName="PSE AutoEditor" \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$DESKTOP_DIST" \
             --win --x64 --publish never
       - name: Verify installed PSE Windows signatures and payload
@@ -880,7 +909,15 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install locked packaging dependencies without signing credentials
         working-directory: desktop
-        run: npm ci
+        shell: bash
+        run: |
+          npm ci
+          python ../packaging/stage_electron_chromium_provenance.py electron-dist \
+            --lock ../packaging/electron-chromium-provenance.lock.json \
+            --desktop-package-lock package-lock.json \
+            --electron-root node_modules/electron \
+            --output-dir "$RUNNER_TEMP/electron-dist" \
+            --target-os mac --target-arch "${{ matrix.arch }}"
       - name: Build, notarize, and staple the final PSE Mac installer
         shell: bash
         working-directory: desktop
@@ -903,6 +940,7 @@ jobs:
           npx --no-install electron-builder --config electron-builder.yml \
             --config.appId=com.marabha.pseautoeditor \
             --config.productName="PSE AutoEditor" \
+            --config.electronDist="$RUNNER_TEMP/electron-dist" \
             --config.directories.output="$DESKTOP_DIST" \
             --mac --${{ matrix.arch }} --publish never
           DMG=$(find "$DESKTOP_DIST" -maxdepth 1 -type f -name '*.dmg' -print -quit)

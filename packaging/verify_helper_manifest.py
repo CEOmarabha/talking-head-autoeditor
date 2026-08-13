@@ -61,7 +61,11 @@ def main() -> None:
     expected_algorithm = (
         "pe-authenticode-content-v1"
         if args.target_os == "windows"
-        else "raw-sha256-v1"
+        else (
+            "macho-codesign-content-v1"
+            if args.target_os == "mac"
+            else "raw-sha256-v1"
+        )
     )
     if manifest.get("receipt_algorithm") != expected_algorithm:
         raise SystemExit("runtime manifest receipt algorithm does not match this artifact")
@@ -102,6 +106,7 @@ def main() -> None:
         actual = generator.directory_receipt(
             root,
             normalize_windows_executables=args.target_os == "windows",
+            normalize_macos_machos=args.target_os == "mac",
         )
         if actual != expected:
             failures.append(

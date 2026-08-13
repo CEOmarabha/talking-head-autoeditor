@@ -27,10 +27,10 @@ CAPABILITIES_SCHEMA = "autoeditor-windows-ffmpeg-capabilities/v1"
 RECEIPT_SCHEMA = "autoeditor-windows-ffmpeg-build/v4"
 BUNDLE_LOCK_SCHEMA = "autoeditor-native-media-sources/v1"
 EXPECTED_SOURCE_LOCK_SHA256 = (
-    "098d357f204882a1d8780b907f19ea8abd11903ae3dd60994720cfaf5e4796c6"
+    "ab5d7e52dc3f93b88531a27a1cc711edec0cb649abce9544d977f513e0422fb3"
 )
 EXPECTED_CAPABILITIES_SHA256 = (
-    "5f0fa502b332413cc60b14c95e34d0570ae36ec3397d5264c5c1e6fffcc4fa51"
+    "cb67837fcadf4ed68922d475195e4255c3e1a5918b10b5c06ce9736bc481e37f"
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_SHA1_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -129,6 +129,7 @@ RUNTIME_SMOKE_CHECKS = [
     "ffprobe-mp4",
     "lavfi-input",
     "libx264-aac-mp4",
+    "literal-stdin-s16le",
     "wrapped-avframe-null-video",
 ]
 EXPECTED_RUNTIME_NOTICES = [
@@ -190,17 +191,17 @@ EXPECTED_LINK_EVIDENCE_CONTRACT = {
     "programs": ["ffmpeg", "ffprobe"],
 }
 EXPECTED_LINK_EVIDENCE_ARTIFACT = {
-    "archive_bytes": 527332259,
+    "archive_bytes": 531504031,
     "archive_sha256": (
-        "e89dc5a20dc9b69aaa65c389f6accc39afccf0199820c1a1a57350e67ab9fe28"
+        "61c9c141f2defbb5dd33c30d3c24ff9cacf673afd623d3c849281dd67b386002"
     ),
-    "artifact_id": 9024578626,
+    "artifact_id": 9029845841,
     "name": (
         "windows-ffmpeg-evidence-"
-        "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c"
+        "fdb7d3b582ccddf6e39684dfefda08630f7005d7"
     ),
-    "repository_commit": "df6aa05a5d864f58e4ed7e24fa5e5ab718a99a6c",
-    "workflow_run_id": 31267037435,
+    "repository_commit": "fdb7d3b582ccddf6e39684dfefda08630f7005d7",
+    "workflow_run_id": 31285765635,
 }
 LINK_EVIDENCE_FILES = {
     "ffmpeg": {
@@ -1017,10 +1018,10 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
     if len(configure_args) != len(set(configure_args)):
         raise WindowsFFmpegError("configure_args contains duplicates")
     required_configure = {
-        "--disable-network", "--disable-protocols", "--enable-protocol=file",
-        "--enable-protocol=pipe", "--disable-shared", "--enable-static",
-        "--enable-gpl", "--enable-libx264", "--enable-zlib",
-        "--disable-pthreads",
+        "--disable-network", "--disable-protocols", "--enable-protocol=fd",
+        "--enable-protocol=file", "--enable-protocol=pipe", "--disable-shared",
+        "--enable-static", "--enable-gpl", "--enable-libx264",
+        "--enable-zlib", "--disable-pthreads",
     }
     missing = sorted(required_configure - set(configure_args))
     if missing:
@@ -1088,8 +1089,13 @@ def _validate_capabilities(value: dict[str, Any]) -> None:
     if not isinstance(protocols, dict):
         raise WindowsFFmpegError("required.protocols must be an object")
     _exact_fields(protocols, {"input", "output"}, "required.protocols")
-    if protocols != {"input": ["file", "pipe"], "output": ["file", "pipe"]}:
-        raise WindowsFFmpegError("required protocols must be exactly file and pipe")
+    if protocols != {
+        "input": ["fd", "file", "pipe"],
+        "output": ["fd", "file", "pipe"],
+    }:
+        raise WindowsFFmpegError(
+            "required protocols must be exactly fd, file, and pipe"
+        )
 
     forbidden = value["forbidden"]
     if not isinstance(forbidden, dict):
@@ -1433,17 +1439,29 @@ def _normalized_output(raw: str) -> str:
     return raw.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _run(executable: Path, arguments: list[str]) -> str:
+def _run(
+    executable: Path,
+    arguments: list[str],
+    *,
+    input_bytes: bytes | None = None,
+) -> str:
+    run_options: dict[str, Any] = {}
+    if input_bytes is None:
+        run_options.update({
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "strict",
+        })
+    else:
+        run_options["input"] = input_bytes
     try:
         result = subprocess.run(
             [str(executable), *arguments],
             check=False,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
             env={**os.environ, "LC_ALL": "C"},
             timeout=60,
+            **run_options,
         )
     except subprocess.TimeoutExpired as exc:
         raise WindowsFFmpegError(
@@ -1451,12 +1469,27 @@ def _run(executable: Path, arguments: list[str]) -> str:
         ) from exc
     except (OSError, UnicodeError) as exc:
         raise WindowsFFmpegError(f"cannot execute {executable}: {exc}") from exc
+    try:
+        stdout = (
+            result.stdout.decode("utf-8", errors="strict")
+            if isinstance(result.stdout, bytes)
+            else result.stdout
+        )
+        stderr = (
+            result.stderr.decode("utf-8", errors="strict")
+            if isinstance(result.stderr, bytes)
+            else result.stderr
+        )
+    except UnicodeError as exc:
+        raise WindowsFFmpegError(
+            f"{executable.name} {' '.join(arguments)} emitted non-UTF-8 output"
+        ) from exc
     if result.returncode != 0:
-        detail = _normalized_output(result.stderr or result.stdout).strip()
+        detail = _normalized_output(stderr or stdout).strip()
         raise WindowsFFmpegError(
             f"{executable.name} {' '.join(arguments)} failed: {detail}"
         )
-    output = result.stdout if result.stdout else result.stderr
+    output = stdout if stdout else stderr
     return _normalized_output(output)
 
 
@@ -1623,7 +1656,7 @@ def verify_inventory(
         )
     if inventory["protocols"] != required["protocols"]:
         raise WindowsFFmpegError(
-            "FFmpeg protocols must be exactly file and pipe for input and output"
+            "FFmpeg protocols must be exactly fd, file, and pipe for input and output"
         )
     found_protocols = set(inventory["protocols"]["input"] + inventory["protocols"]["output"])
     forbidden_protocols = sorted(found_protocols & set(contract["forbidden"]["protocols"]))
@@ -1647,6 +1680,26 @@ def run_runtime_smoke(ffmpeg: Path, ffprobe: Path) -> dict[str, Any]:
         f32le_metadata = _require_regular_file(f32le, "f32le smoke output")
         if f32le_metadata.st_size <= 0 or f32le_metadata.st_size % 4:
             raise WindowsFFmpegError("f32le smoke output has an invalid byte count")
+
+        stdin_pcm = bytes(range(256)) * 4
+        stdin_output = root / "literal-stdin.s16le"
+        _run(
+            ffmpeg,
+            [
+                "-nostdin", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "-",
+                "-map", "0:a:0", "-c:a", "copy", "-f", "s16le",
+                str(stdin_output),
+            ],
+            input_bytes=stdin_pcm,
+        )
+        stdin_output_raw = _read_regular_file(
+            stdin_output, "literal stdin smoke output"
+        )
+        if stdin_output_raw != stdin_pcm:
+            raise WindowsFFmpegError(
+                "literal stdin smoke output differs from its exact PCM input"
+            )
 
         _run(ffmpeg, [
             "-nostdin", "-y", "-hide_banner", "-loglevel", "error",
