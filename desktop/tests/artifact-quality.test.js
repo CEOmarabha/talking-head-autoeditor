@@ -222,6 +222,7 @@ vm.runInNewContext(`${promotionSource}; this.artifactPromotionTarget = artifactP
   'this.stageArtifactForVision = stageArtifactForVision; ' +
   'this.promoteVisionArtifact = promoteVisionArtifact;', promotionContext);
 const promotionFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'autoeditor-promotion-'));
+const promotionFixtureReal = fs.realpathSync.native(promotionFixture);
 try {
   const pending = path.join(promotionFixture, 'PSE_SHORT_9x16.UNVERIFIED.mp4');
   const desired = path.join(promotionFixture, 'PSE_SHORT_9x16.mp4');
@@ -234,6 +235,8 @@ try {
   };
   const target = promotionContext.artifactPromotionTarget(event, promotionFixture);
   assert.strictEqual(target.key, '9x16');
+  assert.strictEqual(target.approved, path.join(promotionFixtureReal, 'PSE_SHORT_9x16.mp4'),
+    'the desired final leaf must be rebuilt under its canonical existing parent');
   const staged = promotionContext.stageArtifactForVision(
     target.pending, target.approved);
   assert.strictEqual(fs.existsSync(desired), false,
@@ -247,6 +250,74 @@ try {
   assert.strictEqual(fs.existsSync(pending), false);
   assert.deepStrictEqual(fs.readFileSync(desired), pendingBytes,
     'only the pass path may expose the exact reviewed bytes at the desired name');
+
+  // Windows can report an existing output directory through its long canonical
+  // name even when the engine supplied the equivalent 8.3 short-name alias.
+  // Model that deterministically on every test platform without requiring an
+  // actual junction or an enabled Windows short-name policy.
+  const aliasRoot = path.join(path.dirname(promotionFixture),
+    `${path.basename(promotionFixture)}-RUNNER~1`);
+  const aliasPending = path.join(aliasRoot, 'aliased.UNVERIFIED.mp4');
+  const aliasDesired = path.join(aliasRoot, 'aliased.mp4');
+  const canonicalAliasPending = path.join(promotionFixtureReal,
+    'aliased.UNVERIFIED.mp4');
+  const canonicalAliasDesired = path.join(promotionFixtureReal, 'aliased.mp4');
+  const aliasBytes = Buffer.from('reviewed bytes reached through a path alias');
+  fs.writeFileSync(canonicalAliasPending, aliasBytes);
+  const nativeRealpaths = new Map([
+    [path.resolve(aliasRoot), promotionFixtureReal],
+    [path.resolve(aliasPending), fs.realpathSync.native(canonicalAliasPending)],
+  ]);
+  const aliasRealpathSync = (...args) => fs.realpathSync(...args);
+  aliasRealpathSync.native = (candidate) =>
+    nativeRealpaths.get(path.resolve(candidate)) || fs.realpathSync.native(candidate);
+  const aliasFs = Object.assign(Object.create(fs), {
+    realpathSync: aliasRealpathSync,
+  });
+  const aliasContext = {
+    fs: aliasFs, path, crypto: require('crypto'), Buffer,
+  };
+  vm.runInNewContext(`${promotionSource}; this.artifactPromotionTarget = artifactPromotionTarget; ` +
+    'this.promoteVisionArtifact = promoteVisionArtifact;', aliasContext);
+  const aliasEvent = {
+    output: aliasPending,
+    outputs: { '9x16': aliasPending },
+    finalOutputs: { '9x16': aliasDesired },
+  };
+  const aliasTarget = aliasContext.artifactPromotionTarget(aliasEvent, aliasRoot);
+  assert.strictEqual(aliasTarget.pending, fs.realpathSync.native(canonicalAliasPending));
+  assert.strictEqual(aliasTarget.approved, canonicalAliasDesired,
+    'promotion must return the canonical approved path, not its textual alias');
+  const aliasSha = require('crypto').createHash('sha256')
+    .update(aliasBytes).digest('hex');
+  aliasContext.promoteVisionArtifact(aliasTarget, aliasBytes.length, aliasSha);
+  assert.deepStrictEqual(fs.readFileSync(canonicalAliasDesired), aliasBytes);
+
+  const aliasCollisionPending = path.join(aliasRoot,
+    'alias-collision.UNVERIFIED.mp4');
+  const canonicalAliasCollisionPending = path.join(promotionFixtureReal,
+    'alias-collision.UNVERIFIED.mp4');
+  const aliasCollision = path.join(promotionFixtureReal, 'alias-collision.mp4');
+  fs.writeFileSync(canonicalAliasCollisionPending, Buffer.from('next reviewed bytes'));
+  fs.writeFileSync(aliasCollision, Buffer.from('must not be overwritten'));
+  nativeRealpaths.set(path.resolve(aliasCollisionPending),
+    fs.realpathSync.native(canonicalAliasCollisionPending));
+  assert.throws(() => aliasContext.artifactPromotionTarget({
+    output: aliasCollisionPending,
+    outputs: { '9x16': aliasCollisionPending },
+    finalOutputs: { '9x16': path.join(aliasRoot, path.basename(aliasCollision)) },
+  }, aliasRoot), /already exists/,
+  'a textual alias must not bypass collision protection for a canonical file');
+
+  const outsideAlias = path.join(path.dirname(promotionFixture),
+    `${path.basename(promotionFixture)}-OUTSIDE-ALIAS`);
+  nativeRealpaths.set(path.resolve(outsideAlias), path.dirname(promotionFixtureReal));
+  assert.throws(() => aliasContext.artifactPromotionTarget({
+    output: aliasCollisionPending,
+    outputs: { '9x16': aliasCollisionPending },
+    finalOutputs: { '9x16': path.join(outsideAlias, 'escape.mp4') },
+  }, aliasRoot), /unsafe/,
+  'an alias whose parent resolves outside the output root must be rejected');
 
   const fallbackPending = path.join(promotionFixture, 'fallback.UNVERIFIED.mp4');
   const fallbackDesired = path.join(promotionFixture, 'fallback.mp4');

@@ -985,8 +985,9 @@ function validateFinalOutputTarget(outputDir, pendingRaw, finalRaw) {
       !/\.UNVERIFIED(?:\.|$)/i.test(path.basename(pending))) {
     throw new Error('the engine artifact is not a safe pending file');
   }
-  const final = path.resolve(finalRaw);
-  const finalParent = fs.realpathSync.native(path.dirname(final));
+  const resolvedFinal = path.resolve(finalRaw);
+  const finalParent = fs.realpathSync.native(path.dirname(resolvedFinal));
+  const final = path.join(finalParent, path.basename(resolvedFinal));
   const finalRelative = path.relative(root, final);
   if (!finalRelative || finalRelative === '..' ||
       finalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(finalRelative) ||
