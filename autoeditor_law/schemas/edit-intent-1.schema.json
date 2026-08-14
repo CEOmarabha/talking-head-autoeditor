@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoeditor:schema:edit-intent:1",
+  "title": "Transcript-anchored planner edit intent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "timeline_grid", "transcript_sha256", "events"],
+  "properties": {
+    "schema_id": {"const": "urn:autoeditor:schema:edit-intent:1"},
+    "timeline_grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "ticks_per_second"],
+      "properties": {
+        "unit": {"const": "tick"},
+        "ticks_per_second": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": {"type": "integer", "minimum": 1},
+            "denominator": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/event"}
+    }
+  },
+  "$defs": {
+    "eventBase": {
+      "type": "object",
+      "required": [
+        "event_id", "layer", "anchor_quote", "duration_ticks", "parameters"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+        },
+        "layer": {"enum": ["punch_in", "broll", "graphic", "diagram"]},
+        "anchor_quote": {"type": "string", "minLength": 1},
+        "duration_ticks": {"type": "integer", "minimum": 1},
+        "parameters": {"type": "object"}
+      }
+    },
+    "event": {
+      "oneOf": [
+        {"$ref": "#/$defs/punchIn"},
+        {"$ref": "#/$defs/broll"},
+        {"$ref": "#/$defs/graphic"},
+        {"$ref": "#/$defs/diagram"}
+      ]
+    },
+    "punchIn": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "layer": {"const": "punch_in"},
+            "parameters": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["scale_milli", "reason"],
+              "properties": {
+                "scale_milli": {"type": "integer", "minimum": 1000, "maximum": 1500},
+                "reason": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "broll": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "layer": {"const": "broll"},
+            "parameters": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["query", "family", "reason"],
+              "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "family": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "graphic": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "layer": {"const": "graphic"},
+            "parameters": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "text", "value", "items", "reason"],
+              "properties": {
+                "kind": {"enum": ["keyword", "stat", "callout", "bars"]},
+                "text": {"type": ["string", "null"]},
+                "value": {"type": ["string", "null"]},
+                "items": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "diagram": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "layer": {"const": "diagram"},
+            "parameters": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["template", "title", "items", "reason"],
+              "properties": {
+                "template": {"enum": ["flow", "steps", "stat"]},
+                "title": {"type": "string", "minLength": 1},
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "reason": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

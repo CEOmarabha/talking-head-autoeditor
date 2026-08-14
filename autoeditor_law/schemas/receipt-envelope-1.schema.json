@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoeditor:schema:receipt-envelope:1",
+  "title": "AutoEditor evidence receipt envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id", "receipt_id", "created_at", "subject_digest", "capability_id",
+    "check_id", "algorithm_id", "payload_schema_id", "policy_id",
+    "artifact_contract_id", "result", "evidence", "producer", "payload"
+  ],
+  "properties": {
+    "schema_id": {"const": "urn:autoeditor:schema:receipt-envelope:1"},
+    "receipt_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string"},
+    "subject_digest": {"$ref": "#/$defs/digest"},
+    "capability_id": {"type": "string", "pattern": "^urn:autoeditor:capability:"},
+    "check_id": {"type": "string", "pattern": "^urn:autoeditor:check:"},
+    "algorithm_id": {"type": "string", "pattern": "^urn:autoeditor:algorithm:"},
+    "payload_schema_id": {"type": "string", "pattern": "^urn:autoeditor:schema:"},
+    "policy_id": {"type": "string", "pattern": "^urn:autoeditor:policy:"},
+    "artifact_contract_id": {"type": "string", "pattern": "^urn:autoeditor:artifact-contract:"},
+    "result": {"enum": ["pass", "fail", "unsupported", "accepted_with_exception"]},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "digest": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source_sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "value": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoeditor:schema:archive-manifest:1",
+  "title": "AutoEditor project archive manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "contract_id",
+    "archive_id",
+    "assurance_grade",
+    "created_at",
+    "historical_policy_id",
+    "required_schema_ids",
+    "files",
+    "attestation"
+  ],
+  "properties": {
+    "schema_id": {"const": "urn:autoeditor:schema:archive-manifest:1"},
+    "contract_id": {"const": "autoeditor-2034-contract/1"},
+    "archive_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "assurance_grade": {
+      "enum": ["identity", "historical_record", "fresh_reverification", "resumption"]
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "historical_policy_id": {"type": ["string", "null"]},
+    "required_schema_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^urn:autoeditor:schema:"}
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/file"}
+    },
+    "attestation": {"$ref": "#/$defs/attestation"}
+  },
+  "$defs": {
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "value": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role", "bytes", "digest"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[^/\\\\].+"},
+        "role": {
+          "enum": [
+            "master", "original_source", "canonical_source", "source_map",
+            "timeline", "transcript_anchors", "approved_intent", "render_profile",
+            "revision_state", "project_state", "asset", "evidence_receipt",
+            "evidence_blob", "policy", "specification", "schema", "schema_lock",
+            "conformance_fixture", "incident_fixture", "toolchain",
+            "build_provenance", "exception", "signature_bundle", "reference_source"
+          ]
+        },
+        "bytes": {"type": "integer", "minimum": 1},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "attestation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "signature_file", "anchor"],
+          "properties": {
+            "status": {"const": "none"},
+            "signature_file": {"type": "null"},
+            "anchor": {"type": "null"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "signature_file", "anchor"],
+          "properties": {
+            "status": {"const": "declared"},
+            "signature_file": {"type": "string", "minLength": 1},
+            "anchor": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    }
+  }
+}

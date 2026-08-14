@@ -58,6 +58,19 @@ samples, and every DeepSeek plan must pass a deterministic score of 100.
 Read [the complete incident and v2 design](docs/RELEASE_V2.md), or jump to the
 [worked regression inputs](docs/examples/V2_REGRESSION_PROOFS.md).
 
+## Long-term assurance contract
+
+The [2026 to 2034 contract](docs/AUTOEDITOR_2034_CONTRACT.md) separates the
+durable verification law from the current app, model provider, renderer, and
+packaging stack. `autoeditor_law/` contains the standard-library reference
+reader, hash-locked schemas, planner and render envelopes, and evidence-receipt
+contract. `compatibility/archives/` contains the permanent verification corpus.
+
+The current engine has not been migrated into these envelopes yet. The
+committed fixture proves archive identity only. It does not claim fresh
+RAW-backed re-verification, project resumption, signature trust, or usage
+research.
+
 ## See it run
 
 ![Before and after](docs/media/demo.gif)

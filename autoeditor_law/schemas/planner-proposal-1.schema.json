@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoeditor:schema:planner-proposal:1",
+  "title": "Qualified planner proposal envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id", "proposal_id", "created_at", "planner", "inputs",
+    "proposal", "qualification"
+  ],
+  "properties": {
+    "schema_id": {"const": "urn:autoeditor:schema:planner-proposal:1"},
+    "proposal_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string"},
+    "planner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "provider_id", "model_id", "model_revision"],
+      "properties": {
+        "adapter_id": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "model_revision": {"type": "string", "minLength": 1}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript_sha256", "project_intent_sha256", "profile_sha256"],
+      "properties": {
+        "transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "project_intent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload_schema_id", "contract_sha256", "payload_sha256", "payload"],
+      "properties": {
+        "payload_schema_id": {"const": "urn:autoeditor:schema:edit-intent:1"},
+        "contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "payload": {"$ref": "urn:autoeditor:schema:edit-intent:1"}
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_id", "suite_sha256", "adapter_sha256", "pass"],
+      "properties": {
+        "suite_id": {"type": "string", "pattern": "^urn:autoeditor:"},
+        "suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "adapter_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "pass": {"const": true}
+      }
+    }
+  }
+}

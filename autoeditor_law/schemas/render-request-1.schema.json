@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoeditor:schema:render-request:1",
+  "title": "Hash-bound render adapter request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id", "request_id", "created_at", "render_adapter_id",
+    "archive_manifest_sha256", "planner_proposal_sha256", "edl_sha256",
+    "source_map_sha256", "render_profile_sha256", "policy_id", "toolchain"
+  ],
+  "properties": {
+    "schema_id": {"const": "urn:autoeditor:schema:render-request:1"},
+    "request_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string"},
+    "render_adapter_id": {"type": "string", "pattern": "^urn:autoeditor:adapter:"},
+    "archive_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "planner_proposal_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "edl_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_map_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "render_profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy_id": {"type": "string", "pattern": "^urn:autoeditor:policy:"},
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["renderer_sha256", "ffmpeg_sha256", "ffprobe_sha256"],
+      "properties": {
+        "renderer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ffmpeg_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ffprobe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
